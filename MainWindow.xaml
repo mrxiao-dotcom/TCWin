@@ -1,0 +1,842 @@
+<Window x:Class="BinanceFuturesTrader.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        xmlns:converters="clr-namespace:BinanceFuturesTrader.Converters"
+        Title="币安期货交易管理器" Height="900" Width="1400"
+        WindowStartupLocation="CenterScreen">
+    
+    <Window.Resources>
+        <!-- 价格格式化转换器 -->
+        <converters:PriceFormatConverter x:Key="PriceFormatConverter"/>
+        
+        <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Padding" Value="6,3"/>
+        </Style>
+        <Style TargetType="TextBox" BasedOn="{StaticResource MaterialDesignTextBox}">
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="6,6,6,3"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="ComboBox" BasedOn="{StaticResource MaterialDesignComboBox}">
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Height" Value="32"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="3,0"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="4*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="2.5*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 账户选择和账户信息区合并为单行 -->
+        <materialDesign:Card Grid.Row="0" Padding="6" Margin="0,0,0,5">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                
+                <!-- 左侧：账户选择和操作按钮 -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="当前账户：" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <ComboBox x:Name="AccountComboBox" 
+                             ItemsSource="{Binding Accounts}"
+                             SelectedItem="{Binding SelectedAccount}"
+                             DisplayMemberPath="Name"
+                             Width="140" Height="28"/>
+                    <Button Content="修改账户" Command="{Binding EditCurrentAccountCommand}" Margin="6,0,0,0"
+                           Width="65" Height="28" FontSize="11"
+                           ToolTip="修改当前选择账户的API密钥等配置"/>
+                    <Button Content="账户配置" Command="{Binding ConfigureAccountCommand}" Margin="6,0,0,0"
+                           Width="65" Height="28" FontSize="11"/>
+                    <Button Content="刷新数据" Command="{Binding RefreshDataCommand}" Margin="6,0,0,0"
+                           Width="65" Height="28" FontSize="11"/>
+                    <Button Content="暂停/恢复定时器" Command="{Binding ToggleTimersCommand}" Margin="6,0,0,0"
+                           Width="95" Height="28" FontSize="11"/>
+                    
+                    <!-- 自动刷新控制 -->
+                    <Button Command="{Binding ToggleAutoRefreshCommand}" Margin="6,0,0,0"
+                           Width="90" Height="28" FontSize="11">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+                                <Setter Property="Content" Value="暂停刷新"/>
+                                <Setter Property="Background" Value="Orange"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter Property="ToolTip" Value="暂停自动刷新以保持选择状态"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding AutoRefreshEnabled}" Value="False">
+                                        <Setter Property="Content" Value="恢复刷新"/>
+                                        <Setter Property="Background" Value="Green"/>
+                                        <Setter Property="ToolTip" Value="恢复自动刷新"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                    
+                    <!-- 日志操作按钮 -->
+                    <Rectangle Fill="LightGray" Width="1" Height="20" Margin="8,0"/>
+                    <Button Content="查看日志" Command="{Binding OpenLogFileCommand}" Margin="6,0,0,0"
+                           Background="LightBlue" Foreground="Black" Width="55" Height="28" FontSize="11"
+                           ToolTip="打开详细的操作日志文件"/>
+                    <Button Content="清空日志" Command="{Binding ClearLogFileCommand}" Margin="6,0,0,0"
+                           Background="Orange" Foreground="White" Width="55" Height="28" FontSize="11"
+                           ToolTip="清空日志文件"/>
+                    
+                    <TextBlock Text="加载中..." 
+                              Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"
+                              VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Foreground="Gray"/>
+                </StackPanel>
+                
+                <!-- 右侧：账户信息框 -->
+                <Border Grid.Column="1" Background="AliceBlue" BorderBrush="LightSteelBlue" BorderThickness="1" 
+                       CornerRadius="4" Padding="8,4" Margin="15,0,0,0" VerticalAlignment="Center">
+                    <UniformGrid Rows="1" Columns="5">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="账户权益:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TotalWalletBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Blue" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="已用保证金:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TotalMarginBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Green" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="浮盈:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TotalUnrealizedProfit, StringFormat=F2}" FontWeight="Bold" FontSize="11" VerticalAlignment="Center" Margin="2,0"
+                                      Foreground="{Binding UnrealizedProfitColor}"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="可用:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AvailableBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Orange" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock FontWeight="Bold" Foreground="Red" FontSize="11" VerticalAlignment="Center" Margin="2,0">
+                                <TextBlock.Text>
+                                    <Binding Path="LatestPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                </TextBlock.Text>
+                            </TextBlock>
+                        </StackPanel>
+                    </UniformGrid>
+                </Border>
+            </Grid>
+        </materialDesign:Card>
+
+        <!-- 持仓和订单区 -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*"/>
+                <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 持仓区 -->
+            <materialDesign:Card Grid.Column="0" Padding="6" Margin="0,0,3,0">
+                <DockPanel>
+                    <!-- 持仓标题和操作按钮 -->
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Text="持仓列表" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="全选" Command="{Binding SelectAllPositionsCommand}" 
+                               Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
+                        <Button Content="反选" Command="{Binding InvertPositionSelectionCommand}" 
+                               Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
+                        <Button Content="平仓" Command="{Binding CloseSelectedPositionsCommand}" 
+                               Background="Red" Foreground="White" FontWeight="Bold"
+                               Width="65" Height="26" FontSize="11"
+                               IsEnabled="{Binding HasSelectedPositions}"
+                               ToolTip="平掉选中的持仓"/>
+                        <Button Content="批量保本止损" Command="{Binding AddBreakEvenStopLossForSelectedPositionsCommand}" 
+                               Background="Orange" Foreground="White" FontWeight="Bold"
+                               Width="85" Height="26" FontSize="11"
+                               IsEnabled="{Binding HasSelectedPositions}"
+                               ToolTip="为选中的持仓添加保本止损"/>
+                    </StackPanel>
+                    
+                    <DataGrid ItemsSource="{Binding Positions}"
+                             SelectedItem="{Binding SelectedPosition}"
+                             AutoGenerateColumns="False"
+                             CanUserAddRows="False"
+                             GridLinesVisibility="Horizontal"
+                             AlternationCount="2"
+                             FontSize="12"
+                             RowHeight="28"
+                             HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <!-- 选择框列 -->
+                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="50" MinWidth="45">
+                                <DataGridCheckBoxColumn.ElementStyle>
+                                    <Style TargetType="CheckBox">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                    </Style>
+                                </DataGridCheckBoxColumn.ElementStyle>
+                            </DataGridCheckBoxColumn>
+                            
+                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="80" MinWidth="75"/>
+                            <DataGridTemplateColumn Header="方向" Width="55" MinWidth="50">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Direction, Mode=OneWay}" 
+                                                  Foreground="{Binding DirectionColor, Mode=OneWay}" 
+                                                  FontWeight="Bold"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="数量" Binding="{Binding PositionAmt, StringFormat=F4}" 
+                                               Width="90" MinWidth="85">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="开仓价" Width="95" MinWidth="90">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="EntryPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="标记价" Width="95" MinWidth="90">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="MarkPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="持仓货值" Width="85" MinWidth="80">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="PositionValue" StringFormat="F2" Mode="OneWay"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="保证金" Width="80" MinWidth="75">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="RequiredMargin" StringFormat="F2" Mode="OneWay"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Header="浮盈" Width="90" MinWidth="85">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding UnrealizedProfit, StringFormat=F4, Mode=OneWay}" 
+                                                  Foreground="{Binding ProfitColor, Mode=OneWay}" 
+                                                  FontWeight="Bold"
+                                                  HorizontalAlignment="Right"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,5,0"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="杠杆" Binding="{Binding Leverage}" 
+                                               Width="55" MinWidth="50">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="模式" Binding="{Binding MarginType}" 
+                                               Width="65" MinWidth="60">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontSize" Value="11"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </materialDesign:Card>
+
+            <!-- 委托订单区 -->
+            <materialDesign:Card Grid.Column="1" Padding="6" Margin="3,0,0,0">
+                <DockPanel>
+                    <!-- 委托标题和操作按钮 -->
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Text="委托订单" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="全选" Command="{Binding SelectAllOrdersCommand}" 
+                               Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
+                        <Button Content="反选" Command="{Binding InvertOrderSelectionCommand}" 
+                               Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
+                        <Button Content="撤销" Command="{Binding CancelSelectedOrdersCommand}" 
+                               Background="Red" Foreground="White" FontWeight="Bold"
+                               Width="65" Height="26" FontSize="11"
+                               IsEnabled="{Binding HasSelectedOrders}"
+                               ToolTip="撤销选中的委托单"/>
+                    </StackPanel>
+                    
+                    <DataGrid ItemsSource="{Binding Orders}"
+                             SelectedItem="{Binding SelectedOrder}"
+                             AutoGenerateColumns="False"
+                             CanUserAddRows="False"
+                             GridLinesVisibility="Horizontal"
+                             AlternationCount="2"
+                             FontSize="12"
+                             RowHeight="28"
+                             HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <!-- 选择框列 -->
+                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="50" MinWidth="45">
+                                <DataGridCheckBoxColumn.ElementStyle>
+                                    <Style TargetType="CheckBox">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                    </Style>
+                                </DataGridCheckBoxColumn.ElementStyle>
+                            </DataGridCheckBoxColumn>
+                            
+                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="80" MinWidth="75"/>
+                            <DataGridTemplateColumn Header="方向" Width="55" MinWidth="50">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Side}" 
+                                                  Foreground="{Binding SideColor}" 
+                                                  FontWeight="Bold"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="80" MinWidth="75">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontSize" Value="11"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="数量" Binding="{Binding OrigQty, StringFormat=F4}" 
+                                               Width="85" MinWidth="80">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="价格" Width="90" MinWidth="85">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="Price" Converter="{StaticResource PriceFormatConverter}"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="触发价" Width="90" MinWidth="85">
+                                <DataGridTextColumn.Binding>
+                                    <Binding Path="StopPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                </DataGridTextColumn.Binding>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="Margin" Value="0,0,5,0"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            
+                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80" MinWidth="75">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            
+                            <!-- 新增：创建时间列 -->
+                            <DataGridTextColumn Header="创建时间" Binding="{Binding Time, StringFormat=MM-dd HH:mm:ss}" 
+                                               Width="100" MinWidth="95">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontSize" Value="11"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </materialDesign:Card>
+        </Grid>
+
+        <!-- 操作按钮区 -->
+        <materialDesign:Card Grid.Row="2" Padding="6" Margin="0,5">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <!-- 第一组：持仓相关操作 -->
+                <Button Content="一键清仓" Command="{Binding ClearAllPositionsAndOrdersCommand}" 
+                       Background="DarkRed" Foreground="White" FontWeight="Bold"
+                       Width="80" Height="28" FontSize="12"
+                       ToolTip="清空所有持仓和委托单（市价平仓）"/>
+                <Button Content="平仓" Command="{Binding ClosePositionCommand}"
+                       Width="60" Height="28" FontSize="12"
+                       ToolTip="平掉选中的持仓"/>
+                <Button Content="增加保本止损" Command="{Binding AddBreakEvenStopLossCommand}"
+                       Background="Orange" Foreground="White" FontWeight="Bold"
+                       Width="95" Height="28" FontSize="12"
+                       ToolTip="为选中持仓添加保本止损单（触发价=开仓价）"/>
+                
+                <!-- 分隔符1 -->
+                <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
+                          Foreground="Gray" Margin="5,0"/>
+                
+                <!-- 第二组：委托单相关操作 -->
+                <Button Content="清理委托单" Command="{Binding CancelAllOrdersCommand}"
+                       Width="80" Height="28" FontSize="12"
+                       ToolTip="取消所有未成交的委托订单"/>
+                <Button Content="清除选定委托" Command="{Binding CancelSelectedOrdersCommand}"
+                       Background="Red" Foreground="White" FontWeight="Bold"
+                       Width="95" Height="28" FontSize="12"
+                       IsEnabled="{Binding HasSelectedOrders}"
+                       ToolTip="取消选中的委托订单"/>
+                
+                <!-- 分隔符2 -->
+                <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
+                          Foreground="Gray" Margin="5,0"/>
+                
+                <!-- 第三组：查询操作 -->
+                <Button Content="查询订单历史" Command="{Binding CheckOrderHistoryCommand}"
+                       Background="Blue" Foreground="White" FontWeight="Bold"
+                       Width="100" Height="28" FontSize="12"
+                       ToolTip="查询最近50条订单历史，寻找已执行或已取消的止损单"/>
+            </StackPanel>
+        </materialDesign:Card>
+
+        <!-- 下单区 -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="0.6*"/>
+                <ColumnDefinition Width="1*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 下单输入区 -->
+            <materialDesign:Card Grid.Column="0" Padding="6" Margin="0,0,3,0">
+                <DockPanel>
+                    <TextBlock Text="下单区" FontWeight="Bold" FontSize="14" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+                    
+                    <!-- 杠杆快捷设置 -->
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="杠杆设置：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Button Content="1x" Command="{Binding SetLeverageCommand}" CommandParameter="1" 
+                               Width="35" Height="26" Padding="0" FontSize="11">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Leverage}" Value="1">
+                                            <Setter Property="Background" Value="Orange"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="3x" Command="{Binding SetLeverageCommand}" CommandParameter="3"
+                               Width="35" Height="26" Padding="0" FontSize="11">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Leverage}" Value="3">
+                                            <Setter Property="Background" Value="Orange"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="5x" Command="{Binding SetLeverageCommand}" CommandParameter="5"
+                               Width="35" Height="26" Padding="0" FontSize="11">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Leverage}" Value="5">
+                                            <Setter Property="Background" Value="Orange"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="10x" Command="{Binding SetLeverageCommand}" CommandParameter="10"
+                               Width="35" Height="26" Padding="0" FontSize="11">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Leverage}" Value="10">
+                                            <Setter Property="Background" Value="Orange"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Content="20x" Command="{Binding SetLeverageCommand}" CommandParameter="20"
+                               Width="35" Height="26" Padding="0" FontSize="11">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignOutlinedButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Leverage}" Value="20">
+                                            <Setter Property="Background" Value="Orange"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <TextBlock Text="{Binding Leverage, StringFormat=当前: {0}x}" FontWeight="Bold" 
+                                  Foreground="Blue" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                    </StackPanel>
+                    
+                    <!-- 基础下单信息 -->
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- 第一行 -->
+                        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,5">
+                            <TextBlock Text="合约名:" Width="50"/>
+                            <TextBox Text="{Binding Symbol}" Width="120" 
+                                    materialDesign:HintAssist.Hint="输入币种如BTC"
+                                    ToolTip="输入币种符号，系统会自动添加USDT后缀"/>
+                            <Button Content="查询" Command="{Binding QueryContractInfoCommand}"
+                                   Width="32" Height="24" Padding="0" Margin="2,0,0,0" FontSize="10"
+                                   Background="Blue" Foreground="White" FontWeight="Bold"
+                                   ToolTip="查询合约信息：价格、交易规则、持仓、订单等"/>
+                        </StackPanel>
+                        
+                        <!-- 交易方向 - 单选按钮 -->
+                        <StackPanel Grid.Row="0" Grid.Column="1" Margin="5,0,0,5">
+                            <TextBlock Text="交易方向:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton Content="买入" IsChecked="{Binding IsBuySelected}" 
+                                           FontSize="11" Margin="0,0,10,0"
+                                           GroupName="TradeSide"/>
+                                <RadioButton Content="卖出" IsChecked="{Binding IsSellSelected}" 
+                                           FontSize="11"
+                                           GroupName="TradeSide"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- 订单类型 - 单选按钮 -->
+                        <StackPanel Grid.Row="0" Grid.Column="2" Margin="5,0,0,5">
+                            <TextBlock Text="订单类型:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton Content="市价" IsChecked="{Binding IsMarketOrderSelected}" 
+                                           FontSize="11" Margin="0,0,10,0"
+                                           GroupName="OrderType"/>
+                                <RadioButton Content="限价" IsChecked="{Binding IsLimitOrderSelected}" 
+                                           FontSize="11"
+                                           GroupName="OrderType"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- 保证金模式 - 单选按钮 -->
+                        <StackPanel Grid.Row="0" Grid.Column="3" Margin="5,0,0,5">
+                            <TextBlock Text="保证金模式:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton Content="逐仓" IsChecked="{Binding IsIsolatedMarginSelected}" 
+                                           FontSize="11" Margin="0,0,10,0"
+                                           GroupName="MarginType"/>
+                                <RadioButton Content="全仓" IsChecked="{Binding IsCrossedMarginSelected}" 
+                                           FontSize="11"
+                                           GroupName="MarginType"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- 第二行 -->
+                        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,5">
+                            <TextBlock Text="交易数量:" Width="50"/>
+                            <TextBox Text="{Binding Quantity}" Width="120"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="5,0,0,5">
+                            <TextBlock Text="价格:" Width="50"/>
+                            <TextBox Text="{Binding Price}" Width="115" 
+                                    IsEnabled="{Binding IsLimitOrder}"
+                                    ToolTip="仅限价单需要"/>
+                        </StackPanel>
+
+                        <!-- 可用风险金按钮 - 移动到第二行第三列 -->
+                        <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" Margin="5,0,0,5">
+                            <Button Content="可用风险金" Command="{Binding CalculateMaxRiskCapitalCommand}" 
+                                   Background="Purple" Foreground="White" FontWeight="Bold"
+                                   Width="80" Height="28" FontSize="11"
+                                   ToolTip="计算可用于交易的风险资金"/>
+                        </StackPanel>
+
+                        <!-- 空置第二行第四列 -->
+                        <StackPanel Grid.Row="1" Grid.Column="3" Orientation="Horizontal" Margin="5,0,0,5">
+                        </StackPanel>
+
+                        <!-- 第三行：止损设置 -->
+                        <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,5,0,5">
+                            <TextBlock Text="止损比例:" Width="50"/>
+                            <TextBox Text="{Binding StopLossRatio}" Width="70" 
+                                    ToolTip="止损比例，例如输入5表示5%"/>
+                            <Button Content="计算止损" Command="{Binding CalculateStopLossPriceCommand}" 
+                                   Width="45" Height="25" Padding="0" FontSize="9" Margin="3,0,0,0"
+                                   Background="LightBlue" Foreground="Black"
+                                   ToolTip="根据止损比例计算止损价格"/>
+                        </StackPanel>
+
+                        <!-- 止损价格 - 移动到第三行第二列 -->
+                        <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="5,5,0,5">
+                            <TextBlock Text="止损价格:" Width="50"/>
+                            <TextBox Text="{Binding StopLossPrice}" Width="115" 
+                                    ToolTip="止损触发价格"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" Margin="5,5,0,5">
+                            <TextBlock Text="止损金额:" Width="50"/>
+                            <TextBox Text="{Binding StopLossAmount}" Width="65" 
+                                    IsReadOnly="True" ToolTip="预计止损金额（自动计算）"/>
+                            <Button Content="以损定量" Command="{Binding CalculateQuantityFromLossCommand}" 
+                                   Width="45" Height="25" Padding="0" FontSize="9" Margin="3,0,0,0"
+                                   Background="LightGreen" Foreground="Black"
+                                   ToolTip="根据止损金额计算交易数量"/>
+                        </StackPanel>
+
+                        <!-- 下单和条件单按钮 - 移动到第三行第四列 -->
+                        <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" Margin="5,5,0,5">
+                            <Button Content="下单" Command="{Binding PlaceOrderCommand}" 
+                                   Background="Green" Foreground="White" FontWeight="Bold"
+                                   Width="70" Height="28" FontSize="12"
+                                   ToolTip="执行下单操作"/>
+                            <Button Content="条件单" Click="ToggleConditionalOrder_Click"
+                                   Background="Blue" Foreground="White" FontWeight="Bold"
+                                   Width="55" Height="28" FontSize="11" Margin="5,0,0,0"
+                                   ToolTip="显示/隐藏条件单设置"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 条件单设置区域 -->
+                    <materialDesign:Card x:Name="ConditionalOrderCard" DockPanel.Dock="Top" Padding="6" Margin="0,6,0,0" 
+                                        Background="LightBlue" 
+                                        Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="条件单设置" FontWeight="Bold" Margin="0,0,0,6"/>
+                            
+                            <Grid Margin="0,0,0,6">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 第一行 -->
+                                <!-- 条件类型 - 单选按钮 -->
+                                <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,5,5">
+                                    <TextBlock Text="条件类型:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                    <StackPanel>
+                                        <RadioButton Content="止损" IsChecked="{Binding IsStopSelected}" 
+                                                   FontSize="10" Margin="0,0,0,2"
+                                                   GroupName="ConditionalType"/>
+                                        <RadioButton Content="止盈" IsChecked="{Binding IsTakeProfitSelected}" 
+                                                   FontSize="10" Margin="0,0,0,2"
+                                                   GroupName="ConditionalType"/>
+                                        <RadioButton Content="止损市价" IsChecked="{Binding IsStopMarketSelected}" 
+                                                   FontSize="10" Margin="0,0,0,2"
+                                                   GroupName="ConditionalType"/>
+                                        <RadioButton Content="止盈市价" IsChecked="{Binding IsTakeProfitMarketSelected}" 
+                                                   FontSize="10"
+                                                   GroupName="ConditionalType"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="5,0,5,5">
+                                    <TextBlock Text="触发价格:" Width="55"/>
+                                    <TextBox Text="{Binding StopPrice}" Width="110"/>
+                                </StackPanel>
+
+                                <!-- 触发方式 - 单选按钮 -->
+                                <StackPanel Grid.Row="0" Grid.Column="2" Margin="5,0,0,5">
+                                    <TextBlock Text="触发方式:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                    <RadioButton Content="合约价格" IsChecked="{Binding IsContractPriceSelected}" 
+                                               FontSize="10" Margin="0,0,0,2"
+                                               GroupName="WorkingType"/>
+                                    <RadioButton Content="标记价格" IsChecked="{Binding IsMarkPriceSelected}" 
+                                               FontSize="10"
+                                               GroupName="WorkingType"/>
+                                </StackPanel>
+
+                                <!-- 第二行 -->
+                                <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,5,5,0">
+                                    <TextBlock Text="限价单价格:" Width="55"/>
+                                    <TextBox Text="{Binding Price}" Width="110" 
+                                            IsEnabled="{Binding IsLimitConditionalOrder}"
+                                            ToolTip="仅STOP和TAKE_PROFIT需要"/>
+                                </StackPanel>
+
+                                <!-- 有效期 - 单选按钮 -->
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="5,5,5,0">
+                                    <TextBlock Text="有效期:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton Content="GTC" IsChecked="{Binding IsGTCSelected}" 
+                                                   FontSize="10" Margin="0,0,10,0"
+                                                   GroupName="TimeInForce"/>
+                                        <RadioButton Content="IOC" IsChecked="{Binding IsIOCSelected}" 
+                                                   FontSize="10" Margin="0,0,10,0"
+                                                   GroupName="TimeInForce"/>
+                                        <RadioButton Content="FOK" IsChecked="{Binding IsFOKSelected}" 
+                                                   FontSize="10"
+                                                   GroupName="TimeInForce"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" Margin="5,5,0,0">
+                                    <CheckBox Content="只减仓" IsChecked="{Binding ReduceOnly}" 
+                                             VerticalAlignment="Center" FontSize="11"/>
+                                    <Button Content="下条件单" Command="{Binding PlaceConditionalOrderCommand}" 
+                                           Background="Purple" Foreground="White" FontWeight="Bold"
+                                           Width="65" Height="26" FontSize="10" Margin="10,0,0,0"
+                                           ToolTip="提交条件单"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="说明：条件单将在价格达到触发价格时转换为普通订单执行" 
+                                      FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </materialDesign:Card>
+                </DockPanel>
+            </materialDesign:Card>
+
+            <!-- 最近合约区 -->
+            <materialDesign:Card Grid.Column="1" Padding="4" Margin="3,0">
+                <DockPanel>
+                    <TextBlock Text="最近合约" FontWeight="Bold" FontSize="11" DockPanel.Dock="Top" Margin="0,0,0,4"/>
+                    <ScrollViewer MaxHeight="200">
+                        <ItemsControl ItemsSource="{Binding RecentContracts}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding}" 
+                                           Command="{Binding DataContext.SelectRecentContractCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                           CommandParameter="{Binding}"
+                                           Style="{StaticResource MaterialDesignOutlinedButton}"
+                                           Height="24" Margin="1" FontSize="10" Padding="4,1"
+                                           ToolTip="点击切换到此合约"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </materialDesign:Card>
+
+            <!-- 条件单监控区 -->
+            <materialDesign:Card Grid.Column="2" Padding="6" Margin="3,0,0,0">
+                <DockPanel>
+                    <TextBlock Text="条件单监控" FontWeight="Bold" FontSize="14" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+                    <ScrollViewer>
+                        <StackPanel>
+                            <TextBlock Text="条件单状态监控" FontSize="11" Foreground="Gray" Margin="0,0,0,6"/>
+                            <DataGrid ItemsSource="{Binding ConditionalOrders}"
+                                     AutoGenerateColumns="False"
+                                     CanUserAddRows="False"
+                                     MaxHeight="180"
+                                     FontSize="10"
+                                     RowHeight="20">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="70"/>
+                                    <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="70"/>
+                                    <DataGridTextColumn Header="方向" Binding="{Binding Side}" Width="45"/>
+                                    <DataGridTextColumn Header="触发价" Width="75">
+                                        <DataGridTextColumn.Binding>
+                                            <Binding Path="StopPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                        </DataGridTextColumn.Binding>
+                                    </DataGridTextColumn>
+                                    <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="55"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            
+                            <TextBlock Text="暂无条件单" FontSize="11" Foreground="Gray" Margin="0,8,0,0"
+                                      Visibility="{Binding HasNoConditionalOrders, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </materialDesign:Card>
+        </Grid>
+
+        <!-- 状态栏 -->
+        <materialDesign:Card Grid.Row="4" Padding="4" Margin="0,5,0,0" Background="LightGray">
+            <DockPanel>
+                <materialDesign:PackIcon Kind="Information" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" FontSize="11"/>
+            </DockPanel>
+        </materialDesign:Card>
+    </Grid>
+</Window> 

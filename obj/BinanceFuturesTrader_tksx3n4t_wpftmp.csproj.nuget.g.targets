@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ImportGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
+    <Import Project="$(NuGetPackageRoot)system.text.encodings.web\9.0.5\buildTransitive\netcoreapp2.0\System.Text.Encodings.Web.targets" Condition="Exists('$(NuGetPackageRoot)system.text.encodings.web\9.0.5\buildTransitive\netcoreapp2.0\System.Text.Encodings.Web.targets')" />
+    <Import Project="$(NuGetPackageRoot)system.io.pipelines\9.0.5\buildTransitive\netcoreapp2.0\System.IO.Pipelines.targets" Condition="Exists('$(NuGetPackageRoot)system.io.pipelines\9.0.5\buildTransitive\netcoreapp2.0\System.IO.Pipelines.targets')" />
+    <Import Project="$(NuGetPackageRoot)microsoft.bcl.asyncinterfaces\9.0.5\buildTransitive\netcoreapp2.0\Microsoft.Bcl.AsyncInterfaces.targets" Condition="Exists('$(NuGetPackageRoot)microsoft.bcl.asyncinterfaces\9.0.5\buildTransitive\netcoreapp2.0\Microsoft.Bcl.AsyncInterfaces.targets')" />
+    <Import Project="$(NuGetPackageRoot)system.text.json\9.0.5\buildTransitive\netcoreapp2.0\System.Text.Json.targets" Condition="Exists('$(NuGetPackageRoot)system.text.json\9.0.5\buildTransitive\netcoreapp2.0\System.Text.Json.targets')" />
+    <Import Project="$(NuGetPackageRoot)materialdesignthemes\4.9.0\build\MaterialDesignThemes.targets" Condition="Exists('$(NuGetPackageRoot)materialdesignthemes\4.9.0\build\MaterialDesignThemes.targets')" />
+    <Import Project="$(NuGetPackageRoot)communitytoolkit.mvvm\8.2.2\buildTransitive\netstandard2.1\CommunityToolkit.Mvvm.targets" Condition="Exists('$(NuGetPackageRoot)communitytoolkit.mvvm\8.2.2\buildTransitive\netstandard2.1\CommunityToolkit.Mvvm.targets')" />
+  </ImportGroup>
+</Project>

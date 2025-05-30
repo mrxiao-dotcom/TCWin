@@ -1,0 +1,14 @@
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\BinanceFuturesTrader.exe
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\BinanceFuturesTrader.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\BinanceFuturesTrader.deps.json
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\BinanceFuturesTrader.runtimeconfig.json
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\BinanceFuturesTrader.pdb
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\CommunityToolkit.Mvvm.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\MaterialDesignColors.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\MaterialDesignThemes.Wpf.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\Microsoft.Bcl.AsyncInterfaces.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\Microsoft.Xaml.Behaviors.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\Newtonsoft.Json.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\System.IO.Pipelines.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\System.Text.Encodings.Web.dll
+D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\System.Text.Json.dll
