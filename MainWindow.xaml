@@ -104,41 +104,48 @@
                 <!-- 右侧：账户信息框 -->
                 <Border Grid.Column="1" Background="AliceBlue" BorderBrush="LightSteelBlue" BorderThickness="1" 
                        CornerRadius="4" Padding="8,4" Margin="15,0,0,0" VerticalAlignment="Center">
-                    <UniformGrid Rows="1" Columns="5">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="账户权益:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding TotalWalletBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Blue" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
-                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
-                        </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <UniformGrid Rows="1" Columns="5">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="账户权益:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalWalletBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Blue" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                                <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                            </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="已用保证金:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding TotalMarginBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Green" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
-                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
-                        </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="已用保证金:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalMarginBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Green" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                                <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                            </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="浮盈:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding TotalUnrealizedProfit, StringFormat=F2}" FontWeight="Bold" FontSize="11" VerticalAlignment="Center" Margin="2,0"
-                                      Foreground="{Binding UnrealizedProfitColor}"/>
-                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
-                        </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="浮盈:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalUnrealizedProfit, StringFormat=F2}" FontWeight="Bold" FontSize="11" VerticalAlignment="Center" Margin="2,0"
+                                          Foreground="{Binding UnrealizedProfitColor}"/>
+                                <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                            </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="可用:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding AvailableBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Orange" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
-                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
-                        </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="可用:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding AvailableBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Orange" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                                <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                            </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock FontWeight="Bold" Foreground="Red" FontSize="11" VerticalAlignment="Center" Margin="2,0">
-                                <TextBlock.Text>
-                                    <Binding Path="LatestPrice" Converter="{StaticResource PriceFormatConverter}"/>
-                                </TextBlock.Text>
-                            </TextBlock>
-                        </StackPanel>
-                    </UniformGrid>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                <TextBlock FontWeight="Bold" Foreground="Red" FontSize="11" VerticalAlignment="Center" Margin="2,0">
+                                    <TextBlock.Text>
+                                        <Binding Path="LatestPrice" Converter="{StaticResource PriceFormatConverter}"/>
+                                    </TextBlock.Text>
+                                </TextBlock>
+                            </StackPanel>
+                        </UniformGrid>
+                        
+                        <!-- 权益分析按钮 -->
+                        <Button Content="📊" Command="{Binding CheckAccountEquityCompositionCommand}" 
+                               Width="24" Height="24" FontSize="10" Margin="8,0,0,0"
+                               ToolTip="检查账户权益组成详情" Background="LightBlue" BorderThickness="0"/>
+                    </StackPanel>
                 </Border>
             </Grid>
         </materialDesign:Card>
@@ -146,8 +153,8 @@
         <!-- 持仓和订单区 -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="3*"/>
-                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="5*"/>
+                <ColumnDefinition Width="4*"/>
             </Grid.ColumnDefinitions>
 
             <!-- 持仓区 -->
@@ -178,12 +185,14 @@
                              CanUserAddRows="False"
                              GridLinesVisibility="Horizontal"
                              AlternationCount="2"
-                             FontSize="12"
-                             RowHeight="28"
-                             HeadersVisibility="Column">
+                             FontSize="11"
+                             RowHeight="30"
+                             HeadersVisibility="Column"
+                             HorizontalScrollBarVisibility="Auto"
+                             VerticalScrollBarVisibility="Auto">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
-                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="50" MinWidth="45">
+                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="45" MinWidth="45">
                                 <DataGridCheckBoxColumn.ElementStyle>
                                     <Style TargetType="CheckBox">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -192,29 +201,42 @@
                                 </DataGridCheckBoxColumn.ElementStyle>
                             </DataGridCheckBoxColumn>
                             
-                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="80" MinWidth="75"/>
-                            <DataGridTemplateColumn Header="方向" Width="55" MinWidth="50">
+                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="110" MinWidth="105">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Setter Property="FontSize" Value="13"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Header="方向" Width="50" MinWidth="50">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding Direction, Mode=OneWay}" 
                                                   Foreground="{Binding DirectionColor, Mode=OneWay}" 
                                                   FontWeight="Bold"
+                                                  FontSize="12"
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="数量" Binding="{Binding PositionAmt, StringFormat=F4}" 
-                                               Width="90" MinWidth="85">
+                                               Width="120" MinWidth="115">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="开仓价" Width="95" MinWidth="90">
+                            <DataGridTextColumn Header="开仓价" Width="125" MinWidth="120">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="EntryPrice" Converter="{StaticResource PriceFormatConverter}"/>
                                 </DataGridTextColumn.Binding>
@@ -223,10 +245,12 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="标记价" Width="95" MinWidth="90">
+                            <DataGridTextColumn Header="标记价" Width="125" MinWidth="120">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="MarkPrice" Converter="{StaticResource PriceFormatConverter}"/>
                                 </DataGridTextColumn.Binding>
@@ -235,10 +259,12 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="持仓货值" Width="85" MinWidth="80">
+                            <DataGridTextColumn Header="货值" Width="110" MinWidth="105">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="PositionValue" StringFormat="F2" Mode="OneWay"/>
                                 </DataGridTextColumn.Binding>
@@ -247,10 +273,12 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="保证金" Width="80" MinWidth="75">
+                            <DataGridTextColumn Header="保证金" Width="105" MinWidth="100">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="RequiredMargin" StringFormat="F2" Mode="OneWay"/>
                                 </DataGridTextColumn.Binding>
@@ -259,15 +287,19 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTemplateColumn Header="浮盈" Width="90" MinWidth="85">
+                            <DataGridTemplateColumn Header="浮盈" Width="130" MinWidth="125">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding UnrealizedProfit, StringFormat=F4, Mode=OneWay}" 
+                                        <TextBlock Text="{Binding UnrealizedProfit, StringFormat=F2, Mode=OneWay}" 
                                                   Foreground="{Binding ProfitColor, Mode=OneWay}" 
                                                   FontWeight="Bold"
+                                                  FontFamily="Consolas"
+                                                  FontSize="12"
                                                   HorizontalAlignment="Right"
                                                   VerticalAlignment="Center"
                                                   Margin="0,0,5,0"/>
@@ -275,21 +307,22 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="杠杆" Binding="{Binding Leverage}" 
-                                               Width="55" MinWidth="50">
+                                               Width="50" MinWidth="45">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <DataGridTextColumn Header="模式" Binding="{Binding MarginType}" 
-                                               Width="65" MinWidth="60">
+                                               Width="60" MinWidth="55">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
-                                        <Setter Property="FontSize" Value="11"/>
+                                        <Setter Property="FontSize" Value="10"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
@@ -315,18 +348,20 @@
                                ToolTip="撤销选中的委托单"/>
                     </StackPanel>
                     
-                    <DataGrid ItemsSource="{Binding Orders}"
+                    <DataGrid ItemsSource="{Binding FilteredOrders}"
                              SelectedItem="{Binding SelectedOrder}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
                              GridLinesVisibility="Horizontal"
                              AlternationCount="2"
-                             FontSize="12"
-                             RowHeight="28"
-                             HeadersVisibility="Column">
+                             FontSize="11"
+                             RowHeight="30"
+                             HeadersVisibility="Column"
+                             HorizontalScrollBarVisibility="Auto"
+                             VerticalScrollBarVisibility="Auto">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
-                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="50" MinWidth="45">
+                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="45" MinWidth="45">
                                 <DataGridCheckBoxColumn.ElementStyle>
                                     <Style TargetType="CheckBox">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -335,38 +370,51 @@
                                 </DataGridCheckBoxColumn.ElementStyle>
                             </DataGridCheckBoxColumn>
                             
-                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="80" MinWidth="75"/>
-                            <DataGridTemplateColumn Header="方向" Width="55" MinWidth="50">
+                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="110" MinWidth="105">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                        <Setter Property="FontSize" Value="13"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Header="方向" Width="50" MinWidth="45">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding Side}" 
                                                   Foreground="{Binding SideColor}" 
                                                   FontWeight="Bold"
+                                                  FontSize="12"
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="80" MinWidth="75">
+                            <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="90" MinWidth="85">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
-                                        <Setter Property="FontSize" Value="11"/>
+                                        <Setter Property="FontSize" Value="10"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             <DataGridTextColumn Header="数量" Binding="{Binding OrigQty, StringFormat=F4}" 
-                                               Width="85" MinWidth="80">
+                                               Width="120" MinWidth="115">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="价格" Width="90" MinWidth="85">
+                            <DataGridTextColumn Header="价格" Width="125" MinWidth="120">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="Price" Converter="{StaticResource PriceFormatConverter}"/>
                                 </DataGridTextColumn.Binding>
@@ -375,10 +423,12 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="触发价" Width="90" MinWidth="85">
+                            <DataGridTextColumn Header="触发价" Width="125" MinWidth="120">
                                 <DataGridTextColumn.Binding>
                                     <Binding Path="StopPrice" Converter="{StaticResource PriceFormatConverter}"/>
                                 </DataGridTextColumn.Binding>
@@ -387,27 +437,31 @@
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                         <Setter Property="Margin" Value="0,0,5,0"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
+                                        <Setter Property="FontSize" Value="12"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             
-                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80" MinWidth="75">
+                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="70" MinWidth="65">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
+                                        <Setter Property="FontSize" Value="10"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                             
-                            <!-- 新增：创建时间列 -->
+                            <!-- 创建时间列 -->
                             <DataGridTextColumn Header="创建时间" Binding="{Binding Time, StringFormat=MM-dd HH:mm:ss}" 
-                                               Width="100" MinWidth="95">
+                                               Width="105" MinWidth="100">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                         <Setter Property="VerticalAlignment" Value="Center"/>
-                                        <Setter Property="FontSize" Value="11"/>
+                                        <Setter Property="FontSize" Value="10"/>
+                                        <Setter Property="FontFamily" Value="Consolas"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
@@ -432,6 +486,10 @@
                        Background="Orange" Foreground="White" FontWeight="Bold"
                        Width="95" Height="28" FontSize="12"
                        ToolTip="为选中持仓添加保本止损单（触发价=开仓价）"/>
+                <Button Content="保盈止损" Command="{Binding AddProfitProtectionStopLossCommand}"
+                       Background="DarkOrange" Foreground="White" FontWeight="Bold"
+                       Width="80" Height="28" FontSize="12"
+                       ToolTip="为选中持仓添加保盈止损单（保护指定盈利）"/>
                 
                 <!-- 分隔符1 -->
                 <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
@@ -550,7 +608,6 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -646,7 +703,7 @@
                                    ToolTip="根据止损比例计算止损价格"/>
                         </StackPanel>
 
-                        <!-- 止损价格 - 移动到第三行第二列 -->
+                        <!-- 止损价格 - 第三行第二列 -->
                         <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="5,5,0,5">
                             <TextBlock Text="止损价格:" Width="50"/>
                             <TextBox Text="{Binding StopLossPrice}" Width="115" 
@@ -663,7 +720,7 @@
                                    ToolTip="根据止损金额计算交易数量"/>
                         </StackPanel>
 
-                        <!-- 下单和条件单按钮 - 移动到第三行第四列 -->
+                        <!-- 下单和条件单按钮 - 第三行第四列 -->
                         <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" Margin="5,5,0,5">
                             <Button Content="下单" Command="{Binding PlaceOrderCommand}" 
                                    Background="Green" Foreground="White" FontWeight="Bold"

@@ -33,3 +33,6 @@ D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\refint\BinanceFuturesTrader.d
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.pdb
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.genruntimeconfig.cache
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\ref\BinanceFuturesTrader.dll
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.sourcelink.json
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ProfitProtectionDialog.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ProfitProtectionDialog.g.cs

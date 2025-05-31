@@ -2056,8 +2056,6 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                LogService.LogInfo($"🔍 开始检查持仓限制: {symbol} 新增数量={quantity} 杠杆={leverage}x");
-                
                 // 获取当前持仓
                 var positions = await GetPositionsAsync().ConfigureAwait(false);
                 var currentPosition = positions.FirstOrDefault(p => p.Symbol == symbol && Math.Abs(p.PositionAmt) > 0);
@@ -2065,21 +2063,22 @@ namespace BinanceFuturesTrader.Services
                 decimal currentPositionAmt = currentPosition?.PositionAmt ?? 0;
                 decimal newTotalPosition = Math.Abs(currentPositionAmt + quantity);
                 
-                LogService.LogInfo($"📊 当前持仓: {currentPositionAmt}");
-                LogService.LogInfo($"📊 预计新持仓: {newTotalPosition}");
-                
                 // 根据杠杆和合约计算最大允许持仓
                 var maxAllowedPosition = GetMaxPositionForLeverage(symbol, leverage, currentPrice);
                 
-                LogService.LogInfo($"📏 最大允许持仓: {maxAllowedPosition}");
-                
-                if (newTotalPosition > maxAllowedPosition)
+                // 只有当maxAllowedPosition不是默认的超大值时才进行限制检查
+                if (maxAllowedPosition < 1000000000m) // 如果不是默认的10亿大值
                 {
-                    LogService.LogError($"❌ 持仓超限: {newTotalPosition} > {maxAllowedPosition}");
-                    return (false, $"持仓将超过当前杠杆({leverage}x)允许的最大限制。当前:{currentPositionAmt:F4}, 最大允许:{maxAllowedPosition:F4}。建议降低杠杆或减少数量");
+                    LogService.LogInfo($"🔍 检查持仓限制: {symbol} 当前:{currentPositionAmt} 新增:{quantity} 预计:{newTotalPosition} 限制:{maxAllowedPosition}");
+                    
+                    if (newTotalPosition > maxAllowedPosition)
+                    {
+                        LogService.LogError($"❌ 持仓超限: {newTotalPosition} > {maxAllowedPosition}");
+                        return (false, $"持仓将超过当前杠杆({leverage}x)允许的最大限制。当前:{currentPositionAmt:F4}, 最大允许:{maxAllowedPosition:F4}。建议降低杠杆或减少数量");
+                    }
                 }
                 
-                LogService.LogInfo("✅ 持仓限制检查通过");
+                // 大部分情况下会直接通过，让币安API来判断真实限制
                 return (true, "持仓限制检查通过");
             }
             catch (Exception ex)
@@ -2092,92 +2091,25 @@ namespace BinanceFuturesTrader.Services
         
         private decimal GetMaxPositionForLeverage(string symbol, int leverage, decimal currentPrice)
         {
-            // 根据币安期货的持仓限制规则计算最大持仓
-            // 这些值基于币安的实际限制，需要根据最新规则调整
+            // 移除本地硬编码限制，使用币安API的真实限制
+            // 如果需要限制，应该从币安API获取真实的positionLimits数据
             
-            var baseLimit = symbol.ToUpper() switch
+            // 设置一个非常大的默认值，让币安API来判断真实限制
+            decimal defaultLimit = 1000000000m; // 10亿，基本不会触发
+            
+            // 只对价格极低的币种做基本的名义价值保护
+            if (currentPrice > 0 && currentPrice < 0.001m) // 价格低于0.001的超低价币
             {
-                "BTCUSDT" => leverage switch
-                {
-                    <= 20 => 100m,
-                    <= 50 => 50m,
-                    <= 125 => 5m,
-                    _ => 1m
-                },
-                "ETHUSDT" => leverage switch
-                {
-                    <= 25 => 1000m,
-                    <= 50 => 500m,
-                    <= 100 => 100m,
-                    _ => 50m
-                },
-                "ADAUSDT" => leverage switch
-                {
-                    <= 25 => 500000m,
-                    <= 50 => 250000m,
-                    <= 75 => 100000m,
-                    _ => 50000m
-                },
-                "DOGEUSDT" => leverage switch
-                {
-                    <= 25 => 2000000m,
-                    <= 50 => 1000000m,
-                    _ => 500000m
-                },
-                // 新增AIOTUSDT的具体限制
-                "AIOTUSDT" => leverage switch
-                {
-                    <= 3 => 50000m,      // 3倍杠杆：50000（根据实际错误调整）
-                    <= 10 => 20000m,     // 10倍杠杆：20000
-                    <= 20 => 10000m,     // 20倍杠杆：10000
-                    <= 50 => 5000m,      // 50倍杠杆：5000
-                    _ => 1000m           // 更高杠杆：1000
-                },
-                // B2USDT的限制（从日志中看到）
-                "B2USDT" => leverage switch
-                {
-                    <= 10 => 50000m,
-                    <= 20 => 25000m,
-                    <= 50 => 10000m,
-                    _ => 5000m
-                },
-                // 其他小币种的保守限制
-                _ when currentPrice < 1m => leverage switch
-                {
-                    <= 3 => 50000m,      // 对小币种更保守
-                    <= 10 => 25000m,
-                    <= 20 => 10000m,
-                    <= 50 => 5000m,
-                    _ => 1000m
-                },
-                // 默认限制
-                _ => leverage switch
-                {
-                    <= 20 => 100000m,
-                    <= 50 => 50000m,
-                    _ => 10000m
-                }
-            };
-            
-            LogService.LogInfo($"🎯 {symbol} 在 {leverage}x 杠杆下的基础持仓限制: {baseLimit}");
-            
-            // 对于价格很低的币种，还需要考虑名义价值限制
-            if (currentPrice > 0 && currentPrice < 1m)
-            {
-                // 计算基于名义价值的限制（例如：不超过$50000）
-                var maxValueLimit = 50000m;
+                // 基于名义价值的合理限制（不超过$100万）
+                var maxValueLimit = 1000000m;
                 var valueBasedLimit = maxValueLimit / currentPrice;
-                var finalLimit = Math.Min(baseLimit, valueBasedLimit);
                 
-                if (finalLimit < baseLimit)
-                {
-                    LogService.LogWarning($"⚠️ 基于名义价值限制调整: {baseLimit} → {finalLimit} (${maxValueLimit} ÷ {currentPrice})");
-                }
-                
-                return finalLimit;
+                LogService.LogInfo($"🎯 {symbol} 超低价币种名义价值限制: {valueBasedLimit:F0} (${maxValueLimit:F0} ÷ {currentPrice:F8})");
+                return valueBasedLimit;
             }
             
-            return baseLimit;
+            // 其他情况返回一个很大的值，让币安API来判断真实限制
+            return defaultLimit;
         }
 
         public async Task<bool> SetLeverageAsync(string symbol, int leverage)
