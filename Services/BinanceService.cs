@@ -341,6 +341,18 @@ namespace BinanceFuturesTrader.Services
                     ["timestamp"] = GetCurrentTimestamp().ToString()
                 };
 
+                // 🔧 添加保证金类型参数 - 币安期货下单API必需参数
+                if (!string.IsNullOrEmpty(request.MarginType))
+                {
+                    parameters["marginType"] = request.MarginType.ToUpper();
+                    Console.WriteLine($"✅ 下单API中添加marginType: {request.MarginType}");
+                }
+                else
+                {
+                    parameters["marginType"] = "ISOLATED";  // 默认值
+                    Console.WriteLine("⚠️ MarginType未设置，下单API使用默认值ISOLATED");
+                }
+
                 // 检查持仓模式并设置正确的positionSide
                 var isDualSidePosition = await GetPositionModeAsync();
                 string positionSideToUse;
@@ -394,6 +406,13 @@ namespace BinanceFuturesTrader.Services
                     }
                     
                     parameters["quantity"] = await FormatQuantityAsync(request.Quantity, request.Symbol);
+                    
+                    // 🔧 关键修复：添加 reduceOnly 参数支持
+                    if (request.ReduceOnly)
+                    {
+                        parameters["reduceOnly"] = "true";
+                        Console.WriteLine($"📋 市价单设置为只减仓模式 (ReduceOnly=true)");
+                    }
                 }
                 else if (request.Type.ToUpper() == "STOP_MARKET" || request.Type.ToUpper() == "TAKE_PROFIT_MARKET")
                 {
@@ -526,7 +545,7 @@ namespace BinanceFuturesTrader.Services
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = symbol,
-                    ["marginType"] = marginType,
+                    ["margintype"] = marginType,
                     ["timestamp"] = GetCurrentTimestamp().ToString()
                 };
 
