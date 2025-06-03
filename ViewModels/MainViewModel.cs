@@ -497,6 +497,13 @@ namespace BinanceFuturesTrader.ViewModels
         [ObservableProperty]
         private ObservableCollection<string> _recentContracts = new();
 
+        // 🚀 移动止损配置 - 原生版本
+        [ObservableProperty]
+        private bool _trailingStopEnabled = false;
+        
+        [ObservableProperty]
+        private decimal _trailingStopCallbackRate = 1.0m; // 移动止损回调率，默认1.0%
+
         public MainViewModel()
         {
             _accountService = new AccountConfigService();
@@ -667,6 +674,12 @@ namespace BinanceFuturesTrader.ViewModels
                 OnPropertyChanged(nameof(SelectedPositionCount));
                 OnPropertyChanged(nameof(HasSelectedStopOrders));
                 OnPropertyChanged(nameof(SelectedStopOrderCount));
+
+                // 🎯 移动止损检查
+                if (TrailingStopEnabled && Positions.Any(p => Math.Abs(p.PositionAmt) > 0))
+                {
+                    await ProcessTrailingStopAsync();
+                }
 
                 StatusMessage = $"数据已更新 - {DateTime.Now:HH:mm:ss}";
                 // 只在控制台输出简单的成功信息，不使用LogService
@@ -1761,8 +1774,7 @@ namespace BinanceFuturesTrader.ViewModels
             try
             {
                 // 获取真实的交易规则，特别是stepSize
-                var realExchangeInfo = await _binanceService.GetRealExchangeInfoAsync(symbol);
-                var stepSize = realExchangeInfo.stepSize;
+                var (stepSize, tickSize) = await _binanceService.GetSymbolPrecisionAsync(symbol);
                 
                 Console.WriteLine($"📐 {symbol} 的stepSize: {stepSize}");
                 
@@ -4403,6 +4415,155 @@ namespace BinanceFuturesTrader.ViewModels
             {
                 Console.WriteLine($"❌ 清理冲突委托异常: {ex.Message}");
                 StatusMessage = $"清理冲突委托失败: {ex.Message}";
+            }
+        }
+
+        // 🚀 移动止损功能 - 原生版本
+        [RelayCommand]
+        private void ToggleTrailingStop()
+        {
+            try
+            {
+                TrailingStopEnabled = !TrailingStopEnabled;
+                var statusText = TrailingStopEnabled ? "启用" : "停用";
+                StatusMessage = $"移动止损已{statusText}";
+                Console.WriteLine($"🎯 移动止损已{statusText} - 回调率{TrailingStopCallbackRate:F1}%");
+                
+                if (TrailingStopEnabled)
+                {
+                    Console.WriteLine("🔔 注意：移动止损将把现有的STOP_MARKET订单转换为原生移动止损单");
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"切换移动止损失败: {ex.Message}";
+                Console.WriteLine($"❌ 切换移动止损异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 使用原生移动止损单的处理逻辑
+        /// </summary>
+        private async Task ProcessTrailingStopAsync()
+        {
+            try
+            {
+                Console.WriteLine("🎯 检查需要转换为原生移动止损单的订单...");
+                
+                // 获取所有普通止损订单
+                var stopOrders = Orders.Where(o => o.Type == "STOP_MARKET" && o.Status == "NEW" && o.ReduceOnly).ToList();
+                
+                if (!stopOrders.Any())
+                {
+                    Console.WriteLine("🎯 没有找到需要转换的止损订单");
+                    return;
+                }
+                
+                Console.WriteLine($"🎯 找到{stopOrders.Count}个普通止损订单，准备转换为原生移动止损单");
+                
+                foreach (var stopOrder in stopOrders)
+                {
+                    await ConvertToTrailingStopAsync(stopOrder);
+                }
+                
+                Console.WriteLine("🎯 移动止损单转换检查完成");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 移动止损单转换异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 将普通止损单转换为原生移动止损单
+        /// </summary>
+        private async Task ConvertToTrailingStopAsync(OrderInfo stopOrder)
+        {
+            try
+            {
+                // 找到对应的持仓
+                var position = Positions.FirstOrDefault(p => p.Symbol == stopOrder.Symbol && Math.Abs(p.PositionAmt) > 0);
+                if (position == null)
+                {
+                    Console.WriteLine($"🎯 {stopOrder.Symbol}: 没有找到对应持仓，跳过转换");
+                    return;
+                }
+
+                bool isLongPosition = position.PositionAmt > 0;
+                decimal currentPrice = await _binanceService.GetLatestPriceAsync(stopOrder.Symbol);
+                
+                if (currentPrice <= 0)
+                {
+                    Console.WriteLine($"🎯 {stopOrder.Symbol}: 无法获取当前价格，跳过转换");
+                    return;
+                }
+
+                // 检查当前价格是否适合启用移动止损
+                decimal entryPrice = position.EntryPrice;
+                bool priceMovedFavorably = false;
+                
+                if (isLongPosition)
+                {
+                    // 多头：当前价格需要高于进场价
+                    priceMovedFavorably = currentPrice > entryPrice;
+                }
+                else
+                {
+                    // 空头：当前价格需要低于进场价
+                    priceMovedFavorably = currentPrice < entryPrice;
+                }
+
+                if (!priceMovedFavorably)
+                {
+                    Console.WriteLine($"🎯 {stopOrder.Symbol}: 价格未有利移动，暂不转换为移动止损单");
+                    return;
+                }
+
+                // 使用配置的回调率
+                decimal callbackRate = TrailingStopCallbackRate;
+
+                Console.WriteLine($"🔄 转换为原生移动止损单: {stopOrder.Symbol} {(isLongPosition ? "多头" : "空头")} " +
+                                  $"进场价{entryPrice:F4} 当前价{currentPrice:F4} " +
+                                  $"原止损价{stopOrder.StopPrice:F4} 回调率{callbackRate:F1}%");
+
+                // 创建原生移动止损单
+                var trailingStopRequest = new OrderRequest
+                {
+                    Symbol = stopOrder.Symbol,
+                    Side = stopOrder.Side,
+                    Type = "TRAILING_STOP_MARKET",
+                    Quantity = stopOrder.OrigQty,
+                    CallbackRate = callbackRate,
+                    ActivationPrice = currentPrice, // 使用当前价格作为激活价格
+                    TimeInForce = "GTC",
+                    WorkingType = "CONTRACT_PRICE",
+                    ReduceOnly = true
+                };
+
+                // 先下移动止损单
+                bool trailingOrderSuccess = await _binanceService.PlaceOrderAsync(trailingStopRequest);
+                if (!trailingOrderSuccess)
+                {
+                    Console.WriteLine($"❌ 创建移动止损单失败: {stopOrder.Symbol}");
+                    return;
+                }
+
+                Console.WriteLine($"✅ 移动止损单创建成功，准备删除原止损单");
+
+                // 移动止损单成功后删除原止损单
+                bool cancelSuccess = await _binanceService.CancelOrderAsync(stopOrder.Symbol, stopOrder.OrderId);
+                if (!cancelSuccess)
+                {
+                    Console.WriteLine($"⚠️ 原止损单删除失败，但移动止损单已生效 {stopOrder.Symbol}");
+                }
+                else
+                {
+                    Console.WriteLine($"✅ 移动止损转换完成: {stopOrder.Symbol} 回调率{callbackRate:F1}%");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 移动止损单转换异常: {stopOrder.Symbol} - {ex.Message}");
             }
         }
 

@@ -146,6 +146,6 @@ namespace BinanceFuturesTrader.Models
         public int Code { get; set; }
 
         [JsonPropertyName("msg")]
-        public string Message { get; set; } = string.Empty;
+        public string Msg { get; set; } = string.Empty;
     }
 } 

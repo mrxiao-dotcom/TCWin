@@ -9,6 +9,9 @@ namespace BinanceFuturesTrader.Services
         private static readonly object _lockObject = new object();
         private static readonly string _logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "trading_log.txt");
         
+        // 🎯 新增：存储最后的错误信息，用于保持弹窗与日志一致
+        private static string _lastErrorMessage = string.Empty;
+        
         static LogService()
         {
             // 确保日志目录存在
@@ -34,6 +37,13 @@ namespace BinanceFuturesTrader.Services
         public static void LogError(string message, Exception? ex = null)
         {
             var errorMessage = ex != null ? $"{message} - 异常: {ex.Message}\n堆栈: {ex.StackTrace}" : message;
+            
+            // 🎯 存储错误信息（去除图标，只保留纯文本）
+            lock (_lockObject)
+            {
+                _lastErrorMessage = message; // 只存储原始消息，不包含前缀和异常详情
+            }
+            
             Log($"❌ 错误: {errorMessage}");
         }
         
@@ -55,6 +65,29 @@ namespace BinanceFuturesTrader.Services
         public static void LogDebug(string message)
         {
             Log($"🔧 调试: {message}");
+        }
+        
+        /// <summary>
+        /// 获取最后的错误信息，用于保持弹窗与日志一致
+        /// </summary>
+        /// <returns>最后的错误信息，如果没有错误则返回空字符串</returns>
+        public static string GetLastErrorMessage()
+        {
+            lock (_lockObject)
+            {
+                return _lastErrorMessage;
+            }
+        }
+        
+        /// <summary>
+        /// 清空最后的错误信息
+        /// </summary>
+        public static void ClearLastErrorMessage()
+        {
+            lock (_lockObject)
+            {
+                _lastErrorMessage = string.Empty;
+            }
         }
         
         private static void WriteToFile(string logEntry)

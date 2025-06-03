@@ -21,12 +21,20 @@ namespace BinanceFuturesTrader.Models
         public decimal StopLossPrice { get; set; } // 止损价
         public decimal StopLossAmount { get; set; } // 止损金额
         
+        // 🚀 移动止损单设置
+        public decimal CallbackRate { get; set; } // 回调率（百分比，如0.5表示0.5%）
+        public decimal ActivationPrice { get; set; } // 激活价格（可选）
+        
         // 条件单判断
         public bool IsConditionalOrder => 
             Type == "STOP" || Type == "TAKE_PROFIT" || 
-            Type == "STOP_MARKET" || Type == "TAKE_PROFIT_MARKET";
+            Type == "STOP_MARKET" || Type == "TAKE_PROFIT_MARKET" ||
+            Type == "TRAILING_STOP_MARKET";
             
         public bool IsLimitConditionalOrder => 
             Type == "STOP" || Type == "TAKE_PROFIT";
+            
+        // 移动止损单判断
+        public bool IsTrailingStopOrder => Type == "TRAILING_STOP_MARKET";
     }
 } 
