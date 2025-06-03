@@ -497,7 +497,7 @@ namespace BinanceFuturesTrader.ViewModels
         [ObservableProperty]
         private ObservableCollection<string> _recentContracts = new();
 
-        // 🚀 移动止损配置 - 原生版本
+        // 🚀 移动止损配置 - 智能版本
         [ObservableProperty]
         private bool _trailingStopEnabled = false;
         
@@ -2552,62 +2552,198 @@ namespace BinanceFuturesTrader.ViewModels
 
             IsLoading = true;
             StatusMessage = "执行一键清仓...";
+            
+            var resultMessages = new List<string>();
+            int totalPositions = 0;
+            int successfulCloses = 0;
+            int failedCloses = 0;
+            int totalOrders = 0;
+            int successfulCancels = 0;
+            int failedCancels = 0;
+            
             try
             {
                 // 第一步：取消所有委托单
                 StatusMessage = "正在取消所有委托单...";
-                var cancelSuccess = await _binanceService.CancelAllOrdersAsync();
+                Console.WriteLine("🗑️ 第一步：取消所有委托单...");
                 
-                if (cancelSuccess)
+                var orders = await _binanceService.GetOpenOrdersAsync();
+                totalOrders = orders.Count;
+                Console.WriteLine($"📊 找到 {totalOrders} 个待取消的委托单");
+                
+                foreach (var order in orders)
                 {
-                    Console.WriteLine("✅ 所有委托单已取消");
+                    try
+                    {
+                        Console.WriteLine($"🗑️ 取消订单: {order.Symbol} OrderId={order.OrderId} Type={order.Type}");
+                        var cancelSuccess = await _binanceService.CancelOrderAsync(order.Symbol, order.OrderId);
+                        if (cancelSuccess)
+                        {
+                            successfulCancels++;
+                        }
+                        else
+                        {
+                            failedCancels++;
+                            Console.WriteLine($"❌ 取消订单失败: {order.Symbol} OrderId={order.OrderId}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedCancels++;
+                        Console.WriteLine($"❌ 取消订单异常: {order.Symbol} OrderId={order.OrderId}, 错误: {ex.Message}");
+                    }
                 }
-                else
-                {
-                    Console.WriteLine("❌ 取消委托单失败");
-                }
+                
+                resultMessages.Add($"委托单处理: {successfulCancels}/{totalOrders} 成功取消");
+                Console.WriteLine($"📊 委托单取消完成: 成功 {successfulCancels} 个，失败 {failedCancels} 个");
 
-                // 第二步：平掉所有持仓
+                // 第二步：获取所有持仓并逐个平仓
                 StatusMessage = "正在平掉所有持仓...";
-                var closeSuccess = await _binanceService.CloseAllPositionsAsync();
+                Console.WriteLine("\n💰 第二步：平掉所有持仓...");
                 
-                if (closeSuccess)
+                var positions = await _binanceService.GetPositionsAsync();
+                var activePositions = positions.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
+                totalPositions = activePositions.Count;
+                Console.WriteLine($"📊 找到 {totalPositions} 个需要平仓的持仓");
+                
+                foreach (var position in activePositions)
                 {
-                    Console.WriteLine("✅ 所有持仓已平仓");
+                    try
+                    {
+                        Console.WriteLine($"\n💰 处理持仓: {position.Symbol} 数量={position.PositionAmt:F8} 方向={position.PositionSideString}");
+                        
+                        // 🔧 数量精度处理 - 解决0.6等小数精度问题
+                        var absoluteQuantity = Math.Abs(position.PositionAmt);
+                        var adjustedQuantity = await AdjustQuantityPrecisionAsync(absoluteQuantity, position.Symbol, 0.001m, 1000000m);
+                        
+                        if (adjustedQuantity <= 0)
+                        {
+                            Console.WriteLine($"⚠️ 跳过数量过小的持仓: {position.Symbol} 原始={position.PositionAmt:F8} 调整后={adjustedQuantity:F8}");
+                            continue;
+                        }
+                        
+                        // 判断平仓方向
+                        string closeSide = position.PositionAmt > 0 ? "SELL" : "BUY";
+                        
+                        // 创建平仓订单
+                        var closeOrder = new OrderRequest
+                        {
+                            Symbol = position.Symbol,
+                            Side = closeSide,
+                            Type = "MARKET",
+                            Quantity = adjustedQuantity, // 使用调整后的精度
+                            PositionSide = position.PositionSideString,
+                            ReduceOnly = true,
+                            Leverage = position.Leverage,
+                            MarginType = position.MarginType ?? "ISOLATED"
+                        };
+                        
+                        Console.WriteLine($"📋 平仓订单: {closeOrder.Side} {closeOrder.Quantity:F8} {closeOrder.Symbol} (调整精度: {position.PositionAmt:F8} → {adjustedQuantity:F8})");
+                        
+                        var closeSuccess = await _binanceService.PlaceOrderAsync(closeOrder);
+                        
+                        if (closeSuccess)
+                        {
+                            successfulCloses++;
+                            Console.WriteLine($"✅ 持仓平仓成功: {position.Symbol}");
+                        }
+                        else
+                        {
+                            failedCloses++;
+                            Console.WriteLine($"❌ 持仓平仓失败: {position.Symbol}");
+                            
+                            // 尝试备选方案：减少数量重试
+                            if (adjustedQuantity > 1)
+                            {
+                                Console.WriteLine($"🔄 尝试减少数量重试平仓: {position.Symbol}");
+                                var retryQuantity = Math.Floor(adjustedQuantity * 0.9m); // 减少10%重试
+                                closeOrder.Quantity = retryQuantity;
+                                
+                                var retrySuccess = await _binanceService.PlaceOrderAsync(closeOrder);
+                                if (retrySuccess)
+                                {
+                                    Console.WriteLine($"✅ 重试平仓成功: {position.Symbol} 数量={retryQuantity:F8}");
+                                    failedCloses--; // 修正计数
+                                    successfulCloses++;
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"❌ 重试平仓仍失败: {position.Symbol}");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedCloses++;
+                        Console.WriteLine($"❌ 平仓持仓异常: {position.Symbol}, 错误: {ex.Message}");
+                    }
                 }
-                else
-                {
-                    Console.WriteLine("❌ 平仓失败");
-                }
+                
+                resultMessages.Add($"持仓平仓: {successfulCloses}/{totalPositions} 成功平仓");
+                Console.WriteLine($"📊 持仓平仓完成: 成功 {successfulCloses} 个，失败 {failedCloses} 个");
 
-                // 刷新数据验证结果
+                // 第三步：刷新数据验证结果
+                StatusMessage = "正在验证清仓结果...";
+                Console.WriteLine("\n🔄 第三步：刷新数据验证结果...");
                 await RefreshDataAsync();
-
-                if (cancelSuccess && closeSuccess)
+                
+                // 检查是否还有剩余持仓或委托单
+                var remainingPositions = Positions.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
+                var remainingOrders = Orders.Where(o => o.Status == "NEW").ToList();
+                
+                if (remainingPositions.Any() || remainingOrders.Any())
                 {
-                    StatusMessage = "一键清仓完成：所有委托单已取消，所有持仓已平掉";
-                    System.Windows.MessageBox.Show(
-                        "一键清仓操作完成！\n\n所有委托单已取消\n所有持仓已平掉",
-                        "操作完成",
-                        System.Windows.MessageBoxButton.OK,
-                        System.Windows.MessageBoxImage.Information);
+                    resultMessages.Add($"剩余: {remainingPositions.Count} 个持仓, {remainingOrders.Count} 个委托单");
+                    Console.WriteLine($"⚠️ 发现剩余: {remainingPositions.Count} 个持仓, {remainingOrders.Count} 个委托单");
+                    
+                    if (remainingPositions.Any())
+                    {
+                        Console.WriteLine("🔍 剩余持仓详情:");
+                        foreach (var pos in remainingPositions)
+                        {
+                            Console.WriteLine($"   {pos.Symbol}: {pos.PositionAmt:F8} ({pos.PositionSideString})");
+                        }
+                    }
+                }
+                
+                // 生成最终状态消息
+                string finalStatus;
+                if (failedCloses == 0 && failedCancels == 0)
+                {
+                    finalStatus = "一键清仓完全成功！";
+                }
+                else if (remainingPositions.Any() || remainingOrders.Any())
+                {
+                    finalStatus = "一键清仓操作部分完成，可能存在以下情况：\n• 部分委托单取消失败\n• 部分持仓平仓失败\n请手动检查并处理剩余仓位";
                 }
                 else
                 {
-                    StatusMessage = "一键清仓部分完成，请检查剩余持仓和委托单";
-                    System.Windows.MessageBox.Show(
-                        "一键清仓操作部分完成，可能存在以下情况：\n\n• 部分委托单取消失败\n• 部分持仓平仓失败\n\n请手动检查并处理剩余仓位",
-                        "操作警告",
-                        System.Windows.MessageBoxButton.OK,
-                        System.Windows.MessageBoxImage.Warning);
+                    finalStatus = "一键清仓基本完成，建议验证";
                 }
+                
+                StatusMessage = finalStatus;
+                
+                // 显示详细结果
+                var detailMessage = string.Join("\n", resultMessages);
+                Console.WriteLine($"\n🏁 一键清仓操作完成");
+                Console.WriteLine($"📊 最终结果: {detailMessage}");
+                
+                System.Windows.MessageBox.Show(
+                    $"{finalStatus}\n\n详细结果:\n{detailMessage}",
+                    "一键清仓结果",
+                    System.Windows.MessageBoxButton.OK,
+                    (failedCloses > 0 || failedCancels > 0 || remainingPositions.Any() || remainingOrders.Any()) ? 
+                        System.Windows.MessageBoxImage.Warning : System.Windows.MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"❌ 一键清仓异常: {ex.Message}");
                 StatusMessage = $"一键清仓失败: {ex.Message}";
+                
                 System.Windows.MessageBox.Show(
-                    $"一键清仓操作失败：\n\n{ex.Message}",
-                    "操作失败",
+                    $"一键清仓操作发生异常:\n\n{ex.Message}\n\n请手动检查持仓和委托单状态。",
+                    "清仓异常",
                     System.Windows.MessageBoxButton.OK,
                     System.Windows.MessageBoxImage.Error);
             }
@@ -3335,7 +3471,7 @@ namespace BinanceFuturesTrader.ViewModels
             try
             {
                 // 获取最近50条订单历史
-                var allOrders = await _binanceService.GetAllOrdersAsync(limit: 50);
+                var allOrders = await _binanceService.GetAllOrdersAsync(Symbol, 50);
                 
                 Console.WriteLine($"📊 获取到 {allOrders.Count} 条历史订单");
                 
@@ -3449,38 +3585,38 @@ namespace BinanceFuturesTrader.ViewModels
         // 获取交易规则信息，使用真实API
         private async Task<(decimal minQuantity, decimal maxQuantity, int maxLeverage, decimal maxNotional, decimal estimatedPrice)> GetExchangeInfoAsync(string symbol)
         {
-            Console.WriteLine($"🔍 准备获取 {symbol} 的真实交易规则...");
+            Console.WriteLine($"🔍 准备获取 {symbol} 的交易规则...");
             
             try
             {
-                // 调用真实的币安API获取交易规则
-                var realExchangeInfo = await _binanceService.GetRealExchangeInfoAsync(symbol);
-                
-                Console.WriteLine($"✅ 成功获取 {symbol} 的真实交易规则");
-                Console.WriteLine($"📦 数量范围: {realExchangeInfo.minQuantity} - {realExchangeInfo.maxQuantity}");
-                Console.WriteLine($"🎚️ 最大杠杆: {realExchangeInfo.maxLeverage}x");
-                Console.WriteLine($"💵 最大名义价值: {realExchangeInfo.maxNotional}");
-                
-                // 获取当前价格作为估价
+                // 获取当前价格
                 var currentPrice = await _binanceService.GetLatestPriceAsync(symbol);
                 
-                // 缓存最新价格到服务中
-                _binanceService.UpdateLatestPriceCache(currentPrice);
+                if (currentPrice <= 0)
+                {
+                    Console.WriteLine($"❌ 获取 {symbol} 价格失败");
+                    throw new Exception("无法获取价格");
+                }
                 
-                return (
-                    realExchangeInfo.minQuantity,
-                    realExchangeInfo.maxQuantity,
-                    realExchangeInfo.maxLeverage,
-                    realExchangeInfo.maxNotional,
-                    currentPrice
-                );
+                // 使用动态计算的交易规则
+                var (minQuantity, maxQuantity, maxLeverage, maxNotional, estimatedPrice) = GetDynamicLimits(currentPrice);
+                
+                Console.WriteLine($"✅ 成功计算 {symbol} 的交易规则");
+                Console.WriteLine($"📦 数量范围: {minQuantity} - {maxQuantity}");
+                Console.WriteLine($"🎚️ 最大杠杆: {maxLeverage}x");
+                Console.WriteLine($"💵 最大名义价值: {maxNotional}");
+                
+                // 缓存最新价格到服务中
+                _binanceService.UpdateLatestPriceCache(symbol, currentPrice);
+                
+                return (minQuantity, maxQuantity, maxLeverage, maxNotional, currentPrice);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ 获取真实交易规则失败: {ex.Message}");
+                Console.WriteLine($"❌ 获取交易规则失败: {ex.Message}");
                 Console.WriteLine($"⚠️ 将使用备选方案...");
                 
-                // 如果真实API失败，使用备选方案
+                // 如果失败，使用备选方案
                 return await GetFallbackExchangeInfoAsync(symbol);
             }
         }
@@ -3581,7 +3717,7 @@ namespace BinanceFuturesTrader.ViewModels
                     Console.WriteLine($"✅ 价格更新: {Symbol} = {formattedPrice}");
                     
                     // 更新价格缓存到服务中
-                    _binanceService.UpdateLatestPriceCache(newPrice);
+                    _binanceService.UpdateLatestPriceCache(Symbol, newPrice);
                 }
                 else
                 {
@@ -4418,7 +4554,7 @@ namespace BinanceFuturesTrader.ViewModels
             }
         }
 
-        // 🚀 移动止损功能 - 原生版本
+        // 🚀 移动止损功能 - 智能版本
         [RelayCommand]
         private void ToggleTrailingStop()
         {
@@ -4427,11 +4563,12 @@ namespace BinanceFuturesTrader.ViewModels
                 TrailingStopEnabled = !TrailingStopEnabled;
                 var statusText = TrailingStopEnabled ? "启用" : "停用";
                 StatusMessage = $"移动止损已{statusText}";
-                Console.WriteLine($"🎯 移动止损已{statusText} - 回调率{TrailingStopCallbackRate:F1}%");
+                Console.WriteLine($"🎯 移动止损已{statusText}");
                 
                 if (TrailingStopEnabled)
                 {
                     Console.WriteLine("🔔 注意：移动止损将把现有的STOP_MARKET订单转换为原生移动止损单");
+                    Console.WriteLine("💡 回调率将根据现有止损单的风险设置动态计算，保持原有风险水平");
                 }
             }
             catch (Exception ex)
@@ -4516,15 +4653,32 @@ namespace BinanceFuturesTrader.ViewModels
                 if (!priceMovedFavorably)
                 {
                     Console.WriteLine($"🎯 {stopOrder.Symbol}: 价格未有利移动，暂不转换为移动止损单");
+                    Console.WriteLine($"   进场价: {entryPrice:F4}, 当前价: {currentPrice:F4}, 持仓方向: {(isLongPosition ? "多头" : "空头")}");
                     return;
                 }
 
-                // 使用配置的回调率
-                decimal callbackRate = TrailingStopCallbackRate;
+                // 🎯 根据现有止损单动态计算回调率
+                decimal stopPrice = stopOrder.StopPrice;
+                decimal callbackRate;
+                
+                if (isLongPosition)
+                {
+                    // 多头：回调率 = (进场价 - 止损价) / 进场价 * 100
+                    callbackRate = Math.Abs(entryPrice - stopPrice) / entryPrice * 100m;
+                }
+                else
+                {
+                    // 空头：回调率 = (止损价 - 进场价) / 进场价 * 100
+                    callbackRate = Math.Abs(stopPrice - entryPrice) / entryPrice * 100m;
+                }
+                
+                // 限制回调率在合理范围内 (0.1% - 5.0%)
+                callbackRate = Math.Max(0.1m, Math.Min(5.0m, Math.Round(callbackRate, 1)));
 
-                Console.WriteLine($"🔄 转换为原生移动止损单: {stopOrder.Symbol} {(isLongPosition ? "多头" : "空头")} " +
-                                  $"进场价{entryPrice:F4} 当前价{currentPrice:F4} " +
-                                  $"原止损价{stopOrder.StopPrice:F4} 回调率{callbackRate:F1}%");
+                Console.WriteLine($"🔄 转换为原生移动止损单: {stopOrder.Symbol} {(isLongPosition ? "多头" : "空头")}");
+                Console.WriteLine($"   进场价: {entryPrice:F4}, 当前价: {currentPrice:F4}");
+                Console.WriteLine($"   原止损价: {stopPrice:F4}");
+                Console.WriteLine($"   💡 动态计算回调率: {callbackRate:F1}% (基于现有止损设置)");
 
                 // 创建原生移动止损单
                 var trailingStopRequest = new OrderRequest
@@ -4533,7 +4687,7 @@ namespace BinanceFuturesTrader.ViewModels
                     Side = stopOrder.Side,
                     Type = "TRAILING_STOP_MARKET",
                     Quantity = stopOrder.OrigQty,
-                    CallbackRate = callbackRate,
+                    CallbackRate = callbackRate, // 使用动态计算的回调率
                     ActivationPrice = currentPrice, // 使用当前价格作为激活价格
                     TimeInForce = "GTC",
                     WorkingType = "CONTRACT_PRICE",
@@ -4558,7 +4712,8 @@ namespace BinanceFuturesTrader.ViewModels
                 }
                 else
                 {
-                    Console.WriteLine($"✅ 移动止损转换完成: {stopOrder.Symbol} 回调率{callbackRate:F1}%");
+                    Console.WriteLine($"✅ 移动止损转换完成: {stopOrder.Symbol}");
+                    Console.WriteLine($"   回调率: {callbackRate:F1}% (保持原有风险水平)");
                 }
             }
             catch (Exception ex)

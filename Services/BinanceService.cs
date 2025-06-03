@@ -567,17 +567,46 @@ namespace BinanceFuturesTrader.Services
             {
                 LogService.LogInfo($"Attempting to close position {symbol} {positionSide}...");
                 
+                // 🔧 获取真实持仓信息
+                var positions = await GetPositionsAsync();
+                var targetPosition = positions.FirstOrDefault(p => 
+                    p.Symbol == symbol && 
+                    p.PositionSideString == positionSide &&
+                    Math.Abs(p.PositionAmt) > 0);
+                
+                if (targetPosition == null)
+                {
+                    LogService.LogWarning($"No active position found for {symbol} {positionSide}");
+                    return false;
+                }
+                
+                // 获取精度信息并调整数量
+                var (stepSize, tickSize) = await GetSymbolPrecisionAsync(symbol);
+                var absoluteQuantity = Math.Abs(targetPosition.PositionAmt);
+                var adjustedQuantity = RoundToStepSize(absoluteQuantity, stepSize);
+                
+                if (adjustedQuantity <= 0)
+                {
+                    LogService.LogError($"Adjusted quantity is too small: {symbol} original={absoluteQuantity:F8} adjusted={adjustedQuantity:F8}");
+                    return false;
+                }
+                
+                // 判断平仓方向
+                string closeSide = targetPosition.PositionAmt > 0 ? "SELL" : "BUY";
+                
                 var orderRequest = new OrderRequest
                 {
                     Symbol = symbol,
-                    Side = "SELL", // 默认平仓方向，实际中需要根据持仓方向决定
+                    Side = closeSide,
                     Type = "MARKET",
                     PositionSide = positionSide,
-                    Quantity = 0, // 将在PlaceOrderAsync中处理
-                    ReduceOnly = true
+                    Quantity = adjustedQuantity, // 使用调整后的精度
+                    ReduceOnly = true,
+                    Leverage = targetPosition.Leverage,
+                    MarginType = targetPosition.MarginType ?? "ISOLATED"
                 };
 
-                // 这里简化处理，实际应该获取持仓数量
+                LogService.LogInfo($"Closing position: {closeSide} {adjustedQuantity:F8} {symbol} (original: {targetPosition.PositionAmt:F8})");
                 return await PlaceOrderAsync(orderRequest);
             }
             catch (Exception ex)

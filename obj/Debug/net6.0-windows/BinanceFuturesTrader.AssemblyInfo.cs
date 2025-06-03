@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d42658a8e9a89744d310aa15ebbe29d544f8fcf7")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+88ad38d5afbf06b2224eb22de1c9a89f5e2a30fa")]
 [assembly: System.Reflection.AssemblyProductAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
