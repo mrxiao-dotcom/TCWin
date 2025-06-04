@@ -177,7 +177,7 @@ namespace BinanceFuturesTrader.Services
                 {
                     ["timestamp"] = GetCurrentTimestamp().ToString()
                 };
-                
+
                 if (!string.IsNullOrEmpty(symbol))
                 {
                     parameters["symbol"] = symbol;
@@ -239,7 +239,7 @@ namespace BinanceFuturesTrader.Services
                 var endpoint = $"/fapi/v1/ticker/price?symbol={symbol}";
                 var response = await SendPublicRequestAsync(HttpMethod.Get, endpoint);
                 
-                if (response == null)
+                if (response == null) 
                 {
                     return GetMockPrice(symbol);
                 }
@@ -281,7 +281,7 @@ namespace BinanceFuturesTrader.Services
                     ["orderId"] = orderId.ToString(),
                     ["timestamp"] = GetCurrentTimestamp().ToString()
                 };
-                
+
                 var response = await SendSignedRequestAsync(HttpMethod.Delete, endpoint, parameters);
                 bool success = response != null && !response.Contains("\"code\"");
                 
@@ -325,10 +325,19 @@ namespace BinanceFuturesTrader.Services
                 // 设置杠杆
                 await SetLeverageAsync(request.Symbol, request.Leverage);
 
-                // 设置保证金模式
+                // 🔧 关键修复：确保保证金模式正确设置
                 if (!string.IsNullOrEmpty(request.MarginType))
                 {
-                    await SetMarginTypeAsync(request.Symbol, request.MarginType);
+                    Console.WriteLine($"🎯 设置保证金模式: {request.Symbol} → {request.MarginType}");
+                    var marginSuccess = await SetMarginTypeAsync(request.Symbol, request.MarginType);
+                    if (!marginSuccess)
+                    {
+                        Console.WriteLine($"⚠️ 保证金模式设置失败，但继续下单: {request.MarginType}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"✅ 保证金模式设置成功: {request.MarginType}");
+                    }
                 }
 
                 // 构建API参数
@@ -341,17 +350,8 @@ namespace BinanceFuturesTrader.Services
                     ["timestamp"] = GetCurrentTimestamp().ToString()
                 };
 
-                // 🔧 添加保证金类型参数 - 币安期货下单API必需参数
-                if (!string.IsNullOrEmpty(request.MarginType))
-                {
-                    parameters["marginType"] = request.MarginType.ToUpper();
-                    Console.WriteLine($"✅ 下单API中添加marginType: {request.MarginType}");
-                }
-                else
-                {
-                    parameters["marginType"] = "ISOLATED";  // 默认值
-                    Console.WriteLine("⚠️ MarginType未设置，下单API使用默认值ISOLATED");
-                }
+                // 🔧 移除下单API中的marginType参数 - 保证金类型通过专门的API设置
+                // 币安期货下单API不需要marginType参数，保证金类型是合约级别的设置
 
                 // 检查持仓模式并设置正确的positionSide
                 var isDualSidePosition = await GetPositionModeAsync();
@@ -365,9 +365,9 @@ namespace BinanceFuturesTrader.Services
                         // 根据订单方向自动设置
                         positionSideToUse = request.Side.ToUpper() == "BUY" ? "LONG" : "SHORT";
                         Console.WriteLine($"🔄 对冲模式下自动设置positionSide: {request.Side} → {positionSideToUse}");
-                    }
-                    else
-                    {
+                }
+                else
+                {
                         positionSideToUse = request.PositionSide.ToUpper();
                     }
                 }
@@ -468,11 +468,11 @@ namespace BinanceFuturesTrader.Services
                     else
                     {
                         Console.WriteLine($"📋 移动止损单: 数量={request.Quantity:F8} → {parameters["quantity"]}, 回调率={request.CallbackRate}%");
-                    }
-                    
-                    if (!string.IsNullOrEmpty(request.WorkingType))
-                    {
-                        parameters["workingType"] = request.WorkingType;
+                }
+
+                if (!string.IsNullOrEmpty(request.WorkingType))
+                {
+                    parameters["workingType"] = request.WorkingType;
                     }
                 }
 
@@ -490,7 +490,7 @@ namespace BinanceFuturesTrader.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ 下单异常: {ex.Message}");
-                return false;
+                    return false;
             }
         }
 
@@ -528,9 +528,9 @@ namespace BinanceFuturesTrader.Services
             catch (Exception ex)
             {
                 LogService.LogError($"Error setting leverage: {ex.Message}");
-                return false;
-            }
-        }
+                        return false;
+                    }
+                }
 
         public async Task<bool> SetMarginTypeAsync(string symbol, string marginType)
         {
@@ -942,13 +942,13 @@ namespace BinanceFuturesTrader.Services
             {
                 if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.SecretKey))
                 {
-                    return null;
-                }
+                return null;
+            }
 
                 var queryString = string.Join("&", parameters.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value.ToString())}"));
                 var signature = GenerateSignature(queryString, _currentAccount.SecretKey);
                 var fullQueryString = $"{queryString}&signature={signature}";
-
+                
                 string url;
                 HttpRequestMessage request;
 
@@ -1002,9 +1002,9 @@ namespace BinanceFuturesTrader.Services
         }
 
         private async Task<string> FormatPriceAsync(decimal price, string symbol)
-        {
-            try
-            {
+                    {
+                        try
+                        {
                 var (stepSize, tickSize) = await GetSymbolPrecisionAsync(symbol);
                 
                 // 根据tickSize调整价格精度
@@ -1301,7 +1301,7 @@ namespace BinanceFuturesTrader.Services
 
                 LogService.LogWarning("获取持仓模式失败，默认使用单向模式");
                 _isDualSidePosition = false;
-                return false;
+                    return false;
             }
             catch (Exception ex)
             {
@@ -1348,7 +1348,7 @@ namespace BinanceFuturesTrader.Services
                 {
                     LogService.LogError($"设置持仓模式失败: {response}");
                 }
-
+                
                 return success;
             }
             catch (Exception ex)

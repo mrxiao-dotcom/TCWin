@@ -95,6 +95,32 @@ namespace BinanceFuturesTrader.ViewModels
         [ObservableProperty]
         private bool _autoRefreshEnabled = true;
 
+        // 标准条件单属性
+        [ObservableProperty]
+        private decimal _upBreakPrice = 0;
+
+        [ObservableProperty]
+        private decimal _downBreakPrice = 0;
+
+        // 浮盈条件单属性
+        [ObservableProperty]
+        private string _autoSelectedPosition = "未找到匹配持仓";
+
+        [ObservableProperty]
+        private decimal _currentPositionProfit = 0;
+
+        [ObservableProperty]
+        private decimal _targetPositionProfit = 0;
+
+        [ObservableProperty]
+        private decimal _calculatedTriggerPrice = 0;
+
+        [ObservableProperty]
+        private string _autoConditionalInfo = "自动检测中...";
+
+        // 浮盈颜色属性
+        public string CurrentPositionProfitColor => CurrentPositionProfit >= 0 ? "Green" : "Red";
+
         // 条件单相关属性
         private ObservableCollection<ConditionalOrderInfo> _conditionalOrders = new();
         public ObservableCollection<ConditionalOrderInfo> ConditionalOrders
@@ -823,65 +849,112 @@ namespace BinanceFuturesTrader.ViewModels
 
         partial void OnSymbolChanged(string value)
         {
-            // 自动补齐USDT后缀
-            if (!string.IsNullOrWhiteSpace(value))
+            if (string.IsNullOrEmpty(value)) return;
+
+            // 清理符号名称，确保符合币安的格式要求
+            var normalizedSymbol = value.Trim().ToUpper();
+            
+            // 验证是否为有效的币对名称
+            if (!IsValidCoinSymbol(normalizedSymbol))
             {
-                var upperValue = value.ToUpper().Trim();
+                StatusMessage = $"⚠️ 请输入有效的币对名称，例如: BTCUSDT, ETHUSDT";
+                Console.WriteLine($"⚠️ 无效的币对名称: {value}");
+                return;
+            }
+
+            if (normalizedSymbol != Symbol)
+            {
+                Symbol = normalizedSymbol;
+                return; // 避免递归调用
+            }
+
+            Console.WriteLine($"🔄 Symbol 已更改为: {normalizedSymbol}");
+            StatusMessage = $"当前交易对: {normalizedSymbol}";
+
+            // 如果当前有最新价格，清除旧的价格数据
+            if (LatestPrice > 0)
+            {
+                LatestPrice = 0;
+                StatusMessage = $"已切换到 {normalizedSymbol}，请更新价格";
+            }
+
+            // 根据交易对限制杠杆倍数
+            var maxLeverage = GetMaxLeverageForSymbol(normalizedSymbol);
+            if (Leverage > maxLeverage)
+            {
+                Leverage = maxLeverage;
+                Console.WriteLine($"🔧 杠杆倍数已调整为 {maxLeverage}x (该币对最大支持倍数)");
+            }
+
+            // 清空条件单价格设置
+            StopPrice = 0;
+            Price = 0;
+
+            // 清空新的条件单价格设置
+            UpBreakPrice = 0;
+            DownBreakPrice = 0;
+            TargetPositionProfit = 0;
+            CalculatedTriggerPrice = 0;
+
+            // 自动更新浮盈条件单信息
+            UpdateProfitConditionalInfo();
+
+            // 清空交易数量（让用户重新输入或使用之前的设置）
+            if (!_isInitializing)
+            {
+                // 过滤该合约的订单和持仓
+                FilterOrdersForPosition(normalizedSymbol);
                 
-                // 如果没有USDT后缀，自动添加
-                if (!upperValue.EndsWith("USDT") && !upperValue.Contains("USDT"))
+                // 添加到最近访问的合约列表
+                AddToRecentContracts(normalizedSymbol);
+                
+                SaveTradingSettings();
+            }
+        }
+
+        // 更新浮盈条件单信息
+        private void UpdateProfitConditionalInfo()
+        {
+            try
+            {
+                // 自动查找当前合约的持仓
+                var currentPosition = Positions?.FirstOrDefault(p => p.Symbol == Symbol && Math.Abs(p.PositionAmt) > 0);
+                if (currentPosition == null)
                 {
-                    // 检查是否是常见的币种符号
-                    if (IsValidCoinSymbol(upperValue))
-                    {
-                        var newSymbol = upperValue + "USDT";
-                        if (Symbol != newSymbol)
-                        {
-                            Symbol = newSymbol;
-                            StatusMessage = $"已自动补齐为 {newSymbol}";
-                            Console.WriteLine($"🔧 自动补齐合约名: {value} → {newSymbol}");
-                            return; // 避免重复触发
-                        }
-                    }
+                    AutoSelectedPosition = "未找到匹配持仓";
+                    CurrentPositionProfit = 0;
+                    AutoConditionalInfo = "无持仓，无法设置浮盈条件单";
+                    OnPropertyChanged(nameof(CurrentPositionProfitColor));
+                    return;
                 }
-                else if (upperValue != value)
+
+                // 更新持仓信息
+                AutoSelectedPosition = $"{currentPosition.Symbol} {(currentPosition.PositionAmt > 0 ? "多头" : "空头")} {Math.Abs(currentPosition.PositionAmt):F6}";
+                CurrentPositionProfit = currentPosition.UnrealizedProfit;
+                
+                // 根据持仓方向自动设置订单信息
+                bool isLong = currentPosition.PositionAmt > 0;
+                if (isLong)
                 {
-                    // 统一转换为大写
-                    Symbol = upperValue;
-                    return; // 避免重复触发
+                    AutoConditionalInfo = $"多头持仓: 使用 {Side} TAKE_PROFIT_MARKET 加仓";
                 }
-            }
-            
-            // 切换合约时，清空相关数量和止损设置，避免自动计算干扰用户操作
-            if (!string.IsNullOrEmpty(value))
-            {
-                Console.WriteLine($"🔄 切换合约到 {value}，清空数量和止损设置");
+                else
+                {
+                    AutoConditionalInfo = $"空头持仓: 使用 {Side} TAKE_PROFIT_MARKET 加仓";
+                }
                 
-                // 清空数量
-                Quantity = 0;
+                OnPropertyChanged(nameof(CurrentPositionProfitColor));
                 
-                // 清空止损相关设置
-                StopLossRatio = 0;
-                StopLossPrice = 0;
-                StopLossAmount = 0;
-                
-                Console.WriteLine("✅ 已清空数量和止损设置，用户可重新输入");
+                Console.WriteLine($"🔄 浮盈条件单信息已更新: {AutoSelectedPosition}, 当前浮盈: {CurrentPositionProfit:F2} USDT");
             }
-            
-            // 当合约名称改变时，立即更新价格
-            if (SelectedAccount != null && !string.IsNullOrEmpty(value))
+            catch (Exception ex)
             {
-                _ = UpdateLatestPriceAsync();
+                AutoSelectedPosition = "信息更新失败";
+                CurrentPositionProfit = 0;
+                AutoConditionalInfo = $"更新失败: {ex.Message}";
+                OnPropertyChanged(nameof(CurrentPositionProfitColor));
+                Console.WriteLine($"❌ 更新浮盈条件单信息异常: {ex.Message}");
             }
-            
-            // 添加到最近合约列表
-            if (!string.IsNullOrEmpty(value) && value.Contains("USDT"))
-            {
-                AddToRecentContracts(value);
-            }
-            
-            // 通知下单按钮状态更新
-            OnPropertyChanged(nameof(CanPlaceOrder));
         }
 
         private bool IsValidCoinSymbol(string symbol)
@@ -2448,10 +2521,372 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private void SetLeverage(object parameter)
         {
-            if (parameter is string leverageStr && int.TryParse(leverageStr, out int leverage))
+            int leverage = 0;
+            
+            // 🔧 修复：支持多种参数类型
+            if (parameter is string leverageStr)
             {
-                Leverage = leverage;
-                StatusMessage = $"杠杆已设置为 {leverage}x";
+                if (!int.TryParse(leverageStr, out leverage))
+                {
+                    Console.WriteLine($"⚠️ 杠杆参数解析失败: '{leverageStr}' 不是有效的数字");
+                    return;
+                }
+            }
+            else if (parameter is int leverageInt)
+            {
+                leverage = leverageInt;
+            }
+            else if (parameter != null)
+            {
+                // 尝试转换其他类型
+                if (!int.TryParse(parameter.ToString(), out leverage))
+                {
+                    Console.WriteLine($"⚠️ 杠杆参数类型不支持: {parameter.GetType()}, 值: '{parameter}'");
+                    return;
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ 杠杆参数为空");
+                return;
+            }
+            
+            if (leverage < 1 || leverage > 125)
+            {
+                Console.WriteLine($"⚠️ 杠杆超出范围: {leverage}x (有效范围: 1-125x)");
+                return;
+            }
+            
+            Console.WriteLine($"🎚️ 设置杠杆: {leverage}x (参数类型: {parameter?.GetType().Name ?? "null"})");
+            Leverage = leverage;
+            StatusMessage = $"杠杆已设置为 {leverage}x";
+        }
+
+        [RelayCommand]
+        private void SetStopLossRatio(object parameter)
+        {
+            decimal ratio = 0;
+            
+            // 🔧 支持多种参数类型
+            if (parameter is string ratioStr)
+            {
+                if (!decimal.TryParse(ratioStr, out ratio))
+                {
+                    Console.WriteLine($"⚠️ 止损比例参数解析失败: '{ratioStr}' 不是有效的数字");
+                    return;
+                }
+            }
+            else if (parameter is decimal ratioDecimal)
+            {
+                ratio = ratioDecimal;
+            }
+            else if (parameter is int ratioInt)
+            {
+                ratio = ratioInt;
+            }
+            else if (parameter != null)
+            {
+                // 尝试转换其他类型
+                if (!decimal.TryParse(parameter.ToString(), out ratio))
+                {
+                    Console.WriteLine($"⚠️ 止损比例参数类型不支持: {parameter.GetType()}, 值: '{parameter}'");
+                    return;
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ 止损比例参数为空");
+                return;
+            }
+            
+            if (ratio < 0.1m || ratio > 100m)
+            {
+                Console.WriteLine($"⚠️ 止损比例超出范围: {ratio}% (有效范围: 0.1%-100%)");
+                return;
+            }
+            
+            Console.WriteLine($"🎯 设置止损比例: {ratio}% (参数类型: {parameter?.GetType().Name ?? "null"})");
+            StopLossRatio = ratio;
+            StatusMessage = $"止损比例已设置为 {ratio}%";
+            
+            // 如果有最新价格和交易方向，自动计算止损价格
+            if (LatestPrice > 0 && !string.IsNullOrEmpty(Side) && (Side == "BUY" || Side == "SELL"))
+            {
+                CalculateStopLossPrice();
+            }
+        }
+
+        // 标准条件单命令
+        [RelayCommand]
+        private void FillUpBreakPrice()
+        {
+            if (LatestPrice > 0)
+            {
+                UpBreakPrice = LatestPrice;
+                StatusMessage = $"向上突破价格已设置为: {LatestPrice:F8}";
+                Console.WriteLine($"📈 填充向上突破价格: {LatestPrice:F8}");
+            }
+            else
+            {
+                StatusMessage = "请先获取最新价格";
+            }
+        }
+
+        [RelayCommand]
+        private void FillDownBreakPrice()
+        {
+            if (LatestPrice > 0)
+            {
+                DownBreakPrice = LatestPrice;
+                StatusMessage = $"向下突破价格已设置为: {LatestPrice:F8}";
+                Console.WriteLine($"📉 填充向下突破价格: {LatestPrice:F8}");
+            }
+            else
+            {
+                StatusMessage = "请先获取最新价格";
+            }
+        }
+
+        [RelayCommand]
+        private async Task PlaceStandardConditionalOrderAsync()
+        {
+            try
+            {
+                if (SelectedAccount == null || string.IsNullOrEmpty(Symbol) || Quantity <= 0)
+                {
+                    StatusMessage = "请确保选择了账户、输入了合约名称和数量";
+                    return;
+                }
+
+                var ordersToPlace = new List<(string direction, decimal price, string orderType)>();
+
+                // 检查向上突破价格
+                if (UpBreakPrice > 0)
+                {
+                    ordersToPlace.Add(("UP", UpBreakPrice, "TAKE_PROFIT_MARKET"));
+                }
+
+                // 检查向下突破价格
+                if (DownBreakPrice > 0)
+                {
+                    ordersToPlace.Add(("DOWN", DownBreakPrice, "STOP_MARKET"));
+                }
+
+                if (!ordersToPlace.Any())
+                {
+                    StatusMessage = "请至少设置一个突破价格";
+                    return;
+                }
+
+                IsLoading = true;
+                int successCount = 0;
+                int failedCount = 0;
+
+                Console.WriteLine($"🎯 开始下{ordersToPlace.Count}个标准条件单...");
+
+                foreach (var (direction, price, orderType) in ordersToPlace)
+                {
+                    try
+                    {
+                        var orderRequest = new OrderRequest
+                        {
+                            Symbol = Symbol,
+                            Side = Side,
+                            PositionSide = "BOTH",
+                            Type = orderType,
+                            Quantity = Quantity,
+                            StopPrice = price,
+                            WorkingType = "CONTRACT_PRICE", // 默认使用合约价
+                            Leverage = Leverage,
+                            MarginType = MarginType
+                        };
+
+                        Console.WriteLine($"🔄 下{direction}突破条件单: {orderType} {Side} {Quantity} {Symbol} @ {price:F8}");
+
+                        var success = await _binanceService.PlaceOrderAsync(orderRequest);
+                        if (success)
+                        {
+                            successCount++;
+                            Console.WriteLine($"✅ {direction}突破条件单下单成功");
+                        }
+                        else
+                        {
+                            failedCount++;
+                            Console.WriteLine($"❌ {direction}突破条件单下单失败");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedCount++;
+                        Console.WriteLine($"❌ {direction}突破条件单异常: {ex.Message}");
+                    }
+                }
+
+                StatusMessage = $"标准条件单完成: 成功{successCount}个, 失败{failedCount}个";
+                
+                if (successCount > 0)
+                {
+                    System.Windows.MessageBox.Show(
+                        $"标准条件单下单完成！\n\n✅ 成功: {successCount}个\n❌ 失败: {failedCount}个",
+                        "下单结果",
+                        System.Windows.MessageBoxButton.OK,
+                        failedCount > 0 ? System.Windows.MessageBoxImage.Warning : System.Windows.MessageBoxImage.Information);
+                        
+                    // 清空设置的价格
+                    UpBreakPrice = 0;
+                    DownBreakPrice = 0;
+                }
+
+                await RefreshDataAsync();
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"标准条件单下单异常: {ex.Message}";
+                Console.WriteLine($"❌ 标准条件单下单异常: {ex.Message}");
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        // 浮盈条件单命令
+        [RelayCommand]
+        private void CalculateProfitConditionalPrice()
+        {
+            try
+            {
+                // 自动查找当前合约的持仓
+                var currentPosition = Positions?.FirstOrDefault(p => p.Symbol == Symbol && Math.Abs(p.PositionAmt) > 0);
+                if (currentPosition == null)
+                {
+                    AutoSelectedPosition = "未找到匹配持仓";
+                    CurrentPositionProfit = 0;
+                    CalculatedTriggerPrice = 0;
+                    AutoConditionalInfo = "无持仓，无法计算";
+                    StatusMessage = $"未找到 {Symbol} 的持仓";
+                    return;
+                }
+
+                // 更新持仓信息
+                AutoSelectedPosition = $"{currentPosition.Symbol} {(currentPosition.PositionAmt > 0 ? "多头" : "空头")} {Math.Abs(currentPosition.PositionAmt):F6}";
+                CurrentPositionProfit = currentPosition.UnrealizedProfit;
+                OnPropertyChanged(nameof(CurrentPositionProfitColor));
+
+                if (TargetPositionProfit <= 0)
+                {
+                    StatusMessage = "请输入目标浮盈金额";
+                    return;
+                }
+
+                // 计算触发价格
+                bool isLong = currentPosition.PositionAmt > 0;
+                decimal entryPrice = currentPosition.EntryPrice;
+                decimal positionSize = Math.Abs(currentPosition.PositionAmt);
+
+                decimal calculatedPrice;
+                if (isLong)
+                {
+                    // 多头: 触发价格 = 开仓价 + (目标浮盈 / 持仓数量)
+                    calculatedPrice = entryPrice + (TargetPositionProfit / positionSize);
+                    AutoConditionalInfo = $"多头加仓: {Side} TAKE_PROFIT_MARKET";
+                }
+                else
+                {
+                    // 空头: 触发价格 = 开仓价 + (目标浮盈 / 持仓数量)
+                    calculatedPrice = entryPrice + (TargetPositionProfit / positionSize);
+                    AutoConditionalInfo = $"空头加仓: {Side} TAKE_PROFIT_MARKET";
+                }
+
+                CalculatedTriggerPrice = calculatedPrice;
+                StatusMessage = $"浮盈条件单价格已计算: {calculatedPrice:F8}";
+                
+                Console.WriteLine($"💰 浮盈条件单计算完成:");
+                Console.WriteLine($"   持仓: {AutoSelectedPosition}");
+                Console.WriteLine($"   当前浮盈: {CurrentPositionProfit:F2} USDT");
+                Console.WriteLine($"   目标浮盈: {TargetPositionProfit:F2} USDT");
+                Console.WriteLine($"   触发价格: {CalculatedTriggerPrice:F8}");
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"浮盈价格计算失败: {ex.Message}";
+                Console.WriteLine($"❌ 浮盈价格计算异常: {ex.Message}");
+            }
+        }
+
+        [RelayCommand]
+        private async Task PlaceProfitConditionalOrderAsync()
+        {
+            try
+            {
+                if (SelectedAccount == null || string.IsNullOrEmpty(Symbol) || Quantity <= 0)
+                {
+                    StatusMessage = "请确保选择了账户、输入了合约名称和数量";
+                    return;
+                }
+
+                if (CalculatedTriggerPrice <= 0)
+                {
+                    StatusMessage = "请先计算触发价格";
+                    return;
+                }
+
+                // 验证是否有对应持仓
+                var currentPosition = Positions?.FirstOrDefault(p => p.Symbol == Symbol && Math.Abs(p.PositionAmt) > 0);
+                if (currentPosition == null)
+                {
+                    StatusMessage = $"未找到 {Symbol} 的持仓，无法下浮盈条件单";
+                    return;
+                }
+
+                IsLoading = true;
+                
+                var orderRequest = new OrderRequest
+                {
+                    Symbol = Symbol,
+                    Side = Side, // 使用主下单区的方向
+                    PositionSide = "BOTH",
+                    Type = "TAKE_PROFIT_MARKET", // 统一使用向上突破
+                    Quantity = Quantity, // 使用主下单区的数量
+                    StopPrice = CalculatedTriggerPrice,
+                    WorkingType = "CONTRACT_PRICE",
+                    Leverage = Leverage,
+                    MarginType = MarginType
+                };
+
+                Console.WriteLine($"🎯 下浮盈条件单: {orderRequest.Type} {orderRequest.Side} {orderRequest.Quantity} {orderRequest.Symbol} @ {orderRequest.StopPrice:F8}");
+
+                var success = await _binanceService.PlaceOrderAsync(orderRequest);
+                
+                if (success)
+                {
+                    StatusMessage = "浮盈条件单下单成功";
+                    System.Windows.MessageBox.Show(
+                        $"浮盈条件单下单成功！\n\n✅ {orderRequest.Type}: {orderRequest.Side} {orderRequest.Quantity} {orderRequest.Symbol}\n📊 触发价格: {orderRequest.StopPrice:F8}\n💰 目标浮盈: {TargetPositionProfit:F2} USDT",
+                        "浮盈条件单成功",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Information);
+                        
+                    // 清空设置
+                    TargetPositionProfit = 0;
+                    CalculatedTriggerPrice = 0;
+                    AutoConditionalInfo = "自动检测中...";
+                }
+                else
+                {
+                    StatusMessage = "浮盈条件单下单失败";
+                }
+
+                await RefreshDataAsync();
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"浮盈条件单下单异常: {ex.Message}";
+                Console.WriteLine($"❌ 浮盈条件单下单异常: {ex.Message}");
+            }
+            finally
+            {
+                IsLoading = false;
             }
         }
 
@@ -4720,6 +5155,15 @@ namespace BinanceFuturesTrader.ViewModels
             {
                 Console.WriteLine($"❌ 移动止损单转换异常: {stopOrder.Symbol} - {ex.Message}");
             }
+        }
+
+        // 获取交易对的最大杠杆倍数
+        private int GetMaxLeverageForSymbol(string symbol)
+        {
+            // 这里应该从配置文件或数据库中获取交易对的最大杠杆倍数
+            // 为了演示，我们使用一个硬编码的值
+            var maxLeverage = 20;
+            return maxLeverage;
         }
 
     }
