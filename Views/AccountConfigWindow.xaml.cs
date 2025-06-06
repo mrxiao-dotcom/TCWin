@@ -20,6 +20,7 @@ namespace BinanceFuturesTrader.Views
             if (viewModel != null)
             {
                 viewModel.CloseAction = () => this.Close();
+                viewModel.CloseWithResultAction = (result) => this.DialogResult = result;
                 if (!string.IsNullOrEmpty(viewModel.SecretKey))
                 {
                     SecretKeyBox.Password = viewModel.SecretKey;

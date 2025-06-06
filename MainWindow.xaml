@@ -356,9 +356,9 @@
             <!-- 委托订单区 -->
             <materialDesign:Card Grid.Column="1" Padding="6" Margin="3,0,0,0">
                 <DockPanel>
-                    <!-- 委托标题和操作按钮 -->
+                    <!-- 减仓型委托单标题和操作按钮 -->
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
-                        <TextBlock Text="委托订单" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBlock Text="减仓型委托单" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="DarkOrange"/>
                         <Button Content="全选" Command="{Binding SelectAllOrdersCommand}" 
                                Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
                         <Button Content="反选" Command="{Binding InvertOrderSelectionCommand}" 
@@ -367,10 +367,10 @@
                                Background="Red" Foreground="White" FontWeight="Bold"
                                Width="65" Height="26" FontSize="11"
                                IsEnabled="{Binding HasSelectedOrders}"
-                               ToolTip="撤销选中的委托单"/>
+                               ToolTip="撤销选中的减仓型委托单"/>
                     </StackPanel>
                     
-                        <DataGrid ItemsSource="{Binding FilteredOrders}"
+                        <DataGrid ItemsSource="{Binding ReduceOnlyOrders}"
                              SelectedItem="{Binding SelectedOrder}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
@@ -737,16 +737,42 @@
                                 </DockPanel>
 
                                 <!-- 止损金额和风险金 -->
-                                <DockPanel Grid.Row="1" Grid.Column="0" Margin="0,0,4,4">
-                                    <TextBlock Text="止损金额:" FontWeight="Bold" FontSize="11" DockPanel.Dock="Left" 
-                                              VerticalAlignment="Center" Width="60"/>
-                            <Button Content="以损定量" Command="{Binding CalculateQuantityFromLossCommand}" 
-                                           DockPanel.Dock="Right" Width="50" Height="26" Padding="0" FontSize="9" Margin="2,0,0,0"
-                                           Background="LightGreen" Foreground="Black" FontWeight="Bold"
-                                   ToolTip="根据止损金额计算交易数量"/>
-                                    <TextBox Text="{Binding StopLossAmount}" Height="26" FontSize="11" Padding="8,6"
-                                            IsReadOnly="True" Background="LightGray" ToolTip="预计止损金额（自动计算）"/>
-                                </DockPanel>
+                                <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,4,4">
+                                    <!-- 止损金额输入框 -->
+                                    <DockPanel Margin="0,0,0,4">
+                                        <TextBlock Text="止损金额:" FontWeight="Bold" FontSize="11" DockPanel.Dock="Left" 
+                                                  VerticalAlignment="Center" Width="60"/>
+                                        <Button Content="以损定量" Command="{Binding CalculateQuantityFromLossCommand}" 
+                                               DockPanel.Dock="Right" Width="50" Height="26" Padding="0" FontSize="9" Margin="2,0,0,0"
+                                               Background="LightGreen" Foreground="Black" FontWeight="Bold"
+                                               ToolTip="根据止损金额计算交易数量"/>
+                                        <TextBox Text="{Binding StopLossAmount}" Height="26" FontSize="11" Padding="8,6"
+                                                IsReadOnly="True" Background="LightGray" ToolTip="预计止损金额（自动计算）"/>
+                                    </DockPanel>
+                                    <!-- 快捷止损金额比例按钮 -->
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <Button Content="10%" Command="{Binding SetStopLossAmountRatioCommand}" CommandParameter="10"
+                                               Width="25" Height="20" FontSize="8" Margin="1" Padding="0"
+                                               Background="LightBlue" Foreground="Black" FontWeight="Bold"
+                                               ToolTip="设置止损金额为可用风险金的10%"/>
+                                        <Button Content="25%" Command="{Binding SetStopLossAmountRatioCommand}" CommandParameter="25"
+                                               Width="25" Height="20" FontSize="8" Margin="1" Padding="0"
+                                               Background="LightBlue" Foreground="Black" FontWeight="Bold"
+                                               ToolTip="设置止损金额为可用风险金的25%"/>
+                                        <Button Content="50%" Command="{Binding SetStopLossAmountRatioCommand}" CommandParameter="50"
+                                               Width="25" Height="20" FontSize="8" Margin="1" Padding="0"
+                                               Background="LightBlue" Foreground="Black" FontWeight="Bold"
+                                               ToolTip="设置止损金额为可用风险金的50%"/>
+                                        <Button Content="100%" Command="{Binding SetStopLossAmountRatioCommand}" CommandParameter="100"
+                                               Width="30" Height="20" FontSize="8" Margin="1" Padding="0"
+                                               Background="Orange" Foreground="Black" FontWeight="Bold"
+                                               ToolTip="设置止损金额为可用风险金的100%"/>
+                                        <Button Content="200%" Command="{Binding SetStopLossAmountRatioCommand}" CommandParameter="200"
+                                               Width="30" Height="20" FontSize="8" Margin="1" Padding="0"
+                                               Background="Red" Foreground="White" FontWeight="Bold"
+                                               ToolTip="设置止损金额为可用风险金的200%"/>
+                                    </StackPanel>
+                                </StackPanel>
 
                                 <DockPanel Grid.Row="1" Grid.Column="1" Margin="4,0,0,4">
                                     <TextBlock Text="可用风险金:" FontWeight="Bold" FontSize="11" DockPanel.Dock="Left" 
@@ -755,17 +781,20 @@
                                            DockPanel.Dock="Right" Width="30" Height="26" Padding="0" FontSize="9" Margin="2,0,0,0"
                                            Background="Purple" Foreground="White" FontWeight="Bold"
                                            ToolTip="计算可用于交易的风险资金"/>
-                                    <TextBox IsReadOnly="True" Height="26" FontSize="11" Padding="8,6" Background="LightGray"
-                                            ToolTip="可用于交易的风险资金"/>
+                                    <TextBox Text="{Binding AvailableRiskCapital, StringFormat=F0}" IsReadOnly="True" Height="26" FontSize="11" Padding="8,6" Background="LightGray"
+                                            ToolTip="可用于交易的风险资金"
+                                            MouseEnter="RiskCapitalTextBox_MouseEnter"
+                                            MouseLeave="RiskCapitalTextBox_MouseLeave"/>
                                 </DockPanel>
 
                                 <!-- 下单按钮 -->
                                 <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" 
                                            HorizontalAlignment="Center" Margin="0,8,0,0">
                             <Button Content="下单" Command="{Binding PlaceOrderCommand}" 
+                                   IsEnabled="{Binding CanPlaceOrder}"
                                    Background="Green" Foreground="White" FontWeight="Bold"
                                            Width="65" Height="30" FontSize="12" Margin="0,0,8,0"
-                                   ToolTip="执行下单操作"/>
+                                   ToolTip="执行市价单下单操作"/>
                             <Button Content="条件单" Click="ToggleConditionalOrder_Click"
                                    Background="Blue" Foreground="White" FontWeight="Bold"
                                            Width="55" Height="30" FontSize="11"
@@ -810,25 +839,31 @@
                                         Background="LightBlue" 
                                         Visibility="Collapsed">
                         <StackPanel>
-                                <!-- 条件单类型切换 -->
+                                <!-- 条件单类型选择 -->
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,10">
-                                    <Button Content="标准条件单" x:Name="StandardConditionalBtn" 
-                                           Click="StandardConditional_Click"
+                                    <Button Content="加仓型" x:Name="AddPositionBtn" 
+                                           Click="AddPositionConditional_Click"
                                            Background="Orange" Foreground="White" FontWeight="Bold"
-                                           Width="80" Height="28" FontSize="10" Margin="0,0,5,0"/>
-                                    <Button Content="浮盈条件单" x:Name="ProfitConditionalBtn" 
-                                           Click="ProfitConditional_Click"
+                                           Width="85" Height="30" FontSize="11" Margin="0,0,5,0"/>
+                                    <Button Content="平仓型" x:Name="ClosePositionBtn" 
+                                           Click="ClosePositionConditional_Click"
                                            Background="Gray" Foreground="White" FontWeight="Bold"
-                                           Width="80" Height="28" FontSize="10" Margin="5,0,0,0"/>
+                                           Width="85" Height="30" FontSize="11" Margin="5,0,0,0"/>
                                 </StackPanel>
 
-                                <!-- 标准条件单设置区域 -->
-                                <Grid x:Name="StandardConditionalPanel" Visibility="Visible">
+                                <!-- 加仓型条件单设置区域 -->
+                                <Grid x:Name="AddPositionPanel" Visibility="Visible">
                                     <StackPanel>
-                                        <TextBlock Text="📊 标准突破条件单" FontWeight="Bold" FontSize="12" 
+                                        <TextBlock Text="🚀 加仓型条件单" FontWeight="Bold" FontSize="13" 
                                                   Foreground="DarkBlue" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                                        <TextBlock Text="基于价格突破设置条件单，支持向上和向下突破" FontSize="9" 
+                                        <TextBlock Text="根据持仓状态自动切换加仓策略：无持仓时突破加仓，有持仓时目标浮盈加仓" FontSize="9" 
                                                   Foreground="Gray" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                                        
+                                        <!-- 无持仓情况：突破加仓 -->
+                                        <Grid x:Name="NoPositionGrid" Visibility="{Binding HasCurrentPosition, Converter={StaticResource InverseBooleanToVisibilityConverter}}">
+                                            <StackPanel>
+                                                <TextBlock Text="突破加仓设置（无持仓时）" FontSize="10" 
+                                                          Foreground="Gray" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                                         
                                         <Grid>
                                 <Grid.RowDefinitions>
@@ -893,15 +928,90 @@
                                                        ToolTip="根据设置的突破价格下条件单"/>
                                     </StackPanel>
                                         </Grid>
+                                            </StackPanel>
+                                        </Grid>
+                                        
+                                        <!-- 有持仓情况：目标浮盈加仓 -->
+                                        <Grid x:Name="HasPositionGrid" Visibility="{Binding HasCurrentPosition, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <StackPanel>
+                                                <TextBlock Text="目标浮盈加仓设置（有持仓时）" FontSize="10" 
+                                                          Foreground="Gray" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                                                
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <!-- 第一行：持仓信息 -->
+                                                    <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,5,8">
+                                                        <TextBlock Text="当前持仓:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
+                                                        <TextBlock Text="{Binding AutoSelectedPosition}" FontSize="9" 
+                                                                 Background="LightGray" Height="24" Padding="3"
+                                                                 VerticalAlignment="Center"
+                                                                 ToolTip="当前合约的持仓信息"/>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="5,0,0,8">
+                                                        <TextBlock Text="当前浮盈:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
+                                                        <TextBlock Text="{Binding CurrentPositionProfit, StringFormat=F2}" FontSize="10" 
+                                                                 Foreground="{Binding CurrentPositionProfitColor}" Height="24"
+                                                                 Background="LightGray" Padding="3" VerticalAlignment="Center"
+                                                                 ToolTip="当前持仓的浮动盈亏"/>
+                                                    </StackPanel>
+
+                                                    <!-- 第二行：目标浮盈设置 -->
+                                                    <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,5,8">
+                                                        <TextBlock Text="目标浮盈:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
+                                                        <DockPanel>
+                                                            <Button Content="计算" DockPanel.Dock="Right" 
+                                                                   Command="{Binding CalculateAddPositionTriggerPriceCommand}"
+                                                                   Width="35" Height="24" FontSize="8" Margin="2,0,0,0"
+                                                                   Background="Orange" Foreground="White" FontWeight="Bold"
+                                                                   ToolTip="根据目标浮盈计算加仓触发价格"/>
+                                                            <TextBox Text="{Binding TargetProfit}" FontSize="10" Height="24"
+                                                                    ToolTip="期望达到的浮盈金额(必须大于当前浮盈)"/>
+                                                        </DockPanel>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Row="1" Grid.Column="1" Margin="5,0,0,8">
+                                                        <TextBlock Text="加仓触发价格:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
+                                                        <TextBox Text="{Binding AddPositionTriggerPrice}" FontSize="10" Height="24"
+                                                                IsReadOnly="True" Background="LightGray"
+                                                                ToolTip="根据目标浮盈计算出的加仓触发价格"/>
+                                                    </StackPanel>
+
+                                                    <!-- 第三行：交易信息和下单 -->
+                                                    <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,5,8">
+                                                        <TextBlock Text="加仓数量:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
+                                                        <TextBox Text="{Binding Quantity, StringFormat=F6}" FontSize="10" Height="24"
+                                                                IsReadOnly="True" Background="LightGray"
+                                                                ToolTip="使用主下单区的数量设置"/>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Row="2" Grid.Column="1" Margin="5,0,0,8">
+                                                        <Button Content="下加仓条件单" Command="{Binding PlaceAddPositionConditionalOrderCommand}" 
+                                                               Background="Orange" Foreground="White" FontWeight="Bold"
+                                                               Width="100" Height="30" FontSize="11" HorizontalAlignment="Center"
+                                                               ToolTip="下加仓条件单"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </StackPanel>
+                                        </Grid>
                                 </StackPanel>
                                 </Grid>
                                 
-                                <!-- 浮盈条件单设置区域 -->
-                                <Grid x:Name="ProfitConditionalPanel" Visibility="Collapsed">
+                                <!-- 平仓型条件单设置区域 -->
+                                <Grid x:Name="ClosePositionPanel" Visibility="Collapsed">
                                     <StackPanel>
-                                        <TextBlock Text="💰 浮盈条件单" FontWeight="Bold" FontSize="12" 
+                                        <TextBlock Text="💰 平仓型条件单" FontWeight="Bold" FontSize="13" 
                                                   Foreground="DarkOrange" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                                        <TextBlock Text="基于当前持仓浮盈自动设置条件单，智能关联持仓信息" FontSize="9" 
+                                        <TextBlock Text="基于价格或目标浮盈设置止盈条件单，两者可自动互转" FontSize="9" 
                                                   Foreground="Gray" HorizontalAlignment="Center" Margin="0,0,0,10"/>
                                         
                                         <Grid>
@@ -917,55 +1027,61 @@
 
                                             <!-- 第一行：持仓信息 -->
                                             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,5,8">
-                                                <TextBlock Text="关联持仓:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
-                                                <TextBlock Text="{Binding AutoSelectedPosition}" FontSize="9" 
-                                                         Background="LightGray" Height="24" Padding="3"
+                                                <TextBlock Text="关联持仓:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                                <TextBlock Text="{Binding AutoSelectedPosition}" FontSize="10" 
+                                                         Background="LightGray" Height="26" Padding="3"
                                                          VerticalAlignment="Center"
                                                          ToolTip="自动关联当前合约的持仓"/>
-                                </StackPanel>
+                                            </StackPanel>
 
                                             <StackPanel Grid.Row="0" Grid.Column="1" Margin="5,0,0,8">
-                                                <TextBlock Text="当前浮盈:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
-                                                <TextBlock Text="{Binding CurrentPositionProfit, StringFormat=F2}" FontSize="10" 
-                                                         Foreground="{Binding CurrentPositionProfitColor}" Height="24"
+                                                <TextBlock Text="当前浮盈:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                                <TextBlock Text="{Binding CurrentPositionProfit, StringFormat=F2}" FontSize="11" 
+                                                         Foreground="{Binding CurrentPositionProfitColor}" Height="26"
                                                          Background="LightGray" Padding="3" VerticalAlignment="Center"
                                                          ToolTip="当前持仓的浮动盈亏"/>
-                        </StackPanel>
+                                            </StackPanel>
 
-                                            <!-- 第二行：目标浮盈 -->
+                                            <!-- 第二行：价格/浮盈设置 -->
                                             <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,5,8">
-                                                <TextBlock Text="目标浮盈:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
-                <DockPanel>
-                                                    <Button Content="计算" DockPanel.Dock="Right" 
-                                                           Command="{Binding CalculateProfitConditionalPriceCommand}"
-                                                           Width="35" Height="24" FontSize="8" Margin="2,0,0,0"
-                                                           Background="Purple" Foreground="White" FontWeight="Bold"
-                                                           ToolTip="根据目标浮盈计算触发价格"/>
-                                                    <TextBox Text="{Binding TargetPositionProfit}" FontSize="10" Height="24"
-                                                            ToolTip="期望达到的浮盈金额(USDT)"/>
-                </DockPanel>
+                                                <TextBlock Text="止盈价格:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                                <DockPanel>
+                                                    <Button Content="默认" DockPanel.Dock="Right" 
+                                                           Command="{Binding FillDefaultClosePriceCommand}"
+                                                           Width="38" Height="26" FontSize="9" Margin="2,0,0,0"
+                                                           Background="Green" Foreground="White" FontWeight="Bold"
+                                                           ToolTip="填入默认止盈价格：多头1.2倍，空头0.8倍"/>
+                                                    <TextBox Text="{Binding ClosePriceTarget}" FontSize="11" Height="26"
+                                                            ToolTip="期望的止盈价格"/>
+                                                </DockPanel>
                                             </StackPanel>
 
                                             <StackPanel Grid.Row="1" Grid.Column="1" Margin="5,0,0,8">
-                                                <TextBlock Text="触发价格:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
-                                                <TextBox Text="{Binding CalculatedTriggerPrice}" FontSize="10" Height="24"
-                                                        IsReadOnly="True" Background="LightGray"
-                                                        ToolTip="根据目标浮盈计算出的触发价格"/>
+                                                <TextBlock Text="目标浮盈:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                                <DockPanel>
+                                                    <Button Content="↔" DockPanel.Dock="Right" 
+                                                           Command="{Binding ConvertPriceToTargetProfitCommand}"
+                                                           Width="26" Height="26" FontSize="10" Margin="2,0,0,0"
+                                                           Background="Purple" Foreground="White" FontWeight="Bold"
+                                                           ToolTip="价格转浮盈：根据止盈价格计算目标浮盈"/>
+                                                    <TextBox Text="{Binding CloseProfitTarget}" FontSize="11" Height="26"
+                                                            ToolTip="期望达到的浮盈金额(USDT)"/>
+                                                </DockPanel>
                                             </StackPanel>
 
                                             <!-- 第三行：自动信息和下单 -->
                                             <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,5,5">
-                                                <TextBlock Text="自动设置:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
-                                                <TextBlock Text="{Binding AutoConditionalInfo}" FontSize="9" 
-                                                         Foreground="Green" Height="20"
+                                                <TextBlock Text="自动设置:" FontWeight="Bold" FontSize="11" Margin="0,0,0,3"/>
+                                                <TextBlock Text="{Binding AutoCloseOrderInfo}" FontSize="10" 
+                                                         Foreground="Green" Height="22"
                                                          ToolTip="自动选择的方向和订单类型"/>
                                             </StackPanel>
 
                                             <StackPanel Grid.Row="2" Grid.Column="1" Margin="5,0,0,5">
-                                                <Button Content="下浮盈条件单" Command="{Binding PlaceProfitConditionalOrderCommand}" 
+                                                <Button Content="下平仓条件单" Command="{Binding PlaceClosePositionConditionalOrderCommand}" 
                                                        Background="DarkOrange" Foreground="White" FontWeight="Bold"
-                                                       Width="100" Height="30" FontSize="11" HorizontalAlignment="Center"
-                                                       ToolTip="下浮盈条件单"/>
+                                                       Width="110" Height="32" FontSize="12" HorizontalAlignment="Center"
+                                                       ToolTip="下平仓条件单"/>
                                             </StackPanel>
                                         </Grid>
                                     </StackPanel>
@@ -975,9 +1091,9 @@
 
             <!-- 条件单监控区 -->
                 <DockPanel>
-                            <!-- 条件单监控标题和操作按钮 -->
+                            <!-- 加仓型条件单监控标题和操作按钮 -->
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,6" DockPanel.Dock="Top">
-                                <TextBlock Text="条件单监控" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock Text="加仓型条件单监控" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="DarkBlue"/>
                                 <Button Content="全选" Command="{Binding SelectAllConditionalOrdersCommand}" 
                                        Width="35" Height="20" FontSize="9" Margin="0,0,3,0"/>
                                 <Button Content="反选" Command="{Binding InvertConditionalOrderSelectionCommand}" 
@@ -986,18 +1102,18 @@
                                        Background="Red" Foreground="White" FontWeight="Bold"
                                        Width="45" Height="20" FontSize="9"
                                        IsEnabled="{Binding HasSelectedConditionalOrders}"
-                                       ToolTip="撤销选中的条件单"/>
+                                       ToolTip="撤销选中的加仓型条件单"/>
                             </StackPanel>
                             
                     <ScrollViewer>
                         <StackPanel>
-                            <TextBlock Text="条件单状态监控" FontSize="11" Foreground="Gray" Margin="0,0,0,6"/>
+                            <TextBlock Text="加仓型条件单状态监控" FontSize="12" Foreground="Gray" Margin="0,0,0,6"/>
                             <DataGrid ItemsSource="{Binding ConditionalOrders}"
                                      AutoGenerateColumns="False"
                                      CanUserAddRows="False"
                                      MaxHeight="180"
-                                             FontSize="11"
-                                             RowHeight="25"
+                                             FontSize="13"
+                                             RowHeight="28"
                                              GridLinesVisibility="Horizontal"
                                              HeadersVisibility="Column"
                                              SelectionMode="Single"
@@ -1005,7 +1121,7 @@
                                              Background="White">
                                 <DataGrid.Columns>
                                             <!-- 选择框列 -->
-                                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="45" MinWidth="40">
+                                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="60" MinWidth="55">
                                                 <DataGridCheckBoxColumn.ElementStyle>
                                                     <Style TargetType="CheckBox">
                                                         <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -1014,37 +1130,37 @@
                                                 </DataGridCheckBoxColumn.ElementStyle>
                                             </DataGridCheckBoxColumn>
                                             
-                                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="70" MinWidth="65">
+                                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="80" MinWidth="75">
                                                 <DataGridTextColumn.ElementStyle>
                                                     <Style TargetType="TextBlock">
                                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                                         <Setter Property="FontWeight" Value="Bold"/>
                                                         <Setter Property="FontFamily" Value="Consolas"/>
-                                                        <Setter Property="FontSize" Value="10"/>
+                                                        <Setter Property="FontSize" Value="12"/>
                                                     </Style>
                                                 </DataGridTextColumn.ElementStyle>
                                             </DataGridTextColumn>
-                                            <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="80" MinWidth="75">
+                                            <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="90" MinWidth="85">
                                                 <DataGridTextColumn.ElementStyle>
                                                     <Style TargetType="TextBlock">
                                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                                         <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                        <Setter Property="FontSize" Value="9"/>
+                                                        <Setter Property="FontSize" Value="11"/>
                                                     </Style>
                                                 </DataGridTextColumn.ElementStyle>
                                             </DataGridTextColumn>
-                                            <DataGridTextColumn Header="方向" Binding="{Binding Side}" Width="45" MinWidth="40">
+                                            <DataGridTextColumn Header="方向" Binding="{Binding Side}" Width="55" MinWidth="50">
                                                 <DataGridTextColumn.ElementStyle>
                                                     <Style TargetType="TextBlock">
                                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                                         <Setter Property="HorizontalAlignment" Value="Center"/>
                                                         <Setter Property="FontWeight" Value="Bold"/>
-                                                        <Setter Property="FontSize" Value="10"/>
+                                                        <Setter Property="FontSize" Value="12"/>
                                                     </Style>
                                                 </DataGridTextColumn.ElementStyle>
                                             </DataGridTextColumn>
-                                            <DataGridTextColumn Header="触发价" Width="75" MinWidth="70">
+                                            <DataGridTextColumn Header="触发价" Width="85" MinWidth="80">
                                         <DataGridTextColumn.Binding>
                                             <Binding Path="StopPrice" Converter="{StaticResource PriceFormatConverter}"/>
                                         </DataGridTextColumn.Binding>
@@ -1053,24 +1169,25 @@
                                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                                         <Setter Property="HorizontalAlignment" Value="Right"/>
                                                         <Setter Property="FontFamily" Value="Consolas"/>
-                                                        <Setter Property="FontSize" Value="10"/>
+                                                        <Setter Property="FontSize" Value="12"/>
                                                         <Setter Property="Margin" Value="0,0,5,0"/>
                                                     </Style>
                                                 </DataGridTextColumn.ElementStyle>
                                     </DataGridTextColumn>
-                                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="55" MinWidth="50">
+                                            <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80" MinWidth="75">
                                                 <DataGridTextColumn.ElementStyle>
                                                     <Style TargetType="TextBlock">
                                                         <Setter Property="VerticalAlignment" Value="Center"/>
                                                         <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                        <Setter Property="FontSize" Value="9"/>
+                                                        <Setter Property="FontSize" Value="11"/>
+                                                        <Setter Property="FontWeight" Value="Bold"/>
                                                     </Style>
                                                 </DataGridTextColumn.ElementStyle>
                                             </DataGridTextColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                             
-                            <TextBlock Text="暂无条件单" FontSize="11" Foreground="Gray" Margin="0,8,0,0"
+                            <TextBlock Text="暂无条件单" FontSize="12" Foreground="Gray" Margin="0,8,0,0"
                                       Visibility="{Binding HasNoConditionalOrders, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                         </StackPanel>
                     </ScrollViewer>
@@ -1080,10 +1197,12 @@
         </Grid>
 
         <!-- 状态栏 -->
-        <materialDesign:Card Grid.Row="4" Padding="4" Margin="0,5,0,0" Background="LightGray">
+        <materialDesign:Card Grid.Row="4" Padding="4" Margin="0,5,0,0" Background="LightGray" Height="35">
             <DockPanel>
                 <materialDesign:PackIcon Kind="Information" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" FontSize="11"/>
+                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" FontSize="11" 
+                          TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                          ToolTip="{Binding StatusMessage}"/>
             </DockPanel>
         </materialDesign:Card>
     </Grid>

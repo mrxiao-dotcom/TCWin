@@ -11,12 +11,12 @@ namespace BinanceFuturesTrader
     /// </summary>
     public partial class MainWindow : Window
     {
-        private MainViewModel? _viewModel;
+        private readonly MainViewModel _viewModel;
 
-        public MainWindow()
+        public MainWindow(MainViewModel viewModel)
         {
             InitializeComponent();
-            _viewModel = new MainViewModel();
+            _viewModel = viewModel;
             DataContext = _viewModel;
         }
 
@@ -43,32 +43,96 @@ namespace BinanceFuturesTrader
             }
         }
 
-        // 标准条件单切换
-        private void StandardConditional_Click(object sender, RoutedEventArgs e)
+        // 加仓型条件单切换
+        private void AddPositionConditional_Click(object sender, RoutedEventArgs e)
         {
-            // 显示标准条件单面板，隐藏浮盈条件单面板
-            StandardConditionalPanel.Visibility = Visibility.Visible;
-            ProfitConditionalPanel.Visibility = Visibility.Collapsed;
+            // 显示加仓型条件单面板，隐藏平仓型条件单面板
+            AddPositionPanel.Visibility = Visibility.Visible;
+            ClosePositionPanel.Visibility = Visibility.Collapsed;
             
             // 更新按钮样式
-            StandardConditionalBtn.Background = new SolidColorBrush(Colors.Orange);
-            ProfitConditionalBtn.Background = new SolidColorBrush(Colors.Gray);
+            AddPositionBtn.Background = new SolidColorBrush(Colors.Orange);
+            ClosePositionBtn.Background = new SolidColorBrush(Colors.Gray);
             
-            Console.WriteLine("🔄 切换到标准条件单模式");
+            // 调用ViewModel的切换命令
+            _viewModel.SwitchToAddPositionModeCommand.Execute(null);
+            
+            Console.WriteLine("🔄 切换到加仓型条件单模式");
         }
 
-        // 浮盈条件单切换
-        private void ProfitConditional_Click(object sender, RoutedEventArgs e)
+        // 平仓型条件单切换
+        private void ClosePositionConditional_Click(object sender, RoutedEventArgs e)
         {
-            // 显示浮盈条件单面板，隐藏标准条件单面板
-            StandardConditionalPanel.Visibility = Visibility.Collapsed;
-            ProfitConditionalPanel.Visibility = Visibility.Visible;
+            // 显示平仓型条件单面板，隐藏加仓型条件单面板
+            AddPositionPanel.Visibility = Visibility.Collapsed;
+            ClosePositionPanel.Visibility = Visibility.Visible;
             
             // 更新按钮样式
-            StandardConditionalBtn.Background = new SolidColorBrush(Colors.Gray);
-            ProfitConditionalBtn.Background = new SolidColorBrush(Colors.Orange);
+            AddPositionBtn.Background = new SolidColorBrush(Colors.Gray);
+            ClosePositionBtn.Background = new SolidColorBrush(Colors.Orange);
             
-            Console.WriteLine("🔄 切换到浮盈条件单模式");
+            // 调用ViewModel的切换命令
+            _viewModel.SwitchToClosePositionModeCommand.Execute(null);
+            
+            Console.WriteLine("🔄 切换到平仓型条件单模式");
         }
+
+        // 风险金输入框鼠标悬停事件
+        private void RiskCapitalTextBox_MouseEnter(object sender, RoutedEventArgs e)
+        {
+            // 鼠标悬停时在状态栏显示简化的计算公式，保持单行显示
+            if (!string.IsNullOrEmpty(_viewModel.RiskCapitalCalculationDetail))
+            {
+                // 提取核心计算信息，在单行内显示
+                var lines = _viewModel.RiskCapitalCalculationDetail.Split('\n');
+                var summaryLine = "";
+                
+                // 寻找标准风险金和浮盈风险金信息
+                foreach (var line in lines)
+                {
+                    if (line.Contains("标准风险金:"))
+                    {
+                        var start = line.IndexOf("标准风险金:");
+                        var standardPart = line.Substring(start).Split('=')[1].Split('U')[0] + "U";
+                        summaryLine += $"标准:{standardPart} ";
+                    }
+                    else if (line.Contains("浮盈风险金:"))
+                    {
+                        var start = line.IndexOf("浮盈风险金:");
+                        var profitPart = line.Substring(start + 5).Trim();
+                        summaryLine += $"浮盈:{profitPart} ";
+                    }
+                    else if (line.Contains("最终可用风险金:"))
+                    {
+                        var parts = line.Split('→');
+                        if (parts.Length > 1)
+                        {
+                            var finalAmount = parts[1].Split('(')[0].Trim();
+                            summaryLine += $"→ {finalAmount}";
+                        }
+                    }
+                }
+                
+                if (!string.IsNullOrEmpty(summaryLine))
+                {
+                    _viewModel.StatusMessage = $"💰 风险金计算: {summaryLine.Trim()}（详细信息可鼠标悬停或查看日志）";
+                }
+            }
+        }
+
+        private void RiskCapitalTextBox_MouseLeave(object sender, RoutedEventArgs e)
+        {
+            // 鼠标离开时恢复固定长度的状态消息
+            if (_viewModel.AvailableRiskCapital > 0)
+            {
+                _viewModel.StatusMessage = $"💰 可用风险金: {_viewModel.AvailableRiskCapital:F0}U";
+            }
+            else
+            {
+                _viewModel.StatusMessage = "请先计算可用风险金";
+            }
+        }
+
+
     }
 } 

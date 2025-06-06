@@ -2,6 +2,8 @@ using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace BinanceFuturesTrader
 {
@@ -10,14 +12,42 @@ namespace BinanceFuturesTrader
     /// </summary>
     public partial class App : Application
     {
+        private IHost? _host;
+
         protected override void OnStartup(StartupEventArgs e)
         {
+            // 创建和配置主机
+            _host = CreateHostBuilder().Build();
+
             // 设置全局异常处理
             SetupGlobalExceptionHandling();
             
-            Console.WriteLine("🚀 应用程序启动，已启用全局异常处理");
+            Console.WriteLine("🚀 应用程序启动，已启用全局异常处理和依赖注入");
             
+            // 从依赖注入容器获取主窗口
+            var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+            mainWindow.Show();
+
             base.OnStartup(e);
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            // 释放主机资源
+            _host?.Dispose();
+            base.OnExit(e);
+        }
+
+        /// <summary>
+        /// 创建主机构建器
+        /// </summary>
+        private static IHostBuilder CreateHostBuilder()
+        {
+            return Host.CreateDefaultBuilder()
+                .ConfigureServices((context, services) =>
+                {
+                    ServiceConfiguration.ConfigureServices(services);
+                });
         }
 
         private void SetupGlobalExceptionHandling()

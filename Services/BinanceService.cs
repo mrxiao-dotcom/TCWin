@@ -13,11 +13,16 @@ using System.Text.Json.Serialization;
 
 namespace BinanceFuturesTrader.Services
 {
-    public class BinanceService
+    public class BinanceService : IBinanceService
     {
         private static readonly HttpClient _httpClient = new HttpClient();
         private AccountConfig? _currentAccount;
         private string _baseUrl = "https://fapi.binance.com";
+        
+        // 时间偏移量用于同步服务器时间
+        private long _serverTimeOffset = 0;
+        private DateTime _lastServerTimeSync = DateTime.MinValue;
+        private readonly TimeSpan _syncInterval = TimeSpan.FromMinutes(5); // 每5分钟同步一次服务器时间
         
         // 精度缓存：存储每个合约的stepSize和tickSize
         private readonly Dictionary<string, (decimal stepSize, decimal tickSize)> _precisionCache = new();
@@ -36,25 +41,12 @@ namespace BinanceFuturesTrader.Services
         public void SetAccount(AccountConfig account)
         {
             _currentAccount = account;
+            LogService.LogInfo($"Account set: {account?.Name ?? "None"}");
+            LogService.LogInfo($"API Key: {(account?.ApiKey?.Length > 8 ? account.ApiKey.Substring(0, 8) + "..." + account.ApiKey.Substring(account.ApiKey.Length - 4) : account?.ApiKey ?? "None")}");
+            LogService.LogInfo($"Secret Key: {(string.IsNullOrEmpty(account?.SecretKey) ? "Not Set" : "***SET***")}");
             
-            LogService.LogInfo("=== Setting Account Configuration ===");
-            LogService.LogInfo($"Account Name: {account.Name}");
-            LogService.LogInfo($"API Key: {(string.IsNullOrEmpty(account.ApiKey) ? "NOT SET" : $"{account.ApiKey[..8]}...{account.ApiKey[^4..]}")}");
-            LogService.LogInfo($"Secret Key: {(string.IsNullOrEmpty(account.SecretKey) ? "NOT SET" : "***SET***")}");
-            LogService.LogInfo($"Is Test Net: {account.IsTestNet}");
-            
-            if (account.IsTestNet)
-            {
-                _baseUrl = "https://testnet.binancefuture.com";
-                LogService.LogInfo($"Using Test Network: {_baseUrl}");
-            }
-            else
-            {
-                _baseUrl = "https://fapi.binance.com";
-                LogService.LogInfo($"Using Production Network: {_baseUrl}");
-            }
-            
-            LogService.LogInfo("=== Account Configuration Complete ===");
+            // 设置账户后立即进行一次服务器时间同步
+            Task.Run(async () => await SyncServerTimeAsync());
         }
 
         public async Task<AccountInfo?> GetAccountInfoAsync()
@@ -66,10 +58,14 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v2/account";
                 var parameters = new Dictionary<string, string>
                 {
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000" // 增加接收窗口到10秒
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Get, endpoint, parameters);
@@ -115,10 +111,14 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v2/positionRisk";
                 var parameters = new Dictionary<string, string>
                 {
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Get, endpoint, parameters);
@@ -172,10 +172,14 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/openOrders";
                 var parameters = new Dictionary<string, string>
                 {
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 if (!string.IsNullOrEmpty(symbol))
@@ -274,12 +278,16 @@ namespace BinanceFuturesTrader.Services
             LogService.LogInfo($"Attempting to cancel order {orderId} for {symbol} via API...");
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/order";
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = symbol,
                     ["orderId"] = orderId.ToString(),
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Delete, endpoint, parameters);
@@ -315,39 +323,17 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
-                // 基本参数验证
-                if (string.IsNullOrEmpty(request.Symbol) || string.IsNullOrEmpty(request.Side) || string.IsNullOrEmpty(request.Type))
-                {
-                    Console.WriteLine("❌ 基本参数验证失败");
-                    return false;
-                }
-
-                // 设置杠杆
-                await SetLeverageAsync(request.Symbol, request.Leverage);
-
-                // 🔧 关键修复：确保保证金模式正确设置
-                if (!string.IsNullOrEmpty(request.MarginType))
-                {
-                    Console.WriteLine($"🎯 设置保证金模式: {request.Symbol} → {request.MarginType}");
-                    var marginSuccess = await SetMarginTypeAsync(request.Symbol, request.MarginType);
-                    if (!marginSuccess)
-                    {
-                        Console.WriteLine($"⚠️ 保证金模式设置失败，但继续下单: {request.MarginType}");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"✅ 保证金模式设置成功: {request.MarginType}");
-                    }
-                }
-
-                // 构建API参数
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/order";
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = request.Symbol.ToUpper(),
                     ["side"] = request.Side.ToUpper(),
                     ["type"] = request.Type.ToUpper(),
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 // 🔧 移除下单API中的marginType参数 - 保证金类型通过专门的API设置
@@ -498,77 +484,76 @@ namespace BinanceFuturesTrader.Services
         {
             if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
             {
-                return true; // 模拟成功
+                LogService.LogInfo($"Mock set leverage: {symbol} = {leverage}x");
+                return true;
             }
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/leverage";
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = symbol,
                     ["leverage"] = leverage.ToString(),
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Post, endpoint, parameters);
-                
                 bool success = response != null && !response.Contains("\"code\":");
-                if (!success && response != null)
-                {
-                    LogService.LogError($"设置杠杆失败: {response}");
-                }
-                else if (success)
-                {
-                    LogService.LogInfo($"成功设置 {symbol} 杠杆为 {leverage}x");
-                }
                 
+                LogService.LogInfo($"Set leverage {symbol} to {leverage}x: {(success ? "Success" : "Failed")}");
                 return success;
             }
             catch (Exception ex)
             {
-                LogService.LogError($"Error setting leverage: {ex.Message}");
-                        return false;
-                    }
-                }
+                LogService.LogError($"Error setting leverage for {symbol}: {ex.Message}");
+                return false;
+            }
+        }
 
         public async Task<bool> SetMarginTypeAsync(string symbol, string marginType)
         {
             if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
             {
-                return true; // 模拟成功
+                LogService.LogInfo($"Mock set margin type: {symbol} = {marginType}");
+                return true;
             }
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/marginType";
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = symbol,
-                    ["margintype"] = marginType,
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["marginType"] = marginType.ToUpper(),
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Post, endpoint, parameters);
                 
-                // 处理-4046错误：不需要更改保证金类型
+                // 检查特殊错误码：-4046表示保证金模式已经是所需设置
                 if (response != null && response.Contains("\"code\":-4046"))
                 {
-                    LogService.LogInfo($"保证金类型已经是 {marginType}，无需更改");
-                    return true; // 认为是成功的
+                    LogService.LogInfo($"Margin type for {symbol} is already {marginType}");
+                    return true;
                 }
-                
+
                 bool success = response != null && !response.Contains("\"code\":");
-                if (!success && response != null)
-                {
-                    LogService.LogError($"设置保证金类型失败: {response}");
-                }
+                LogService.LogInfo($"Set margin type {symbol} to {marginType}: {(success ? "Success" : "Failed")}");
                 
                 return success;
             }
             catch (Exception ex)
             {
-                LogService.LogError($"Error setting margin type: {ex.Message}");
+                LogService.LogError($"Error setting margin type for {symbol}: {ex.Message}");
                 return false;
             }
         }
@@ -669,10 +654,14 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/allOpenOrders";
                 var parameters = new Dictionary<string, string>
                 {
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 if (!string.IsNullOrEmpty(symbol))
@@ -727,12 +716,16 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/allOrders";
                 var parameters = new Dictionary<string, string>
                 {
                     ["symbol"] = symbol,
                     ["limit"] = limit.ToString(),
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Get, endpoint, parameters);
@@ -818,6 +811,80 @@ namespace BinanceFuturesTrader.Services
             }
         }
 
+        /// <summary>
+        /// 获取完整的交易规则信息
+        /// </summary>
+        public async Task<(decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage)> GetSymbolTradingRulesAsync(string symbol)
+        {
+            try
+            {
+                LogService.LogInfo($"获取 {symbol} 的完整交易规则...");
+                
+                // 获取交易所信息
+                var exchangeInfoJson = await GetRealExchangeInfoAsync();
+                if (string.IsNullOrEmpty(exchangeInfoJson))
+                {
+                    LogService.LogWarning("无法获取交易所信息，使用默认规则");
+                    return GetDefaultTradingRules(symbol);
+                }
+
+                // 解析JSON
+                using var document = JsonDocument.Parse(exchangeInfoJson);
+                var symbols = document.RootElement.GetProperty("symbols");
+                
+                foreach (var symbolElement in symbols.EnumerateArray())
+                {
+                    var symbolName = symbolElement.GetProperty("symbol").GetString();
+                    if (symbolName == symbol.ToUpper())
+                    {
+                        var filters = symbolElement.GetProperty("filters");
+                        decimal minQty = 0, maxQty = 0, stepSize = 0, tickSize = 0;
+                        int maxLeverage = 125; // 默认杠杆
+                        
+                        foreach (var filter in filters.EnumerateArray())
+                        {
+                            var filterType = filter.GetProperty("filterType").GetString();
+                            
+                            if (filterType == "LOT_SIZE")
+                            {
+                                // 获取数量相关限制
+                                if (filter.TryGetProperty("minQty", out var minQtyElement))
+                                    decimal.TryParse(minQtyElement.GetString(), out minQty);
+                                if (filter.TryGetProperty("maxQty", out var maxQtyElement))
+                                    decimal.TryParse(maxQtyElement.GetString(), out maxQty);
+                                if (filter.TryGetProperty("stepSize", out var stepSizeElement))
+                                    decimal.TryParse(stepSizeElement.GetString(), out stepSize);
+                                
+                                LogService.LogInfo($"解析到 {symbol} LOT_SIZE - minQty: {minQty}, maxQty: {maxQty}, stepSize: {stepSize}");
+                            }
+                            else if (filterType == "PRICE_FILTER")
+                            {
+                                // 获取价格精度
+                                if (filter.TryGetProperty("tickSize", out var tickSizeElement))
+                                    decimal.TryParse(tickSizeElement.GetString(), out tickSize);
+                                
+                                LogService.LogInfo($"解析到 {symbol} PRICE_FILTER - tickSize: {tickSize}");
+                            }
+                        }
+                        
+                        if (minQty > 0 && maxQty > 0 && stepSize > 0 && tickSize > 0)
+                        {
+                            LogService.LogInfo($"✅ 成功获取 {symbol} 完整交易规则 - minQty: {minQty}, maxQty: {maxQty}, stepSize: {stepSize}, tickSize: {tickSize}");
+                            return (minQty, maxQty, stepSize, tickSize, maxLeverage);
+                        }
+                    }
+                }
+                
+                LogService.LogWarning($"未找到 {symbol} 的交易规则，使用默认规则");
+                return GetDefaultTradingRules(symbol);
+            }
+            catch (Exception ex)
+            {
+                LogService.LogError($"获取 {symbol} 交易规则失败: {ex.Message}，使用默认规则");
+                return GetDefaultTradingRules(symbol);
+            }
+        }
+
         public async Task<(decimal stepSize, decimal tickSize)> GetSymbolPrecisionAsync(string symbol)
         {
             // 首先检查缓存
@@ -893,6 +960,26 @@ namespace BinanceFuturesTrader.Services
                 LogService.LogError($"获取 {symbol} 精度失败: {ex.Message}，使用默认精度");
                 return GetDefaultPrecision(symbol);
             }
+        }
+
+        private (decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage) GetDefaultTradingRules(string symbol)
+        {
+            // 根据币种提供合理的默认交易规则
+            var (minQty, maxQty, stepSize, tickSize, maxLeverage) = symbol.ToUpper() switch
+            {
+                "BTCUSDT" => (0.001m, 1000m, 0.001m, 0.1m, 125),          // BTC: 高价值币种
+                "ETHUSDT" => (0.001m, 10000m, 0.001m, 0.01m, 100),        // ETH: 中高价值币种
+                "BNBUSDT" => (0.01m, 100000m, 0.01m, 0.001m, 75),         // BNB: 中价值币种
+                "ADAUSDT" => (1m, 1000000m, 1m, 0.0001m, 75),             // ADA: 中低价值币种
+                "DOGEUSDT" => (1m, 10000000m, 1m, 0.00001m, 50),          // DOGE: 低价值币种
+                "WIFUSDT" => (1m, 1000000m, 1m, 0.0001m, 75),             // WIF: 中低价值币种
+                "PEPEUSDT" => (1000m, 1000000000m, 1000m, 0.0000001m, 25), // PEPE: 极低价值币种
+                "SHIBUSDT" => (1000m, 1000000000m, 1000m, 0.0000001m, 25), // SHIB: 极低价值币种
+                _ => (1m, 1000000m, 1m, 0.0001m, 75)                      // 默认: 中等规则
+            };
+            
+            LogService.LogInfo($"使用默认交易规则 {symbol} - minQty: {minQty}, maxQty: {maxQty}, stepSize: {stepSize}, tickSize: {tickSize}, maxLeverage: {maxLeverage}");
+            return (minQty, maxQty, stepSize, tickSize, maxLeverage);
         }
 
         private (decimal stepSize, decimal tickSize) GetDefaultPrecision(string symbol)
@@ -998,7 +1085,8 @@ namespace BinanceFuturesTrader.Services
 
         private long GetCurrentTimestamp()
         {
-            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // 保留原方法用于向后兼容，但推荐使用GetSyncedTimestamp
+            return GetSyncedTimestamp();
         }
 
         private async Task<string> FormatPriceAsync(decimal price, string symbol)
@@ -1281,10 +1369,14 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/positionSide/dual";
                 var parameters = new Dictionary<string, string>
                 {
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Get, endpoint, parameters);
@@ -1321,11 +1413,15 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
                 var endpoint = "/fapi/v1/positionSide/dual";
                 var parameters = new Dictionary<string, string>
                 {
                     ["dualSidePosition"] = dualSidePosition.ToString().ToLower(),
-                    ["timestamp"] = GetCurrentTimestamp().ToString()
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
                 };
 
                 var response = await SendSignedRequestAsync(HttpMethod.Post, endpoint, parameters);
@@ -1356,6 +1452,63 @@ namespace BinanceFuturesTrader.Services
                 LogService.LogError($"设置持仓模式异常: {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 确保服务器时间同步
+        /// </summary>
+        private async Task EnsureServerTimeSyncAsync()
+        {
+            // 如果距离上次同步时间超过间隔，则重新同步
+            if (DateTime.UtcNow - _lastServerTimeSync > _syncInterval)
+            {
+                await SyncServerTimeAsync();
+            }
+        }
+
+        /// <summary>
+        /// 同步服务器时间
+        /// </summary>
+        private async Task SyncServerTimeAsync()
+        {
+            try
+            {
+                var endpoint = "/fapi/v1/time";
+                var response = await SendPublicRequestAsync(HttpMethod.Get, endpoint);
+                
+                if (response != null)
+                {
+                    using var document = JsonDocument.Parse(response);
+                    if (document.RootElement.TryGetProperty("serverTime", out var serverTimeElement))
+                    {
+                        var serverTime = serverTimeElement.GetInt64();
+                        var localTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        _serverTimeOffset = serverTime - localTime;
+                        _lastServerTimeSync = DateTime.UtcNow;
+                        
+                        LogService.LogInfo($"✅ 服务器时间同步成功，偏移量: {_serverTimeOffset}ms");
+                        return;
+                    }
+                }
+                
+                LogService.LogWarning("服务器时间同步失败，使用本地时间");
+                _serverTimeOffset = 0;
+                _lastServerTimeSync = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                LogService.LogError($"服务器时间同步异常: {ex.Message}，使用本地时间");
+                _serverTimeOffset = 0;
+                _lastServerTimeSync = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// 获取同步后的时间戳
+        /// </summary>
+        private long GetSyncedTimestamp()
+        {
+            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + _serverTimeOffset;
         }
     }
 } 

@@ -10,11 +10,11 @@ none
 false
 TRACE;RELEASE;NET;NET6_0;NETCOREAPP;WINDOWS;WINDOWS7_0;NET5_0_OR_GREATER;NET6_0_OR_GREATER;NETCOREAPP3_0_OR_GREATER;NETCOREAPP3_1_OR_GREATER;WINDOWS7_0_OR_GREATER
 D:\CSharpProjects\TCWin\App.xaml
-31973249172
+42037889468
 
-231668143342
-2011628771924
-MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\ProfitProtectionDialog.xaml;
+34-75256900
+228-404541334
+MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\ProfitProtectionDialog.xaml;
 
 False
 

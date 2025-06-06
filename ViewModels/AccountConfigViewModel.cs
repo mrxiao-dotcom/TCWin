@@ -30,6 +30,7 @@ namespace BinanceFuturesTrader.ViewModels
         private bool _isNewAccount = true;
 
         public Action? CloseAction { get; set; }
+        public Action<bool>? CloseWithResultAction { get; set; }
 
         public AccountConfigViewModel(AccountConfigService accountService)
         {
@@ -49,37 +50,74 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private void Save(object parameter)
         {
-            // 从PasswordBox获取密码
-            if (parameter is PasswordBox passwordBox)
+            try
             {
-                SecretKey = passwordBox.Password;
+                // 从PasswordBox获取密码
+                if (parameter is PasswordBox passwordBox)
+                {
+                    SecretKey = passwordBox.Password;
+                }
+
+                // 验证输入
+                if (string.IsNullOrWhiteSpace(AccountName))
+                {
+                    System.Windows.MessageBox.Show("请输入账户名称", "验证失败", 
+                        System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(ApiKey))
+                {
+                    System.Windows.MessageBox.Show("请输入API Key", "验证失败", 
+                        System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(SecretKey))
+                {
+                    System.Windows.MessageBox.Show("请输入Secret Key", "验证失败", 
+                        System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (RiskCapitalTimes <= 0)
+                {
+                    System.Windows.MessageBox.Show("风险金次数必须大于0", "验证失败", 
+                        System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                var account = new AccountConfig
+                {
+                    Name = AccountName,
+                    ApiKey = ApiKey,
+                    SecretKey = SecretKey,
+                    RiskCapitalTimes = RiskCapitalTimes,
+                    IsTestNet = IsTestNet
+                };
+
+                _accountService.SaveAccount(account);
+                
+                // 显示成功消息
+                System.Windows.MessageBox.Show($"账户 '{AccountName}' 配置保存成功！", "保存成功", 
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                
+                // 关闭窗口并返回true表示保存成功
+                CloseWithResultAction?.Invoke(true);
+                CloseAction?.Invoke();
             }
-
-            // 验证输入
-            if (string.IsNullOrWhiteSpace(AccountName) || 
-                string.IsNullOrWhiteSpace(ApiKey) || 
-                string.IsNullOrWhiteSpace(SecretKey))
+            catch (Exception ex)
             {
-                // 这里应该显示错误消息
-                return;
+                System.Windows.MessageBox.Show($"保存失败：{ex.Message}", "保存失败", 
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
-
-            var account = new AccountConfig
-            {
-                Name = AccountName,
-                ApiKey = ApiKey,
-                SecretKey = SecretKey,
-                RiskCapitalTimes = RiskCapitalTimes,
-                IsTestNet = IsTestNet
-            };
-
-            _accountService.SaveAccount(account);
-            CloseAction?.Invoke();
         }
 
         [RelayCommand]
         private void Cancel()
         {
+            // 关闭窗口并返回false表示取消
+            CloseWithResultAction?.Invoke(false);
             CloseAction?.Invoke();
         }
     }
