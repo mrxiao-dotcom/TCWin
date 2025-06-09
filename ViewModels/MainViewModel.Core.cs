@@ -86,6 +86,14 @@ namespace BinanceFuturesTrader.ViewModels
 
         [ObservableProperty]
         private OrderInfo? _selectedOrder;
+
+        // 移动止损配置
+        [ObservableProperty]
+        private TrailingStopConfig _trailingStopConfig = new();
+
+        // 移动止损状态监控
+        [ObservableProperty]
+        private ObservableCollection<TrailingStopStatus> _trailingStopStatuses = new();
         #endregion
 
         #region 构造函数
@@ -162,7 +170,13 @@ namespace BinanceFuturesTrader.ViewModels
             get
             {
                 var selected = new ObservableCollection<OrderInfo>();
+                // 添加FilteredOrders中选中的订单
                 foreach (var order in FilteredOrders.Where(o => o.IsSelected))
+                {
+                    selected.Add(order);
+                }
+                // 添加ReduceOnlyOrders中选中的订单
+                foreach (var order in ReduceOnlyOrders.Where(o => o.IsSelected))
                 {
                     selected.Add(order);
                 }
@@ -170,10 +184,14 @@ namespace BinanceFuturesTrader.ViewModels
             }
         }
 
-        public bool HasSelectedOrders => FilteredOrders.Any(o => o.IsSelected);
-        public int SelectedOrderCount => FilteredOrders.Count(o => o.IsSelected);
-        public bool HasSelectedStopOrders => FilteredOrders.Any(o => o.IsSelected && o.Type == "STOP_MARKET");
-        public int SelectedStopOrderCount => FilteredOrders.Count(o => o.IsSelected && o.Type == "STOP_MARKET");
+        public bool HasSelectedOrders => FilteredOrders.Any(o => o.IsSelected) || ReduceOnlyOrders.Any(o => o.IsSelected);
+        public int SelectedOrderCount => FilteredOrders.Count(o => o.IsSelected) + ReduceOnlyOrders.Count(o => o.IsSelected);
+        public bool HasSelectedStopOrders => 
+            FilteredOrders.Any(o => o.IsSelected && (o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET")) ||
+            ReduceOnlyOrders.Any(o => o.IsSelected && (o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET"));
+        public int SelectedStopOrderCount => 
+            FilteredOrders.Count(o => o.IsSelected && (o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET")) +
+            ReduceOnlyOrders.Count(o => o.IsSelected && (o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET"));
 
         public ObservableCollection<PositionInfo> SelectedPositions
         {
@@ -193,6 +211,23 @@ namespace BinanceFuturesTrader.ViewModels
         
         // 判断是否有选中的单个持仓（用于保本止损和保盈止损按钮）
         public bool HasSelectedPosition => SelectedPosition != null;
+        #endregion
+
+        #region 测试方法
+        /// <summary>
+        /// 测试市值计算逻辑
+        /// </summary>
+        public void TestMarketValueCalculation()
+        {
+            if (AccountInfo != null)
+            {
+                AccountInfo.TestMarketValueCalculation();
+            }
+            else
+            {
+                Console.WriteLine("❌ AccountInfo为空，无法测试");
+            }
+        }
         #endregion
 
         #region 数据加载方法

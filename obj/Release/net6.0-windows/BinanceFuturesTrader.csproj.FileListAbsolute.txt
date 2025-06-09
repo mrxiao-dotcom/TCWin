@@ -45,10 +45,12 @@ D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\runtimes\win\lib\net6.0\Syste
 D:\CSharpProjects\TCWin\bin\Release\net6.0-windows\runtimes\win\lib\net6.0\System.Diagnostics.EventLog.dll
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.csproj.AssemblyReference.cache
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AccountConfigWindow.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderConfirmationDialog.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ProfitProtectionDialog.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\App.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\MainWindow.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AccountConfigWindow.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderConfirmationDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ProfitProtectionDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\App.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\GeneratedInternalTypeHelper.g.cs
@@ -67,5 +69,5 @@ D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\refint\BinanceFuturesTrader.d
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.pdb
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.genruntimeconfig.cache
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\ref\BinanceFuturesTrader.dll
-D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderConfirmationDialog.baml
-D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderConfirmationDialog.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\TrailingStopConfigWindow.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\TrailingStopConfigWindow.g.cs

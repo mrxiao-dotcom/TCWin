@@ -23,6 +23,7 @@ namespace BinanceFuturesTrader.Models
         public string PositionSide { get; set; } = string.Empty;
         public decimal StopPrice { get; set; }
         public string WorkingType { get; set; } = string.Empty;
+        public decimal? CallbackRate { get; set; } // 移动止损回调率
         public DateTime Time { get; set; }
         public DateTime UpdateTime { get; set; }
         

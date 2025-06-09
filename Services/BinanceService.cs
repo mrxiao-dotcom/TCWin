@@ -27,6 +27,19 @@ namespace BinanceFuturesTrader.Services
         // 精度缓存：存储每个合约的stepSize和tickSize
         private readonly Dictionary<string, (decimal stepSize, decimal tickSize)> _precisionCache = new();
         
+        // 完整交易规则缓存：存储每个合约的完整交易规则
+        private readonly Dictionary<string, (decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage, DateTime cacheTime)> _tradingRulesCache = new();
+        private readonly TimeSpan _tradingRulesCacheExpiry = TimeSpan.FromHours(1); // 缓存1小时
+        
+        // 交易所信息缓存
+        private string? _cachedExchangeInfo;
+        private DateTime _exchangeInfoCacheTime = DateTime.MinValue;
+        private readonly TimeSpan _exchangeInfoCacheExpiry = TimeSpan.FromMinutes(30); // 缓存30分钟
+        
+        // 模拟模式下的动态订单管理
+        private readonly List<OrderInfo> _mockOrders = new();
+        private long _nextMockOrderId = 100000;
+        
         // JSON序列化选项，更宽松的处理
         private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
         {
@@ -270,7 +283,20 @@ namespace BinanceFuturesTrader.Services
         {
             if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
             {
-                LogService.LogWarning($"Using mock cancel order: No API configuration for {symbol} order {orderId}");
+                LogService.LogWarning($"🗑️ 模拟取消订单: {symbol} #{orderId}");
+                
+                // 在模拟订单列表中查找并移除
+                var orderToRemove = _mockOrders.FirstOrDefault(o => o.Symbol == symbol && o.OrderId == orderId);
+                if (orderToRemove != null)
+                {
+                    _mockOrders.Remove(orderToRemove);
+                    LogService.LogInfo($"✅ 模拟订单取消成功: {symbol} #{orderId} {orderToRemove.Type} @{orderToRemove.StopPrice:F4}");
+                }
+                else
+                {
+                    LogService.LogWarning($"⚠️ 模拟订单未找到: {symbol} #{orderId}");
+                }
+                
                 await Task.Delay(300);
                 return true; // 模拟成功
             }
@@ -317,8 +343,42 @@ namespace BinanceFuturesTrader.Services
             if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
             {
                 Console.WriteLine("⚠️ 使用模拟下单: 无API配置");
+                Console.WriteLine($"📋 模拟订单参数: {request.Symbol} {request.Type} {request.Side} 数量:{request.Quantity:F8} 止损价:{request.StopPrice:F4}");
+                
+                // 模拟下单验证
+                bool isValidMockOrder = !string.IsNullOrEmpty(request.Symbol) && 
+                                       request.Quantity > 0 && 
+                                       (request.Type != "STOP_MARKET" || request.StopPrice > 0);
+                                       
+                if (isValidMockOrder)
+                {
+                    // 创建模拟订单并添加到列表
+                    var mockOrder = new OrderInfo
+                    {
+                        OrderId = _nextMockOrderId++,
+                        Symbol = request.Symbol,
+                        Side = request.Side,
+                        Type = request.Type,
+                        OrigQty = request.Quantity,
+                        Price = request.Price,
+                        StopPrice = request.StopPrice,
+                        Status = "NEW",
+                        TimeInForce = request.TimeInForce ?? "GTC",
+                        ReduceOnly = request.ReduceOnly,
+                        ClosePosition = request.ClosePosition,
+                        PositionSide = request.PositionSide ?? "BOTH",
+                        WorkingType = request.WorkingType ?? "CONTRACT_PRICE",
+                        Time = DateTime.Now,
+                        UpdateTime = DateTime.Now
+                    };
+                    
+                    _mockOrders.Add(mockOrder);
+                    Console.WriteLine($"✅ 模拟订单创建成功: #{mockOrder.OrderId} {request.Symbol} {request.Type} @{request.StopPrice:F4}");
+                }
+                                       
+                Console.WriteLine($"📋 模拟下单结果: {(isValidMockOrder ? "成功" : "失败")}");
                 await Task.Delay(800);
-                return !string.IsNullOrEmpty(request.Symbol) && (request.Quantity > 0 || request.Type == "STOP_MARKET");
+                return isValidMockOrder;
             }
 
             try
@@ -687,22 +747,33 @@ namespace BinanceFuturesTrader.Services
 
         public async Task<string?> GetRealExchangeInfoAsync(string? symbol = null)
         {
+            // 检查缓存是否有效
+            if (!string.IsNullOrEmpty(_cachedExchangeInfo) && 
+                DateTime.Now - _exchangeInfoCacheTime < _exchangeInfoCacheExpiry)
+            {
+                // 静默使用缓存，不输出日志
+                return _cachedExchangeInfo;
+            }
+
             try
             {
+                LogService.LogInfo("获取最新交易所信息...");
                 var endpoint = "/fapi/v1/exchangeInfo";
-                var response = await SendPublicRequestAsync(HttpMethod.Get, endpoint);
+                var exchangeInfo = await SendPublicRequestAsync(HttpMethod.Get, endpoint);
                 
-                if (response == null)
+                if (!string.IsNullOrEmpty(exchangeInfo))
                 {
-                    LogService.LogWarning("Failed to get exchange info, returning mock data");
-                    return "{\"timezone\":\"UTC\",\"serverTime\":1234567890000,\"symbols\":[{\"symbol\":\"BTCUSDT\",\"status\":\"TRADING\"}]}";
+                    // 更新缓存
+                    _cachedExchangeInfo = exchangeInfo;
+                    _exchangeInfoCacheTime = DateTime.Now;
+                    LogService.LogInfo("✅ 交易所信息已更新");
                 }
-
-                return response;
+                
+                return exchangeInfo;
             }
             catch (Exception ex)
             {
-                LogService.LogError($"Error getting exchange info: {ex.Message}");
+                LogService.LogError($"获取交易所信息失败: {ex.Message}");
                 return null;
             }
         }
@@ -816,9 +887,26 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         public async Task<(decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage)> GetSymbolTradingRulesAsync(string symbol)
         {
+            // 首先检查缓存
+            if (_tradingRulesCache.TryGetValue(symbol, out var cachedRules))
+            {
+                // 检查缓存是否过期
+                if (DateTime.Now - cachedRules.cacheTime < _tradingRulesCacheExpiry)
+                {
+                    // 静默使用缓存，不输出日志
+                    return (cachedRules.minQty, cachedRules.maxQty, cachedRules.stepSize, cachedRules.tickSize, cachedRules.maxLeverage);
+                }
+                else
+                {
+                    // 缓存过期，删除旧缓存
+                    _tradingRulesCache.Remove(symbol);
+                }
+            }
+
             try
             {
-                LogService.LogInfo($"获取 {symbol} 的完整交易规则...");
+                // 仅在首次获取时输出日志
+                LogService.LogInfo($"获取 {symbol} 交易规则...");
                 
                 // 获取交易所信息
                 var exchangeInfoJson = await GetRealExchangeInfoAsync();
@@ -854,22 +942,26 @@ namespace BinanceFuturesTrader.Services
                                     decimal.TryParse(maxQtyElement.GetString(), out maxQty);
                                 if (filter.TryGetProperty("stepSize", out var stepSizeElement))
                                     decimal.TryParse(stepSizeElement.GetString(), out stepSize);
-                                
-                                LogService.LogInfo($"解析到 {symbol} LOT_SIZE - minQty: {minQty}, maxQty: {maxQty}, stepSize: {stepSize}");
                             }
                             else if (filterType == "PRICE_FILTER")
                             {
                                 // 获取价格精度
                                 if (filter.TryGetProperty("tickSize", out var tickSizeElement))
                                     decimal.TryParse(tickSizeElement.GetString(), out tickSize);
-                                
-                                LogService.LogInfo($"解析到 {symbol} PRICE_FILTER - tickSize: {tickSize}");
                             }
                         }
                         
                         if (minQty > 0 && maxQty > 0 && stepSize > 0 && tickSize > 0)
                         {
-                            LogService.LogInfo($"✅ 成功获取 {symbol} 完整交易规则 - minQty: {minQty}, maxQty: {maxQty}, stepSize: {stepSize}, tickSize: {tickSize}");
+                            // 缓存结果
+                            var tradingRules = (minQty, maxQty, stepSize, tickSize, maxLeverage, DateTime.Now);
+                            _tradingRulesCache[symbol] = tradingRules;
+                            
+                            // 同时更新精度缓存
+                            _precisionCache[symbol] = (stepSize, tickSize);
+                            
+                            // 仅在首次获取时输出详细日志
+                            LogService.LogInfo($"✅ {symbol} 规则已缓存");
                             return (minQty, maxQty, stepSize, tickSize, maxLeverage);
                         }
                     }
@@ -890,13 +982,14 @@ namespace BinanceFuturesTrader.Services
             // 首先检查缓存
             if (_precisionCache.TryGetValue(symbol, out var cachedPrecision))
             {
-                LogService.LogInfo($"使用缓存精度: {symbol} - stepSize: {cachedPrecision.stepSize}, tickSize: {cachedPrecision.tickSize}");
+                // 静默使用缓存，不输出日志
                 return cachedPrecision;
             }
 
             try
             {
-                LogService.LogInfo($"获取 {symbol} 的真实精度信息...");
+                // 仅在首次获取时输出日志
+                LogService.LogInfo($"获取 {symbol} 精度信息...");
                 
                 // 获取交易所信息
                 var exchangeInfoJson = await GetRealExchangeInfoAsync();
@@ -928,7 +1021,7 @@ namespace BinanceFuturesTrader.Services
                                 var stepSizeStr = filter.GetProperty("stepSize").GetString();
                                 if (decimal.TryParse(stepSizeStr, out stepSize))
                                 {
-                                    LogService.LogInfo($"解析到 {symbol} stepSize: {stepSize}");
+                                    // 移除详细解析日志
                                 }
                             }
                             else if (filterType == "PRICE_FILTER")
@@ -937,7 +1030,7 @@ namespace BinanceFuturesTrader.Services
                                 var tickSizeStr = filter.GetProperty("tickSize").GetString();
                                 if (decimal.TryParse(tickSizeStr, out tickSize))
                                 {
-                                    LogService.LogInfo($"解析到 {symbol} tickSize: {tickSize}");
+                                    // 移除详细解析日志
                                 }
                             }
                         }
@@ -946,7 +1039,7 @@ namespace BinanceFuturesTrader.Services
                         {
                             var precision = (stepSize, tickSize);
                             _precisionCache[symbol] = precision;
-                            LogService.LogInfo($"✅ 成功获取 {symbol} 精度 - stepSize: {stepSize}, tickSize: {tickSize}");
+                            LogService.LogInfo($"✅ {symbol} 精度已缓存");
                             return precision;
                         }
                     }
@@ -1185,29 +1278,14 @@ namespace BinanceFuturesTrader.Services
 
         private List<OrderInfo> GetMockOrders(string? symbol)
         {
-            var orders = new List<OrderInfo>
-            {
-                new OrderInfo
-                {
-                    OrderId = 12345,
-                    Symbol = "BTCUSDT",
-                    Side = "BUY",
-                    Type = "LIMIT",
-                    OrigQty = 0.001m,
-                    Price = 44000.0m,
-                    StopPrice = 0,
-                    Status = "NEW",
-                    TimeInForce = "GTC",
-                    ReduceOnly = false,
-                    ClosePosition = false,
-                    PositionSide = "BOTH",
-                    WorkingType = "CONTRACT_PRICE",
-                    Time = DateTime.Now.AddHours(-1),
-                    UpdateTime = DateTime.Now.AddHours(-1)
-                }
-            };
-
-            return string.IsNullOrEmpty(symbol) ? orders : orders.Where(o => o.Symbol == symbol).ToList();
+            // 返回动态创建的模拟订单列表
+            var filteredOrders = string.IsNullOrEmpty(symbol) 
+                ? _mockOrders.ToList() 
+                : _mockOrders.Where(o => o.Symbol == symbol).ToList();
+                
+            LogService.LogInfo($"📋 获取模拟订单: {(string.IsNullOrEmpty(symbol) ? "全部" : symbol)} - 找到 {filteredOrders.Count} 个订单");
+            
+            return filteredOrders;
         }
 
         private decimal GetMockPrice(string symbol)
@@ -1407,7 +1485,7 @@ namespace BinanceFuturesTrader.Services
         {
             if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
             {
-                LogService.LogInfo("无API配置，模拟设置持仓模式成功");
+                LogService.LogInfo($"Mock set position mode: {(dualSidePosition ? "双向持仓" : "单向持仓")}");
                 return true;
             }
 
@@ -1426,30 +1504,71 @@ namespace BinanceFuturesTrader.Services
 
                 var response = await SendSignedRequestAsync(HttpMethod.Post, endpoint, parameters);
                 
-                // 检查特殊错误码
+                // 检查特殊错误码：-4059表示持仓模式已经是所需设置
                 if (response != null && response.Contains("\"code\":-4059"))
                 {
-                    LogService.LogInfo("持仓模式已经是所需设置，无需更改");
-                    _isDualSidePosition = dualSidePosition;
+                    LogService.LogInfo($"Position mode is already {(dualSidePosition ? "dual side" : "single side")}");
                     return true;
                 }
 
                 bool success = response != null && !response.Contains("\"code\":");
-                if (success)
+                LogService.LogInfo($"Set position mode to {(dualSidePosition ? "dual side" : "single side")}: {(success ? "Success" : "Failed")}");
+                
+                return success;
+            }
+            catch (Exception ex)
+            {
+                LogService.LogError($"Error setting position mode: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<bool> AdjustIsolatedMarginAsync(string symbol, string positionSide, decimal amount, int type)
+        {
+            if (_currentAccount == null || string.IsNullOrEmpty(_currentAccount.ApiKey) || string.IsNullOrEmpty(_currentAccount.SecretKey))
+            {
+                var actionText = type == 1 ? "增加" : "减少";
+                LogService.LogInfo($"Mock adjust isolated margin: {symbol} {actionText} {amount} USDT");
+                return true;
+            }
+
+            try
+            {
+                // 确保服务器时间同步
+                await EnsureServerTimeSyncAsync();
+                
+                var endpoint = "/fapi/v1/positionMargin";
+                var parameters = new Dictionary<string, string>
                 {
-                    _isDualSidePosition = dualSidePosition;
-                    LogService.LogInfo($"✅ 成功设置持仓模式为: {(dualSidePosition ? "对冲模式" : "单向模式")}");
+                    ["symbol"] = symbol,
+                    ["amount"] = amount.ToString("F8"),
+                    ["type"] = type.ToString(),
+                    ["timestamp"] = GetSyncedTimestamp().ToString(),
+                    ["recvWindow"] = "10000"
+                };
+
+                // 如果是双向持仓模式，需要指定持仓方向
+                if (!string.IsNullOrEmpty(positionSide) && positionSide != "BOTH")
+                {
+                    parameters["positionSide"] = positionSide;
                 }
-                else if (response != null)
+
+                var response = await SendSignedRequestAsync(HttpMethod.Post, endpoint, parameters);
+                bool success = response != null && !response.Contains("\"code\":");
+                
+                var actionText = type == 1 ? "增加" : "减少";
+                LogService.LogInfo($"Adjust isolated margin {symbol} {actionText} {amount} USDT: {(success ? "Success" : "Failed")}");
+                
+                if (!success && response != null)
                 {
-                    LogService.LogError($"设置持仓模式失败: {response}");
+                    LogService.LogWarning($"Adjust margin response: {response}");
                 }
                 
                 return success;
             }
             catch (Exception ex)
             {
-                LogService.LogError($"设置持仓模式异常: {ex.Message}");
+                LogService.LogError($"Error adjusting isolated margin for {symbol}: {ex.Message}");
                 return false;
             }
         }

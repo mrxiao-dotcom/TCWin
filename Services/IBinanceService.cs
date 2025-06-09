@@ -103,5 +103,14 @@ namespace BinanceFuturesTrader.Services
         /// 设置持仓模式
         /// </summary>
         Task<bool> SetPositionModeAsync(bool dualSidePosition);
+
+        /// <summary>
+        /// 调整逐仓保证金
+        /// </summary>
+        /// <param name="symbol">交易对</param>
+        /// <param name="positionSide">持仓方向 (BOTH/LONG/SHORT)</param>
+        /// <param name="amount">保证金金额</param>
+        /// <param name="type">调整方向 (1:增加保证金, 2:减少保证金)</param>
+        Task<bool> AdjustIsolatedMarginAsync(string symbol, string positionSide, decimal amount, int type);
     }
 } 

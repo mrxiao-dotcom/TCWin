@@ -95,7 +95,7 @@
                                     <Setter Property="Content" Value="启动移动止损"/>
                                     <Setter Property="Background" Value="Gray"/>
                                     <Setter Property="Foreground" Value="White"/>
-                                    <Setter Property="ToolTip" Value="启动移动止损，自动调整止损价保持原始止损比例"/>
+                                    <Setter Property="ToolTip" Value="启动移动止损（并存模式），与固定止损同时工作"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding TrailingStopEnabled}" Value="True">
                                             <Setter Property="Content" Value="关闭移动止损"/>
@@ -105,6 +105,19 @@
                                     </Style.Triggers>
                                 </Style>
                             </Button.Style>
+                        </Button>
+                        
+                        <!-- 移动止损配置 -->
+                        <Button Command="{Binding OpenTrailingStopConfigDialogCommand}" Margin="6,0,0,0"
+                               Width="90" Height="28" FontSize="11"
+                               Background="MediumPurple" Foreground="White" FontWeight="Bold"
+                               ToolTip="打开移动止损配置对话框，直观设置所有参数">
+                            <Button.Content>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="⚙️" FontSize="12"/>
+                                    <TextBlock Text="配置设置" FontSize="10" Margin="2,0,0,0"/>
+                                </StackPanel>
+                            </Button.Content>
                         </Button>
                     
                     <!-- 日志操作按钮 -->
@@ -116,6 +129,8 @@
                            Background="Orange" Foreground="White" Width="55" Height="28" FontSize="11"
                            ToolTip="清空日志文件"/>
                     
+
+                    
                     <TextBlock Text="加载中..." 
                               Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"
                               VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Foreground="Gray"/>
@@ -125,7 +140,7 @@
                 <Border Grid.Column="1" Background="AliceBlue" BorderBrush="LightSteelBlue" BorderThickness="1" 
                        CornerRadius="4" Padding="8,4" Margin="15,0,0,0" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
-                    <UniformGrid Rows="1" Columns="5">
+                    <UniformGrid Rows="2" Columns="4">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                             <TextBlock Text="账户权益:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding TotalWalletBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Blue" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
@@ -133,9 +148,15 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="已用保证金:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding TotalMarginBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Green" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="累计市值:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AccountInfo.TotalMarketValue, StringFormat=F2}" FontWeight="Bold" Foreground="Purple" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
                             <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="整体杠杆:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AccountInfo.OverallLeverage, StringFormat=F2}" FontWeight="Bold" Foreground="Red" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="x" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
@@ -146,18 +167,27 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="可用:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding AvailableBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Orange" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="多头市值:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AccountInfo.LongMarketValue, StringFormat=F2}" FontWeight="Bold" Foreground="Green" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
                             <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
-                            <TextBlock FontWeight="Bold" Foreground="Red" FontSize="11" VerticalAlignment="Center" Margin="2,0">
-                                <TextBlock.Text>
-                                    <Binding Path="LatestPrice" Converter="{StaticResource PriceFormatConverter}"/>
-                                </TextBlock.Text>
-                            </TextBlock>
+                            <TextBlock Text="空头市值:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AccountInfo.ShortMarketValue, StringFormat=F2}" FontWeight="Bold" Foreground="Orange" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="净市值:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AccountInfo.NetMarketValue, StringFormat=F2}" FontWeight="Bold" Foreground="DarkBlue" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <TextBlock Text="可用:" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding AvailableBalance, StringFormat=F2}" FontWeight="Bold" Foreground="Brown" FontSize="11" VerticalAlignment="Center" Margin="2,0"/>
+                            <TextBlock Text="U" FontSize="10" Foreground="Gray" VerticalAlignment="Center"/>
                         </StackPanel>
                     </UniformGrid>
                             
@@ -165,6 +195,11 @@
                             <Button Content="📊" Command="{Binding CheckAccountEquityCompositionCommand}" 
                                    Width="24" Height="24" FontSize="10" Margin="8,0,0,0"
                                    ToolTip="检查账户权益组成详情" Background="LightBlue" BorderThickness="0"/>
+                            
+                            <!-- 测试按钮 -->
+                            <Button Content="🧪" Click="TestMarketValue_Click" 
+                                   Width="24" Height="24" FontSize="10" Margin="4,0,0,0"
+                                   ToolTip="测试市值计算逻辑" Background="Orange" BorderThickness="0"/>
                         </StackPanel>
                 </Border>
             </Grid>
@@ -359,6 +394,10 @@
                     <!-- 减仓型委托单标题和操作按钮 -->
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
                         <TextBlock Text="减仓型委托单" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="DarkOrange"/>
+                        <Button Content="🔄" Command="{Binding ForceRefreshOrderDisplayCommand}" 
+                               Width="30" Height="26" FontSize="12" Margin="0,0,5,0"
+                               Background="Purple" Foreground="White" FontWeight="Bold"
+                               ToolTip="强制刷新订单分类显示（如果减仓型订单消失时使用）"/>
                         <Button Content="全选" Command="{Binding SelectAllOrdersCommand}" 
                                Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
                         <Button Content="反选" Command="{Binding InvertOrderSelectionCommand}" 
@@ -490,7 +529,11 @@
                     <Button Content="保盈止损" Command="{Binding AddProfitProtectionStopLossCommand}"
                            Background="DarkOrange" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="12"
-                           ToolTip="为选中持仓添加保盈止损单（保护指定盈利）"/>
+                           ToolTip="⚠️ 请先在【持仓表格】中点击选择一行持仓，然后点击此按钮设置保盈止损（选择订单无效）"/>
+                <Button Content="刷新" Command="{Binding RefreshCommandStatesCommand}"
+                       Background="Gray" Foreground="White" FontWeight="Bold"
+                       Width="50" Height="28" FontSize="12"
+                       ToolTip="刷新按钮状态和数据"/>
                 
                 <!-- 分隔符1 -->
                 <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
@@ -602,6 +645,17 @@
                         </Button>
                         <TextBlock Text="{Binding Leverage, StringFormat=当前: {0}x}" FontWeight="Bold" 
                                           Foreground="Blue" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12"/>
+                    </StackPanel>
+
+                    <!-- 保证金管理区 -->
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="保证金管理：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12"/>
+                        <Button Content="🚀 释放多余保证金" Command="{Binding ReleaseExcessMarginCommand}"
+                               Width="120" Height="24" Padding="0" FontSize="10" Margin="0,0,8,0"
+                               Background="Purple" Foreground="White" FontWeight="Bold"
+                               ToolTip="自动释放当前合约逐仓持仓的多余保证金，保留安全缓冲"/>
+                        <TextBlock Text="💡 提示：从低杠杆调到高杠杆后，系统会自动释放多余保证金" 
+                                  FontSize="9" Foreground="Gray" VerticalAlignment="Center"/>
                     </StackPanel>
                     
                     <!-- 基础下单信息 -->
@@ -809,25 +863,50 @@
                 <materialDesign:Card Grid.Column="1" Padding="6" Margin="3,0">
                     <DockPanel>
                         <TextBlock Text="最近合约" FontWeight="Bold" FontSize="13" DockPanel.Dock="Top" Margin="0,0,0,6"/>
-                        <ScrollViewer MaxHeight="220">
-                            <ItemsControl ItemsSource="{Binding RecentContracts}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Button Content="{Binding}" 
-                                               Command="{Binding DataContext.SelectRecentContractCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                               CommandParameter="{Binding}"
-                                               Style="{StaticResource MaterialDesignOutlinedButton}"
-                                               Height="26" Margin="1" FontSize="11" Padding="6,2"
-                                               ToolTip="点击切换到此合约"/>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                            </ItemsControl>
-                        </ScrollViewer>
+                        <ItemsControl ItemsSource="{Binding RecentContracts}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding}" 
+                                           Command="{Binding DataContext.SelectRecentContractCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                           CommandParameter="{Binding}"
+                                           Height="26" Margin="0,1" FontSize="10" Padding="6,2"
+                                           HorizontalAlignment="Stretch"
+                                           Background="Transparent" BorderThickness="0"
+                                           Foreground="Blue" FontWeight="Bold"
+                                           ToolTip="点击切换到此合约">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border Background="{TemplateBinding Background}" 
+                                                                    BorderThickness="0" Padding="{TemplateBinding Padding}">
+                                                                <ContentPresenter HorizontalAlignment="Center" 
+                                                                                VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="LightBlue"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsPressed" Value="True">
+                                                                    <Setter Property="Background" Value="SteelBlue"/>
+                                                                    <Setter Property="Foreground" Value="White"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Vertical"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
                     </DockPanel>
                 </materialDesign:Card>
 
@@ -922,7 +1001,7 @@
                                             <!-- 第三行：下单按钮 -->
                                             <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" 
                                                        Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,5,0,0">
-                                                <Button Content="下突破条件单" Command="{Binding PlaceStandardConditionalOrderCommand}" 
+                                                <Button Content="下突破条件单" Command="{Binding PlaceBreakoutConditionalOrderCommand}" 
                                                        Background="Orange" Foreground="White" FontWeight="Bold"
                                                        Width="120" Height="30" FontSize="11"
                                                        ToolTip="根据设置的突破价格下条件单"/>
@@ -970,7 +1049,7 @@
                                                         <TextBlock Text="目标浮盈:" FontWeight="Bold" FontSize="10" Margin="0,0,0,3"/>
                                                         <DockPanel>
                                                             <Button Content="计算" DockPanel.Dock="Right" 
-                                                                   Command="{Binding CalculateAddPositionTriggerPriceCommand}"
+                                                                   Command="{Binding CalculateAddPositionPriceCommand}"
                                                                    Width="35" Height="24" FontSize="8" Margin="2,0,0,0"
                                                                    Background="Orange" Foreground="White" FontWeight="Bold"
                                                                    ToolTip="根据目标浮盈计算加仓触发价格"/>

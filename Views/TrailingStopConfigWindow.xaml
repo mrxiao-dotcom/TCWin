@@ -1,0 +1,179 @@
+<Window x:Class="BinanceFuturesTrader.Views.TrailingStopConfigWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="移动止损配置设置"
+        Width="500"
+        Height="600"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#F5F5F5">
+    
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- 标题 -->
+        <TextBlock Grid.Row="0" 
+                   Text="移动止损配置设置"
+                   FontSize="18"
+                   FontWeight="Bold"
+                   Foreground="#2E3440"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,20"/>
+        
+        <!-- 配置内容 -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                
+                <!-- 模式选择 -->
+                <GroupBox Header="移动止损模式" Padding="15" Background="White" Margin="0,0,0,15">
+                    <StackPanel>
+                        <RadioButton x:Name="RbReplace" Content="替换模式 - 将现有止损替换为移动止损" 
+                                   GroupName="Mode" Margin="0,5"/>
+                        <RadioButton x:Name="RbCoexist" Content="并存模式 - 保留现有止损，另外添加移动止损" 
+                                   GroupName="Mode" Margin="0,5"/>
+                        <RadioButton x:Name="RbSmartLayering" Content="智能分层模式 - 智能分配固定和移动止损" 
+                                   GroupName="Mode" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <!-- 分配比例 (仅并存模式) -->
+                <GroupBox x:Name="AllocationGroup" Header="分配比例" Padding="15" Background="White" Margin="0,0,0,15">
+                    <StackPanel>
+                        <TextBlock Text="移动止损的分配比例 (1-100%):" Margin="0,0,0,5"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Slider x:Name="AllocationSlider" 
+                                  Minimum="1" Maximum="100" 
+                                  Width="300" 
+                                  TickFrequency="10" 
+                                  TickPlacement="BottomRight"
+                                  ValueChanged="AllocationSlider_ValueChanged"/>
+                            <TextBox x:Name="AllocationTextBox" 
+                                   Width="60" 
+                                   Height="25" 
+                                   Margin="10,0,0,0"
+                                   VerticalContentAlignment="Center"
+                                   TextChanged="AllocationTextBox_TextChanged"/>
+                            <TextBlock Text="%" VerticalAlignment="Center" Margin="5,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="例如：20表示20%用于移动止损，80%保持现有止损" 
+                                 Foreground="Gray" FontSize="11" Margin="0,5,0,0"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <!-- 处理范围 -->
+                <GroupBox Header="处理范围" Padding="15" Background="White" Margin="0,0,0,15">
+                    <StackPanel>
+                        <RadioButton x:Name="RbProfitOnly" Content="仅盈利持仓 - 只对盈利的持仓启用移动止损" 
+                                   GroupName="Scope" Margin="0,5"/>
+                        <RadioButton x:Name="RbAllPositions" Content="所有持仓 - 对所有持仓启用移动止损" 
+                                   GroupName="Scope" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <!-- 回调率范围 -->
+                <GroupBox Header="回调率范围" Padding="15" Background="White" Margin="0,0,0,15">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <TextBlock Grid.Column="0" Text="最小回调率:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox x:Name="MinCallbackTextBox" 
+                                   Grid.Column="1" 
+                                   Height="25" 
+                                   VerticalContentAlignment="Center"
+                                   Margin="0,0,10,0"/>
+                            <TextBlock Grid.Column="2" Text="最大回调率:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox x:Name="MaxCallbackTextBox" 
+                                   Grid.Column="3" 
+                                   Height="25" 
+                                   VerticalContentAlignment="Center"
+                                   Margin="0,0,10,0"/>
+                            <TextBlock Grid.Column="4" Text="%" VerticalAlignment="Center"/>
+                        </Grid>
+                        <TextBlock Text="回调率范围：1-50%，较小的回调率适合震荡行情，较大的适合趋势行情" 
+                                 Foreground="Gray" FontSize="11" Margin="0,5,0,0"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <!-- 分层比例 (仅智能分层模式) -->
+                <GroupBox x:Name="LayeringGroup" Header="分层比例" Padding="15" Background="White" Margin="0,0,0,15">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <TextBlock Grid.Column="0" Text="固定止损:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox x:Name="FixedStopTextBox" 
+                                   Grid.Column="1" 
+                                   Height="25" 
+                                   VerticalContentAlignment="Center"
+                                   Margin="0,0,10,0"
+                                   TextChanged="LayeringTextBox_TextChanged"/>
+                            <TextBlock Grid.Column="2" Text="移动止损:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox x:Name="TrailingStopTextBox" 
+                                   Grid.Column="3" 
+                                   Height="25" 
+                                   VerticalContentAlignment="Center"
+                                   Margin="0,0,10,0"
+                                   TextChanged="LayeringTextBox_TextChanged"/>
+                            <TextBlock Grid.Column="4" Text="%" VerticalAlignment="Center"/>
+                        </Grid>
+                        <TextBlock Text="两个比例之和必须等于100%，例如：60+40=100" 
+                                 Foreground="Gray" FontSize="11" Margin="0,5,0,0"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <!-- 预览配置 -->
+                <GroupBox Header="配置预览" Padding="15" Background="#E8F4FD" Margin="0,0,0,15">
+                    <TextBlock x:Name="PreviewTextBlock" 
+                             Text="配置预览将在这里显示..."
+                             TextWrapping="Wrap"
+                             FontSize="12"
+                             Foreground="#2E3440"/>
+                </GroupBox>
+                
+            </StackPanel>
+        </ScrollViewer>
+        
+        <!-- 按钮区域 -->
+        <StackPanel Grid.Row="2" 
+                    Orientation="Horizontal" 
+                    HorizontalAlignment="Right" 
+                    Margin="0,20,0,0">
+            <Button x:Name="BtnReset" 
+                    Content="重置默认" 
+                    Width="80" 
+                    Height="30" 
+                    Margin="0,0,10,0"
+                    Click="BtnReset_Click"/>
+            <Button x:Name="BtnCancel" 
+                    Content="取消" 
+                    Width="80" 
+                    Height="30" 
+                    Margin="0,0,10,0"
+                    Click="BtnCancel_Click"/>
+            <Button x:Name="BtnOK" 
+                    Content="确定" 
+                    Width="80" 
+                    Height="30"
+                    IsDefault="True"
+                    Click="BtnOK_Click"/>
+        </StackPanel>
+        
+    </Grid>
+</Window> 

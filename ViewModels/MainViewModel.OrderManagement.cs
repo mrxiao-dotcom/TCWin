@@ -20,6 +20,8 @@ namespace BinanceFuturesTrader.ViewModels
             try
             {
                 var selectedCount = 0;
+                
+                // 选择FilteredOrders中的所有订单
                 foreach (var order in FilteredOrders)
                 {
                     if (!order.IsSelected)
@@ -28,8 +30,18 @@ namespace BinanceFuturesTrader.ViewModels
                         selectedCount++;
                     }
                 }
+                
+                // 选择ReduceOnlyOrders中的所有订单
+                foreach (var order in ReduceOnlyOrders)
+                {
+                    if (!order.IsSelected)
+                    {
+                        order.IsSelected = true;
+                        selectedCount++;
+                    }
+                }
 
-                StatusMessage = $"已选择 {selectedCount} 个订单";
+                StatusMessage = $"已选择 {selectedCount} 个委托单";
                 _logger.LogInformation($"全选订单: {selectedCount} 个");
 
                 // 通知选择状态属性更新
@@ -52,6 +64,8 @@ namespace BinanceFuturesTrader.ViewModels
             try
             {
                 var unselectedCount = 0;
+                
+                // 取消选择FilteredOrders中的所有订单
                 foreach (var order in FilteredOrders)
                 {
                     if (order.IsSelected)
@@ -60,8 +74,18 @@ namespace BinanceFuturesTrader.ViewModels
                         unselectedCount++;
                     }
                 }
+                
+                // 取消选择ReduceOnlyOrders中的所有订单
+                foreach (var order in ReduceOnlyOrders)
+                {
+                    if (order.IsSelected)
+                    {
+                        order.IsSelected = false;
+                        unselectedCount++;
+                    }
+                }
 
-                StatusMessage = $"已取消选择 {unselectedCount} 个订单";
+                StatusMessage = $"已取消选择 {unselectedCount} 个委托单";
                 _logger.LogInformation($"取消全选订单: {unselectedCount} 个");
 
                 // 通知选择状态属性更新
@@ -84,14 +108,23 @@ namespace BinanceFuturesTrader.ViewModels
             try
             {
                 var invertedCount = 0;
+                
+                // 反选FilteredOrders中的所有订单
                 foreach (var order in FilteredOrders)
                 {
                     order.IsSelected = !order.IsSelected;
                     invertedCount++;
                 }
+                
+                // 反选ReduceOnlyOrders中的所有订单
+                foreach (var order in ReduceOnlyOrders)
+                {
+                    order.IsSelected = !order.IsSelected;
+                    invertedCount++;
+                }
 
-                var selectedCount = FilteredOrders.Count(o => o.IsSelected);
-                StatusMessage = $"已反选订单，当前选择 {selectedCount} 个";
+                var selectedCount = SelectedOrderCount;
+                StatusMessage = $"已反选委托单，当前选择 {selectedCount} 个";
                 _logger.LogInformation($"反选订单: {invertedCount} 个操作，当前选择 {selectedCount} 个");
 
                 // 通知选择状态属性更新
@@ -111,10 +144,11 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private async Task CancelSelectedOrdersAsync()
         {
-            var selectedOrders = FilteredOrders.Where(o => o.IsSelected).ToList();
+            // 使用SelectedOrders属性，它会自动包含FilteredOrders和ReduceOnlyOrders中选中的订单
+            var selectedOrders = SelectedOrders.ToList();
             if (!selectedOrders.Any())
             {
-                StatusMessage = "请先选择要取消的订单";
+                StatusMessage = "请先选择委托单";
                 return;
             }
 
@@ -172,13 +206,14 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private async Task CancelSelectedStopOrdersAsync()
         {
-            var selectedStopOrders = FilteredOrders
-                .Where(o => o.IsSelected && o.Type == "STOP_MARKET")
+            // 使用SelectedOrders属性，然后筛选止损订单
+            var selectedStopOrders = SelectedOrders
+                .Where(o => o.Type == "STOP_MARKET" || o.Type == "TAKE_PROFIT_MARKET")
                 .ToList();
 
             if (!selectedStopOrders.Any())
             {
-                StatusMessage = "请先选择要取消的止损订单";
+                StatusMessage = "请先选择止损订单";
                 return;
             }
 
@@ -270,7 +305,7 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private async Task AddBreakEvenStopLossForSelectedOrdersAsync()
         {
-            var selectedOrders = FilteredOrders.Where(o => o.IsSelected).ToList();
+            var selectedOrders = SelectedOrders.ToList();
             if (!selectedOrders.Any())
             {
                 StatusMessage = "请先选择要添加保本止损的订单";

@@ -589,9 +589,233 @@ namespace BinanceFuturesTrader.ViewModels
         {
             if (parameter is string leverageStr && int.TryParse(leverageStr, out int leverageValue))
             {
+                var oldLeverage = Leverage;
                 Leverage = leverageValue;
                 _logger.LogDebug($"杠杆设置为: {leverageValue}x");
                 SaveTradingSettings();
+
+                // 如果有选中的合约，且杠杆从低调到高，尝试自动释放保证金
+                if (!string.IsNullOrEmpty(Symbol) && leverageValue > oldLeverage)
+                {
+                    _ = Task.Run(async () => await AutoReleaseExcessMarginAsync(Symbol, leverageValue, oldLeverage));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 自动释放多余保证金
+        /// </summary>
+        private async Task AutoReleaseExcessMarginAsync(string symbol, int newLeverage, int oldLeverage)
+        {
+            try
+            {
+                _logger.LogInformation($"🎯 检测到杠杆调整: {symbol} {oldLeverage}x → {newLeverage}x，检查是否需要释放保证金");
+
+                // 获取当前持仓信息
+                var positions = await _binanceService.GetPositionsAsync();
+                var targetPosition = positions.FirstOrDefault(p => 
+                    p.Symbol == symbol && 
+                    Math.Abs(p.PositionAmt) > 0 && 
+                    p.MarginType == "ISOLATED"); // 只处理逐仓模式
+
+                if (targetPosition == null)
+                {
+                    _logger.LogInformation($"💡 {symbol} 没有逐仓持仓，无需释放保证金");
+                    return;
+                }
+
+                // 应用新杠杆到币安
+                _logger.LogInformation($"🎚️ 正在设置 {symbol} 杠杆为 {newLeverage}x...");
+                var leverageSetSuccess = await _binanceService.SetLeverageAsync(symbol, newLeverage);
+                
+                if (!leverageSetSuccess)
+                {
+                    _logger.LogWarning($"❌ 设置杠杆失败，跳过保证金释放");
+                    return;
+                }
+
+                _logger.LogInformation($"✅ 杠杆设置成功，开始计算保证金释放");
+
+                // 计算新杠杆下所需的保证金
+                var positionValue = Math.Abs(targetPosition.PositionAmt) * targetPosition.MarkPrice;
+                var requiredMarginNewLeverage = positionValue / newLeverage;
+                var requiredMarginOldLeverage = positionValue / oldLeverage;
+                var currentMargin = targetPosition.IsolatedMargin;
+
+                _logger.LogInformation($"📊 保证金计算:");
+                _logger.LogInformation($"   持仓价值: {positionValue:F2} USDT");
+                _logger.LogInformation($"   当前保证金: {currentMargin:F2} USDT");
+                _logger.LogInformation($"   旧杠杆({oldLeverage}x)所需: {requiredMarginOldLeverage:F2} USDT");
+                _logger.LogInformation($"   新杠杆({newLeverage}x)所需: {requiredMarginNewLeverage:F2} USDT");
+
+                // 计算可释放的保证金（保留一些缓冲）
+                var excessMargin = currentMargin - requiredMarginNewLeverage;
+                var bufferRatio = 0.1m; // 保留10%缓冲
+                var releasableMargin = excessMargin * (1 - bufferRatio);
+
+                if (releasableMargin <= 1) // 少于1 USDT不值得释放
+                {
+                    _logger.LogInformation($"💡 可释放保证金太少 ({releasableMargin:F2} USDT)，跳过释放");
+                    return;
+                }
+
+                _logger.LogInformation($"💰 可释放保证金: {releasableMargin:F2} USDT (已扣除{bufferRatio:P0}缓冲)");
+
+                // 确定持仓方向
+                var positionSide = "BOTH"; // 默认单向持仓
+                var dualSidePosition = await _binanceService.GetPositionModeAsync();
+                if (dualSidePosition)
+                {
+                    positionSide = targetPosition.PositionSideString;
+                }
+
+                // 释放保证金 (type=2表示减少保证金)
+                _logger.LogInformation($"🔄 正在释放 {symbol} 保证金 {releasableMargin:F2} USDT...");
+                var releaseSuccess = await _binanceService.AdjustIsolatedMarginAsync(
+                    symbol, positionSide, releasableMargin, 2);
+
+                if (releaseSuccess)
+                {
+                    _logger.LogInformation($"✅ 成功释放保证金: {releasableMargin:F2} USDT");
+                    
+                    // 在UI线程中更新状态消息
+                    Application.Current.Dispatcher.BeginInvoke(() =>
+                    {
+                        StatusMessage = $"🎉 杠杆调整完成，已自动释放 {releasableMargin:F0}U 保证金";
+                    });
+                    
+                    // 刷新数据以显示最新的保证金状态
+                    await RefreshDataAsync();
+                }
+                else
+                {
+                    _logger.LogWarning($"❌ 释放保证金失败");
+                    Application.Current.Dispatcher.BeginInvoke(() =>
+                    {
+                        StatusMessage = $"⚠️ 杠杆调整成功，但保证金释放失败";
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"自动释放保证金异常: {symbol}");
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    StatusMessage = $"❌ 保证金释放异常: {ex.Message}";
+                });
+            }
+        }
+
+        /// <summary>
+        /// 手动释放多余保证金命令
+        /// </summary>
+        [RelayCommand]
+        private async Task ReleaseExcessMarginAsync()
+        {
+            if (string.IsNullOrEmpty(Symbol))
+            {
+                StatusMessage = "请先选择合约";
+                return;
+            }
+
+            if (IsLoading)
+            {
+                StatusMessage = "正在处理中，请稍候...";
+                return;
+            }
+
+            IsLoading = true;
+            try
+            {
+                StatusMessage = "正在检查保证金释放...";
+                
+                // 获取当前持仓信息
+                var positions = await _binanceService.GetPositionsAsync();
+                var isolatedPositions = positions.Where(p => 
+                    p.Symbol == Symbol && 
+                    Math.Abs(p.PositionAmt) > 0 && 
+                    p.MarginType == "ISOLATED").ToList();
+
+                if (!isolatedPositions.Any())
+                {
+                    StatusMessage = $"💡 {Symbol} 没有逐仓持仓，无需释放保证金";
+                    return;
+                }
+
+                int releasedCount = 0;
+                decimal totalReleased = 0;
+
+                foreach (var position in isolatedPositions)
+                {
+                    // 计算当前杠杆下所需的保证金
+                    var positionValue = Math.Abs(position.PositionAmt) * position.MarkPrice;
+                    var requiredMargin = positionValue / position.Leverage;
+                    var currentMargin = position.IsolatedMargin;
+
+                    _logger.LogInformation($"📊 分析持仓: {position.Symbol} {position.PositionSideString}");
+                    _logger.LogInformation($"   持仓价值: {positionValue:F2} USDT");
+                    _logger.LogInformation($"   当前保证金: {currentMargin:F2} USDT");
+                    _logger.LogInformation($"   所需保证金: {requiredMargin:F2} USDT");
+
+                    // 计算可释放的保证金（保留一些缓冲）
+                    var excessMargin = currentMargin - requiredMargin;
+                    var bufferRatio = 0.15m; // 手动释放时保留更多缓冲(15%)
+                    var releasableMargin = excessMargin * (1 - bufferRatio);
+
+                    if (releasableMargin <= 2) // 少于2 USDT不值得释放
+                    {
+                        _logger.LogInformation($"💡 {position.Symbol} 可释放保证金太少 ({releasableMargin:F2} USDT)，跳过");
+                        continue;
+                    }
+
+                    // 确定持仓方向
+                    var positionSide = "BOTH"; // 默认单向持仓
+                    var dualSidePosition = await _binanceService.GetPositionModeAsync();
+                    if (dualSidePosition)
+                    {
+                        positionSide = position.PositionSideString;
+                    }
+
+                    // 释放保证金 (type=2表示减少保证金)
+                    _logger.LogInformation($"🔄 释放 {position.Symbol} 保证金 {releasableMargin:F2} USDT...");
+                    var releaseSuccess = await _binanceService.AdjustIsolatedMarginAsync(
+                        position.Symbol, positionSide, releasableMargin, 2);
+
+                    if (releaseSuccess)
+                    {
+                        releasedCount++;
+                        totalReleased += releasableMargin;
+                        _logger.LogInformation($"✅ 成功释放 {position.Symbol} 保证金: {releasableMargin:F2} USDT");
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"❌ 释放 {position.Symbol} 保证金失败");
+                    }
+
+                    // 添加短暂延迟避免API频率限制
+                    await Task.Delay(200);
+                }
+
+                if (releasedCount > 0)
+                {
+                    StatusMessage = $"🎉 成功释放 {releasedCount} 个持仓的保证金，共 {totalReleased:F0}U";
+                    
+                    // 刷新数据以显示最新的保证金状态
+                    await RefreshDataAsync();
+                }
+                else
+                {
+                    StatusMessage = "💡 没有可释放的多余保证金";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"❌ 释放保证金异常: {ex.Message}";
+                _logger.LogError(ex, "手动释放保证金异常");
+            }
+            finally
+            {
+                IsLoading = false;
             }
         }
 

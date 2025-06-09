@@ -207,30 +207,59 @@ namespace BinanceFuturesTrader.ViewModels
         {
             try
             {
-                var conditionalOrder = new ConditionalOrderInfo
+                // 🔧 修复：创建真正的API订单请求
+                var orderRequest = new OrderRequest
                 {
                     Symbol = Symbol,
-                    Type = "TAKE_PROFIT_MARKET", // 向上突破使用TAKE_PROFIT_MARKET
-                    StopPrice = triggerPrice,
-                    Quantity = Quantity,
                     Side = side,
+                    Type = "TAKE_PROFIT_MARKET", // 向上突破使用TAKE_PROFIT_MARKET
+                    Quantity = Quantity,
+                    StopPrice = triggerPrice,
+                    ReduceOnly = false, // 加仓型订单不是减仓
                     WorkingType = WorkingType,
-                    Status = "等待触发",
-                    CreateTime = DateTime.Now,
-                    Description = $"{description} @{triggerPrice}",
-                    OrderCategory = "加仓型"
+                    TimeInForce = "GTC"
                 };
 
-                ConditionalOrders.Add(conditionalOrder);
+                _logger.LogInformation($"🚀 准备提交{description}条件单到API: {Symbol} {side} {Quantity} @{triggerPrice}");
 
-                _logger.LogInformation($"{description}条件单已添加: {Symbol} {side} {Quantity} @{triggerPrice}");
+                // 🚀 真正调用API下单
+                var success = await _binanceService.PlaceOrderAsync(orderRequest);
                 
-                OnPropertyChanged(nameof(HasNoConditionalOrders));
-                return true;
+                if (success)
+                {
+                    _logger.LogInformation($"✅ {description}条件单API提交成功: {Symbol} {side} {Quantity} @{triggerPrice}");
+                    StatusMessage = $"✅ {description}条件单提交成功";
+                    
+                    // 成功后添加到本地监控列表
+                    var conditionalOrder = new ConditionalOrderInfo
+                    {
+                        Symbol = Symbol,
+                        Type = "TAKE_PROFIT_MARKET",
+                        StopPrice = triggerPrice,
+                        Quantity = Quantity,
+                        Side = side,
+                        WorkingType = WorkingType,
+                        Status = "等待触发",
+                        CreateTime = DateTime.Now,
+                        Description = $"{description} @{triggerPrice}",
+                        OrderCategory = "加仓型"
+                    };
+
+                    ConditionalOrders.Add(conditionalOrder);
+                    OnPropertyChanged(nameof(HasNoConditionalOrders));
+                    return true;
+                }
+                else
+                {
+                    _logger.LogError($"❌ {description}条件单API提交失败: {Symbol} {side} {Quantity} @{triggerPrice}");
+                    StatusMessage = $"❌ {description}条件单提交失败";
+                    return false;
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"下{description}条件单失败");
+                StatusMessage = $"❌ {description}条件单异常: {ex.Message}";
                 return false;
             }
         }
@@ -310,30 +339,56 @@ namespace BinanceFuturesTrader.ViewModels
                 var orderSide = isLong ? "BUY" : "SELL";
                 var orderType = isLong ? "TAKE_PROFIT_MARKET" : "STOP_MARKET";
 
-                var conditionalOrder = new ConditionalOrderInfo
+                // 🔧 修复：创建真正的API订单请求
+                var orderRequest = new OrderRequest
                 {
                     Symbol = Symbol,
-                    Type = orderType,
-                    StopPrice = AddPositionTriggerPrice,
-                    Quantity = Quantity, // 使用下单区设置的数量
                     Side = orderSide,
+                    Type = orderType,
+                    Quantity = Quantity, // 使用下单区设置的数量
+                    StopPrice = AddPositionTriggerPrice,
+                    ReduceOnly = false, // 加仓型订单不是减仓
                     WorkingType = WorkingType,
-                    Status = "等待触发",
-                    CreateTime = DateTime.Now,
-                    Description = $"加仓至浮盈{TargetProfit}U @{AddPositionTriggerPrice}",
-                    OrderCategory = "加仓型"
+                    TimeInForce = "GTC"
                 };
 
-                ConditionalOrders.Add(conditionalOrder);
+                _logger.LogInformation($"🚀 准备提交加仓条件单到API: {Symbol} {orderSide} {Quantity} @{AddPositionTriggerPrice}");
 
-                StatusMessage = "加仓条件单下单成功";
-                _logger.LogInformation($"加仓条件单已添加: {Symbol} 目标浮盈{TargetProfit}U @{AddPositionTriggerPrice}");
+                // 🚀 真正调用API下单
+                var success = await _binanceService.PlaceOrderAsync(orderRequest);
                 
-                OnPropertyChanged(nameof(HasNoConditionalOrders));
+                if (success)
+                {
+                    _logger.LogInformation($"✅ 加仓条件单API提交成功: {Symbol} 目标浮盈{TargetProfit}U @{AddPositionTriggerPrice}");
+                    StatusMessage = "✅ 加仓条件单提交成功";
+                    
+                    // 成功后添加到本地监控列表
+                    var conditionalOrder = new ConditionalOrderInfo
+                    {
+                        Symbol = Symbol,
+                        Type = orderType,
+                        StopPrice = AddPositionTriggerPrice,
+                        Quantity = Quantity,
+                        Side = orderSide,
+                        WorkingType = WorkingType,
+                        Status = "等待触发",
+                        CreateTime = DateTime.Now,
+                        Description = $"加仓至浮盈{TargetProfit}U @{AddPositionTriggerPrice}",
+                        OrderCategory = "加仓型"
+                    };
+
+                    ConditionalOrders.Add(conditionalOrder);
+                    OnPropertyChanged(nameof(HasNoConditionalOrders));
+                }
+                else
+                {
+                    _logger.LogError($"❌ 加仓条件单API提交失败: {Symbol} {orderSide} {Quantity} @{AddPositionTriggerPrice}");
+                    StatusMessage = "❌ 加仓条件单提交失败";
+                }
             }
             catch (Exception ex)
             {
-                StatusMessage = $"加仓条件单异常: {ex.Message}";
+                StatusMessage = $"❌ 加仓条件单异常: {ex.Message}";
                 _logger.LogError(ex, "下加仓条件单异常");
             }
             finally
@@ -496,31 +551,58 @@ namespace BinanceFuturesTrader.ViewModels
 
                 var isLong = currentPosition.PositionAmt > 0;
                 var orderSide = isLong ? "SELL" : "BUY"; // 平仓方向与持仓相反
+                var positionQuantity = Math.Abs(currentPosition.PositionAmt);
                 
-                var conditionalOrder = new ConditionalOrderInfo
+                // 🔧 修复：创建真正的API订单请求
+                var orderRequest = new OrderRequest
                 {
                     Symbol = Symbol,
-                    Type = "TAKE_PROFIT_MARKET",
-                    StopPrice = ClosePriceTarget,
-                    Quantity = Math.Abs(currentPosition.PositionAmt), // 平仓数量
                     Side = orderSide,
+                    Type = "TAKE_PROFIT_MARKET",
+                    Quantity = positionQuantity, // 平仓数量
+                    StopPrice = ClosePriceTarget,
+                    ReduceOnly = true, // 平仓型订单是减仓
                     WorkingType = WorkingType,
-                    Status = "等待触发",
-                    CreateTime = DateTime.Now,
-                    Description = $"止盈平仓{CloseProfitTarget:F2}U @{ClosePriceTarget}",
-                    OrderCategory = "平仓型"
+                    TimeInForce = "GTC"
                 };
 
-                ConditionalOrders.Add(conditionalOrder);
+                _logger.LogInformation($"🚀 准备提交平仓条件单到API: {Symbol} {orderSide} {positionQuantity} @{ClosePriceTarget}");
 
-                StatusMessage = "平仓条件单下单成功";
-                _logger.LogInformation($"平仓条件单已添加: {Symbol} 目标浮盈{CloseProfitTarget:F2}U @{ClosePriceTarget}");
+                // 🚀 真正调用API下单
+                var success = await _binanceService.PlaceOrderAsync(orderRequest);
                 
-                OnPropertyChanged(nameof(HasNoConditionalOrders));
+                if (success)
+                {
+                    _logger.LogInformation($"✅ 平仓条件单API提交成功: {Symbol} 目标浮盈{CloseProfitTarget:F2}U @{ClosePriceTarget}");
+                    StatusMessage = "✅ 平仓条件单提交成功";
+                    
+                    // 成功后添加到本地监控列表
+                    var conditionalOrder = new ConditionalOrderInfo
+                    {
+                        Symbol = Symbol,
+                        Type = "TAKE_PROFIT_MARKET",
+                        StopPrice = ClosePriceTarget,
+                        Quantity = positionQuantity,
+                        Side = orderSide,
+                        WorkingType = WorkingType,
+                        Status = "等待触发",
+                        CreateTime = DateTime.Now,
+                        Description = $"止盈平仓{CloseProfitTarget:F2}U @{ClosePriceTarget}",
+                        OrderCategory = "平仓型"
+                    };
+
+                    ConditionalOrders.Add(conditionalOrder);
+                    OnPropertyChanged(nameof(HasNoConditionalOrders));
+                }
+                else
+                {
+                    _logger.LogError($"❌ 平仓条件单API提交失败: {Symbol} {orderSide} {positionQuantity} @{ClosePriceTarget}");
+                    StatusMessage = "❌ 平仓条件单提交失败";
+                }
             }
             catch (Exception ex)
             {
-                StatusMessage = $"平仓条件单异常: {ex.Message}";
+                StatusMessage = $"❌ 平仓条件单异常: {ex.Message}";
                 _logger.LogError(ex, "下平仓条件单异常");
             }
             finally

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
 using CommunityToolkit.Mvvm.Input;
@@ -47,120 +49,118 @@ namespace BinanceFuturesTrader.ViewModels
         }
 
         /// <summary>
-        /// 刷新账户数据并保持选择状态
+        /// 刷新账户数据（保持选择状态）
         /// </summary>
         private async Task RefreshAccountDataWithSelectionPreservation()
         {
-            // 保存当前选择状态
-            var selectedOrderIds = new HashSet<long>();
-            var selectedPositionSymbols = new HashSet<string>();
-            
-            foreach (var order in FilteredOrders.Where(o => o.IsSelected))
+            try
             {
-                selectedOrderIds.Add(order.OrderId);
-            }
-            
-            foreach (var position in Positions.Where(p => p.IsSelected))
-            {
-                var positionKey = $"{position.Symbol}_{position.PositionSideString}";
-                selectedPositionSymbols.Add(positionKey);
-            }
-
-            // 更新账户信息
-            var accountInfo = await _binanceService.GetAccountInfoAsync();
-            if (accountInfo != null)
-            {
-                AccountInfo = accountInfo;
-            }
-
-            // 更新持仓信息
-            var positions = await _binanceService.GetPositionsAsync();
-            
-            Positions.Clear();
-            int restoredPositionCount = 0;
-            foreach (var position in positions)
-            {
-                // 恢复持仓选择状态
-                var positionKey = $"{position.Symbol}_{position.PositionSideString}";
-                if (selectedPositionSymbols.Contains(positionKey))
-                {
-                    position.IsSelected = true;
-                    restoredPositionCount++;
-                }
-                Positions.Add(position);
-            }
-
-            // 计算保证金占用
-            if (AccountInfo != null)
-            {
-                AccountInfo.CalculateMarginUsed(Positions);
-                OnPropertyChanged(nameof(TotalMarginBalance));
-                OnPropertyChanged(nameof(TotalWalletBalance));
-            }
-
-            // 更新订单信息
-            var orders = await _binanceService.GetOpenOrdersAsync();
-            
-            Orders.Clear();
-            int restoredOrderCount = 0;
-            foreach (var order in orders)
-            {
-                // 恢复订单选择状态
-                if (selectedOrderIds.Contains(order.OrderId))
-                {
-                    order.IsSelected = true;
-                    restoredOrderCount++;
-                }
-                Orders.Add(order);
-            }
-
-            // 如果有选中的持仓，更新过滤的订单
-            if (SelectedPosition != null)
-            {
-                FilterOrdersForPosition(SelectedPosition.Symbol);
+                // 保存当前选择状态
+                var selectedPositionSymbols = Positions.Where(p => p.IsSelected).Select(p => p.Symbol).ToHashSet();
+                var selectedOrderIds = Orders.Where(o => o.IsSelected).Select(o => o.OrderId).ToHashSet();
                 
-                // 恢复过滤订单的选择状态
-                foreach (var order in FilteredOrders)
+                // 🔧 保存当前过滤状态，防止切换窗口时丢失
+                var currentSymbolFilter = SelectedPosition?.Symbol;
+                var hasReduceOnlyOrders = ReduceOnlyOrders.Count > 0;
+                var hasFilteredOrders = FilteredOrders.Count > 0;
+
+                // 获取新数据
+                var newAccountInfo = await _binanceService.GetAccountInfoAsync();
+                var newPositions = await _binanceService.GetPositionsAsync();
+                var newOrders = await _binanceService.GetOpenOrdersAsync();
+
+                if (newAccountInfo != null && newPositions != null && newOrders != null)
                 {
-                    if (selectedOrderIds.Contains(order.OrderId))
+                    // 使用Dispatcher确保UI更新在主线程批量进行
+                    Application.Current.Dispatcher.BeginInvoke(() =>
                     {
-                        order.IsSelected = true;
-                    }
+                        // 🔧 防闪烁关键：先计算市值数据，再更新UI
+                        // 预先计算市值数据，避免显示中间的0值状态
+                        newAccountInfo.CalculateMarginUsed(newPositions);
+                        
+                        // 现在可以安全地更新AccountInfo，不会出现0值闪烁
+                        AccountInfo = newAccountInfo;
+                        
+                        // 清空并重新填充集合
+                        Positions.Clear();
+                        Orders.Clear();
+                        
+                        foreach (var position in newPositions)
+                        {
+                            Positions.Add(position);
+                        }
+                        
+                        foreach (var order in newOrders)
+                        {
+                            Orders.Add(order);
+                        }
+                        
+                        // 恢复选择状态
+                        int restoredPositionCount = 0;
+                        int restoredOrderCount = 0;
+                        
+                        foreach (var position in Positions)
+                        {
+                            if (selectedPositionSymbols.Contains(position.Symbol))
+                            {
+                                position.IsSelected = true;
+                                restoredPositionCount++;
+                            }
+                        }
+                        
+                        foreach (var order in Orders)
+                        {
+                            if (selectedOrderIds.Contains(order.OrderId))
+                            {
+                                order.IsSelected = true;
+                                restoredOrderCount++;
+                            }
+                        }
+                        
+                        // 强制通知选择状态属性更新
+                        OnPropertyChanged(nameof(SelectedOrders));
+                        OnPropertyChanged(nameof(HasSelectedOrders));
+                        OnPropertyChanged(nameof(SelectedOrderCount));
+                        OnPropertyChanged(nameof(SelectedPositions));
+                        OnPropertyChanged(nameof(HasSelectedPositions));
+                        OnPropertyChanged(nameof(SelectedPositionCount));
+                        
+                        // 重新加载条件单数据（从API订单中识别条件单）
+                        LoadConditionalOrdersFromApiOrders();
+                        
+                        // 🔧 重要：强制重新应用订单过滤，确保减仓型委托单正确显示
+                        // 使用保存的过滤条件来恢复正确的显示状态
+                        if (!string.IsNullOrEmpty(currentSymbolFilter))
+                        {
+                            _logger.LogDebug($"🔄 恢复按合约过滤: {currentSymbolFilter}");
+                            FilterOrdersForPosition(currentSymbolFilter);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("🔄 恢复显示所有订单");
+                            FilterOrdersForPosition();
+                        }
+                        
+                        // 🔧 额外验证：如果之前有减仓型订单，现在没有了，输出警告
+                        if (hasReduceOnlyOrders && ReduceOnlyOrders.Count == 0)
+                        {
+                            _logger.LogWarning("⚠️ 检测到减仓型订单在刷新后消失，可能存在显示问题");
+                        }
+                        
+                        // 自动计算可用风险金
+                        if (SelectedAccount != null)
+                        {
+                            CalculateMaxRiskCapital();
+                        }
+                        
+                        _logger.LogDebug($"数据刷新完成，恢复了 {restoredPositionCount} 个持仓选择，{restoredOrderCount} 个订单选择");
+                    });
                 }
             }
-            else
+            catch (Exception ex)
             {
-                // 没有选中持仓，显示所有委托单
-                FilterOrdersForPosition(); // 不传参数，显示所有委托单
-                
-                // 恢复所有订单的选择状态
-                foreach (var order in FilteredOrders)
-                {
-                    if (selectedOrderIds.Contains(order.OrderId))
-                    {
-                        order.IsSelected = true;
-                    }
-                }
+                _logger.LogError(ex, "刷新账户数据时发生错误");
             }
-
-            // 强制通知选择状态属性更新
-            OnPropertyChanged(nameof(SelectedOrders));
-            OnPropertyChanged(nameof(HasSelectedOrders));
-            OnPropertyChanged(nameof(SelectedOrderCount));
-            OnPropertyChanged(nameof(SelectedPositions));
-            OnPropertyChanged(nameof(HasSelectedPositions));
-            OnPropertyChanged(nameof(SelectedPositionCount));
-
-            // 重新加载条件单数据（从API订单中识别条件单）
-            LoadConditionalOrdersFromApiOrders();
-
-            // 自动计算可用风险金
-            if (SelectedAccount != null)
-            {
-                CalculateMaxRiskCapital();
-            }
-
-            _logger.LogDebug($"数据刷新完成，恢复了 {restoredPositionCount} 个持仓选择，{restoredOrderCount} 个订单选择");
         }
 
         /// <summary>
@@ -250,13 +250,15 @@ namespace BinanceFuturesTrader.ViewModels
         /// </summary>
         private string DetermineOrderCategory(Models.OrderInfo order)
         {
-            // 如果是ReduceOnly订单，通常是平仓型
+            // 🔧 修复：正确判断订单分类，应该基于ReduceOnly属性而不是订单类型
+            // ReduceOnly=true 或 ClosePosition=true 的订单是平仓型
             if (order.ReduceOnly || order.ClosePosition)
             {
                 return "平仓型";
             }
             
-            // 其他情况默认为加仓型
+            // ReduceOnly=false 的条件单是加仓型
+            // 包括用于突破开仓的TAKE_PROFIT_MARKET、STOP_MARKET等
             return "加仓型";
         }
         #endregion
@@ -279,19 +281,27 @@ namespace BinanceFuturesTrader.ViewModels
                 int reduceOnlyCount = 0;
                 int addPositionCount = 0;
 
+                _logger.LogDebug($"🔍 开始过滤订单，总订单数: {ordersToShow.Count}，过滤条件: {(string.IsNullOrEmpty(symbol) ? "全部" : symbol)}");
+
                 foreach (var order in ordersToShow)
                 {
-                    // 减仓型订单显示在上方委托单列表
+                    _logger.LogDebug($"   检查订单: {order.Symbol} {order.Type} ReduceOnly={order.ReduceOnly} ClosePosition={order.ClosePosition}");
+                    
+                    // 🔧 修复：正确的订单分类逻辑
+                    // 减仓型订单（ReduceOnly=true 或 ClosePosition=true）显示在上方委托单列表  
                     if (order.ReduceOnly || order.ClosePosition)
                     {
                         ReduceOnlyOrders.Add(order);
                         reduceOnlyCount++;
+                        _logger.LogDebug($"   ✅ 识别为减仓型订单: {order.Symbol} {order.Type}");
                     }
                     else
                     {
-                        // 加仓型订单显示在下方条件单列表
+                        // 加仓型订单（ReduceOnly=false）显示在下方条件单列表
+                        // 包括用于开仓的TAKE_PROFIT_MARKET、STOP_MARKET等条件单
                         FilteredOrders.Add(order);
                         addPositionCount++;
+                        _logger.LogDebug($"   ➕ 识别为加仓型订单: {order.Symbol} {order.Type}");
                     }
                 }
 
@@ -301,9 +311,11 @@ namespace BinanceFuturesTrader.ViewModels
                 OnPropertyChanged(nameof(SelectedOrderCount));
                 OnPropertyChanged(nameof(HasSelectedStopOrders));
                 OnPropertyChanged(nameof(SelectedStopOrderCount));
+                OnPropertyChanged(nameof(ReduceOnlyOrders));
 
-                _logger.LogDebug($"订单过滤完成，减仓型订单: {reduceOnlyCount} 个，加仓型订单: {addPositionCount} 个" + 
+                _logger.LogDebug($"📊 订单过滤完成，减仓型订单: {reduceOnlyCount} 个，加仓型订单: {addPositionCount} 个" + 
                     (string.IsNullOrEmpty(symbol) ? "（全部）" : $"（{symbol}）"));
+                _logger.LogDebug($"📋 ReduceOnlyOrders集合当前包含 {ReduceOnlyOrders.Count} 个订单");
             }
             catch (Exception ex)
             {
@@ -329,12 +341,37 @@ namespace BinanceFuturesTrader.ViewModels
                     // 过滤该持仓的订单
                     FilterOrdersForPosition(value.Symbol);
                     
-                    _logger.LogDebug($"选择持仓: {value.Symbol} {value.PositionSideString} {value.PositionAmt}");
+                    // 🔧 自动刷新风险管理按钮状态
+                    try
+                    {
+                        AddProfitProtectionStopLossCommand?.NotifyCanExecuteChanged();
+                        AddBreakEvenStopLossCommand?.NotifyCanExecuteChanged();
+                        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+                    }
+                    catch (Exception refreshEx)
+                    {
+                        _logger.LogWarning(refreshEx, "刷新命令状态失败");
+                    }
+                    
+                    _logger.LogDebug($"选择持仓: {value.Symbol} {value.PositionSideString} {value.PositionAmt} 盈亏:{value.UnrealizedProfit:F2}U");
                 }
                 else
                 {
                     // 取消选择，显示所有订单
                     FilterOrdersForPosition();
+                    
+                    // 🔧 取消选择时也刷新命令状态
+                    try
+                    {
+                        AddProfitProtectionStopLossCommand?.NotifyCanExecuteChanged();
+                        AddBreakEvenStopLossCommand?.NotifyCanExecuteChanged();
+                        System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+                    }
+                    catch (Exception refreshEx)
+                    {
+                        _logger.LogWarning(refreshEx, "刷新命令状态失败");
+                    }
+                    
                     _logger.LogDebug("取消持仓选择，显示所有订单");
                 }
             }
@@ -523,6 +560,45 @@ namespace BinanceFuturesTrader.ViewModels
             finally
             {
                 IsLoading = false;
+            }
+        }
+        #endregion
+
+        #region 手动刷新功能
+        /// <summary>
+        /// 强制刷新订单分类显示
+        /// </summary>
+        [RelayCommand]
+        private void ForceRefreshOrderDisplay()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 手动强制刷新订单分类显示...");
+                
+                // 强制重新执行订单过滤
+                if (SelectedPosition != null)
+                {
+                    _logger.LogDebug($"按选中持仓过滤: {SelectedPosition.Symbol}");
+                    FilterOrdersForPosition(SelectedPosition.Symbol);
+                }
+                else
+                {
+                    _logger.LogDebug("显示所有订单");
+                    FilterOrdersForPosition();
+                }
+                
+                // 强制通知UI更新
+                OnPropertyChanged(nameof(ReduceOnlyOrders));
+                OnPropertyChanged(nameof(FilteredOrders));
+                OnPropertyChanged(nameof(Orders));
+                
+                StatusMessage = $"✅ 订单显示已刷新 - 减仓型: {ReduceOnlyOrders.Count}, 加仓型: {FilteredOrders.Count}";
+                _logger.LogInformation($"手动刷新完成 - 减仓型订单: {ReduceOnlyOrders.Count}，加仓型订单: {FilteredOrders.Count}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "强制刷新订单显示失败");
+                StatusMessage = $"❌ 刷新失败: {ex.Message}";
             }
         }
         #endregion

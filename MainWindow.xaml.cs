@@ -133,6 +133,12 @@ namespace BinanceFuturesTrader
             }
         }
 
+        // 测试市值计算按钮点击事件
+        private void TestMarketValue_Click(object sender, RoutedEventArgs e)
+        {
+            _viewModel.TestMarketValueCalculation();
+            _viewModel.StatusMessage = "🧪 市值计算测试已执行，请查看控制台输出";
+        }
 
     }
 } 
