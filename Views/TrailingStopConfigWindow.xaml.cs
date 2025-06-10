@@ -2,6 +2,8 @@ using System;
 using System.Windows;
 using System.Windows.Controls;
 using BinanceFuturesTrader.Models;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace BinanceFuturesTrader.Views
 {
@@ -27,8 +29,7 @@ namespace BinanceFuturesTrader.Views
                 Mode = currentConfig.Mode,
                 AllocationRatio = currentConfig.AllocationRatio,
                 OnlyForProfitablePositions = currentConfig.OnlyForProfitablePositions,
-                MinCallbackRate = currentConfig.MinCallbackRate,
-                MaxCallbackRate = currentConfig.MaxCallbackRate,
+                CallbackRate = currentConfig.CallbackRate,
                 FixedStopRatio = currentConfig.FixedStopRatio,
                 TrailingStopRatio = currentConfig.TrailingStopRatio
             };
@@ -37,6 +38,15 @@ namespace BinanceFuturesTrader.Views
             SetupEventHandlers();
             LoadConfigToUI();
             UpdatePreview();
+        }
+
+        public TrailingStopConfigWindow(TrailingStopConfig currentConfig, string targetInfo, List<PositionInfo> targetPositions) : this(currentConfig)
+        {
+            // 更新窗口标题以显示目标信息
+            if (!string.IsNullOrEmpty(targetInfo))
+            {
+                this.Title = $"移动止损配置设置 - {targetInfo}";
+            }
         }
 
         private void LoadConfigToUI()
@@ -68,8 +78,8 @@ namespace BinanceFuturesTrader.Views
                 RbAllPositions.IsChecked = true;
             
             // 设置回调率
-            MinCallbackTextBox.Text = Config.MinCallbackRate.ToString("F1");
-            MaxCallbackTextBox.Text = Config.MaxCallbackRate.ToString("F1");
+            CallbackSlider.Value = (double)Config.CallbackRate;
+            CallbackTextBox.Text = Config.CallbackRate.ToString("F1");
             
             // 设置分层比例
             FixedStopTextBox.Text = (Config.FixedStopRatio * 100).ToString("F0");
@@ -91,8 +101,8 @@ namespace BinanceFuturesTrader.Views
             RbAllPositions.Checked += ScopeRadioButton_Checked;
             
             // 回调率事件
-            MinCallbackTextBox.TextChanged += CallbackTextBox_TextChanged;
-            MaxCallbackTextBox.TextChanged += CallbackTextBox_TextChanged;
+            CallbackSlider.ValueChanged += CallbackSlider_ValueChanged;
+            CallbackTextBox.TextChanged += CallbackTextBox_TextChanged;
         }
 
         private void ModeRadioButton_Checked(object sender, RoutedEventArgs e)
@@ -153,11 +163,42 @@ namespace BinanceFuturesTrader.Views
             }
         }
 
+        private void CallbackSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isUpdatingFromCode) return;
+            
+            // 添加空引用检查
+            if (CallbackTextBox == null || Config == null || e == null) return;
+            
+            _isUpdatingFromCode = true;
+            CallbackTextBox.Text = e.NewValue.ToString("F1");
+            Config.CallbackRate = (decimal)e.NewValue;
+            _isUpdatingFromCode = false;
+            
+            UpdatePreview();
+        }
+
         private void CallbackTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (_isUpdatingFromCode) return;
             
-            ValidateAndUpdateCallback();
+            // 添加空引用检查
+            if (CallbackTextBox == null || CallbackSlider == null || Config == null) return;
+            
+            if (decimal.TryParse(CallbackTextBox.Text, out decimal value) && value >= 0.1m && value <= 10m)
+            {
+                _isUpdatingFromCode = true;
+                CallbackSlider.Value = (double)value;
+                Config.CallbackRate = value;
+                _isUpdatingFromCode = false;
+                
+                CallbackTextBox.Background = System.Windows.Media.Brushes.White;
+                UpdatePreview();
+            }
+            else if (!string.IsNullOrEmpty(CallbackTextBox.Text))
+            {
+                CallbackTextBox.Background = System.Windows.Media.Brushes.LightPink;
+            }
         }
 
         private void LayeringTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -174,23 +215,6 @@ namespace BinanceFuturesTrader.Views
             
             // 分层比例组仅在智能分层模式时显示
             LayeringGroup.Visibility = Config.Mode == TrailingStopMode.SmartLayering ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        private void ValidateAndUpdateCallback()
-        {
-            bool isMinValid = decimal.TryParse(MinCallbackTextBox.Text, out decimal minValue) && minValue >= 1 && minValue <= 50;
-            bool isMaxValid = decimal.TryParse(MaxCallbackTextBox.Text, out decimal maxValue) && maxValue >= 1 && maxValue <= 50;
-            bool isRangeValid = isMinValid && isMaxValid && minValue < maxValue;
-            
-            MinCallbackTextBox.Background = isMinValid ? System.Windows.Media.Brushes.White : System.Windows.Media.Brushes.LightPink;
-            MaxCallbackTextBox.Background = isMaxValid ? System.Windows.Media.Brushes.White : System.Windows.Media.Brushes.LightPink;
-            
-            if (isRangeValid)
-            {
-                Config.MinCallbackRate = minValue;
-                Config.MaxCallbackRate = maxValue;
-                UpdatePreview();
-            }
         }
 
         private void ValidateAndUpdateLayering()
@@ -226,7 +250,7 @@ namespace BinanceFuturesTrader.Views
             var preview = $"【配置预览】\n\n";
             preview += $"🎯 模式: {modeDescription}\n";
             preview += $"📊 处理范围: {(Config.OnlyForProfitablePositions ? "仅盈利持仓" : "所有持仓")}\n";
-            preview += $"📈 回调率: {Config.MinCallbackRate:F1}% - {Config.MaxCallbackRate:F1}%\n";
+            preview += $"📈 回调率: {Config.CallbackRate:F1}%\n";
             
             if (Config.Mode == TrailingStopMode.Coexist)
             {
@@ -251,21 +275,19 @@ namespace BinanceFuturesTrader.Views
 
         private bool ValidateAllInputs()
         {
-            // 验证回调率
-            bool isMinValid = decimal.TryParse(MinCallbackTextBox.Text, out decimal minValue) && minValue >= 1 && minValue <= 50;
-            bool isMaxValid = decimal.TryParse(MaxCallbackTextBox.Text, out decimal maxValue) && maxValue >= 1 && maxValue <= 50;
-            bool isCallbackRangeValid = isMinValid && isMaxValid && minValue < maxValue;
-            
-            if (!isCallbackRangeValid)
+            // 验证回调率 - 符合币安API限制
+            bool isCallbackValid = Config.CallbackRate >= 0.1m && Config.CallbackRate <= 10m;
+            if (!isCallbackValid)
             {
-                MessageBox.Show("回调率设置无效。最小值和最大值都必须在1-50%范围内，且最小值小于最大值。", "输入错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("回调率设置无效。币安API限制：必须在0.1-10%范围内。", "输入错误", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
             
             // 验证分配比例（仅并存模式）
             if (Config.Mode == TrailingStopMode.Coexist)
             {
-                bool isAllocationValid = decimal.TryParse(AllocationTextBox.Text, out decimal allocation) && allocation >= 1 && allocation <= 100;
+                // Config.AllocationRatio存储的是0.01-1.0的小数值，对应1%-100%
+                bool isAllocationValid = Config.AllocationRatio >= 0.01m && Config.AllocationRatio <= 1.0m;
                 if (!isAllocationValid)
                 {
                     MessageBox.Show("分配比例必须在1-100%范围内。", "输入错误", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -276,9 +298,9 @@ namespace BinanceFuturesTrader.Views
             // 验证分层比例（仅智能分层模式）
             if (Config.Mode == TrailingStopMode.SmartLayering)
             {
-                bool isFixedValid = decimal.TryParse(FixedStopTextBox.Text, out decimal fixedValue) && fixedValue >= 0 && fixedValue <= 100;
-                bool isTrailingValid = decimal.TryParse(TrailingStopTextBox.Text, out decimal trailingValue) && trailingValue >= 0 && trailingValue <= 100;
-                bool isSumValid = isFixedValid && isTrailingValid && Math.Abs(fixedValue + trailingValue - 100) < 0.1m;
+                bool isFixedValid = Config.FixedStopRatio >= 0 && Config.FixedStopRatio <= 100;
+                bool isTrailingValid = Config.TrailingStopRatio >= 0 && Config.TrailingStopRatio <= 100;
+                bool isSumValid = Math.Abs(Config.FixedStopRatio + Config.TrailingStopRatio - 1) < 0.001m;
                 
                 if (!isSumValid)
                 {

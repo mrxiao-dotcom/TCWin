@@ -62,6 +62,14 @@ namespace BinanceFuturesTrader.ViewModels
         [ObservableProperty]
         private decimal _price = 0;
 
+        // 价格有效性标志
+        [ObservableProperty]
+        private bool _isPriceValid = true;
+
+        // 价格警告信息
+        [ObservableProperty]
+        private string _priceWarningMessage = "";
+
         // 添加存储计算详情的属性
         [ObservableProperty]
         private string _riskCapitalCalculationDetail = "";
@@ -170,11 +178,16 @@ namespace BinanceFuturesTrader.ViewModels
         {
             get
             {
-                var canPlace = SelectedAccount != null &&
+                var basicCondition = SelectedAccount != null &&
                        !string.IsNullOrEmpty(Symbol) &&
                        Quantity > 0 &&
                        LatestPrice > 0 &&
                        !IsLoading;
+
+                // 对限价单增加价格验证
+                var limitOrderPriceValid = OrderType != "LIMIT" || (Price > 0 && IsPriceValid);
+                
+                var canPlace = basicCondition && limitOrderPriceValid;
                 
                 // 调试信息
                 if (!canPlace)
@@ -185,6 +198,8 @@ namespace BinanceFuturesTrader.ViewModels
                     if (Quantity <= 0) reason += "交易数量无效;";
                     if (LatestPrice <= 0) reason += "缺少最新价格;";
                     if (IsLoading) reason += "正在加载中;";
+                    if (OrderType == "LIMIT" && Price <= 0) reason += "限价单价格无效;";
+                    if (OrderType == "LIMIT" && !IsPriceValid) reason += "限价单价格偏离过大;";
                     
                     _logger?.LogDebug($"下单按钮不可用: {reason}");
                 }
@@ -206,8 +221,15 @@ namespace BinanceFuturesTrader.ViewModels
 
             try
             {
-                // 强制使用市价单
-                var orderType = "MARKET";
+                // 根据用户选择的订单类型决定下单方式
+                var orderType = OrderType; // 使用用户选择的订单类型
+                
+                // 验证限价单价格
+                if (orderType == "LIMIT" && Price <= 0)
+                {
+                    StatusMessage = "限价单必须设置价格";
+                    return;
+                }
                 
                 // 显示下单确认对话框
                 var confirmationData = new Views.OrderConfirmationModel
@@ -216,7 +238,7 @@ namespace BinanceFuturesTrader.ViewModels
                     Side = Side,
                     OrderType = orderType,
                     Quantity = Quantity,
-                    Price = LatestPrice, // 市价单使用最新价格用于显示
+                    Price = orderType == "LIMIT" ? Price : LatestPrice, // 限价单使用设置的价格，市价单使用最新价格显示
                     Leverage = Leverage,
                     MarginType = MarginType,
                     StopLossRatio = StopLossRatio,
@@ -238,17 +260,17 @@ namespace BinanceFuturesTrader.ViewModels
                 }
 
                 IsLoading = true;
-                StatusMessage = "正在下市价单...";
+                StatusMessage = orderType == "LIMIT" ? "正在下限价单..." : "正在下市价单...";
 
-                // 创建市价单请求
+                // 创建订单请求
                 var request = new OrderRequest
                 {
                     Symbol = Symbol,
                     Side = Side,
-                    Type = "MARKET", // 强制市价单
+                    Type = orderType,
                     Quantity = Quantity,
-                    Price = 0, // 市价单无需价格
-                    TimeInForce = null // 市价单无需时效
+                    Price = orderType == "LIMIT" ? Price : 0, // 限价单需要价格，市价单不需要
+                    TimeInForce = orderType == "LIMIT" ? "GTC" : null // 限价单设置时效，市价单不需要
                 };
 
                 // 验证订单参数
@@ -263,32 +285,49 @@ namespace BinanceFuturesTrader.ViewModels
                 await _binanceService.SetLeverageAsync(Symbol, Leverage);
                 await _binanceService.SetMarginTypeAsync(Symbol, MarginType);
 
-                // 下市价主单
+                // 下主单
                 var success = await _binanceService.PlaceOrderAsync(request);
                 if (success)
                 {
-                    StatusMessage = "市价单下单成功";
-                    _logger.LogInformation($"市价单下单成功: {Symbol} {Side} {Quantity}");
+                    var orderDescription = orderType == "LIMIT" ? $"限价单(价格:{Price})" : "市价单";
+                    StatusMessage = $"{orderDescription}下单成功";
+                    _logger.LogInformation($"{orderDescription}下单成功: {Symbol} {Side} {Quantity}");
 
-                    // 如果设置了止损比例，自动下止损委托单
+                    // 🚀 关键功能：如果设置了止损比例，立即下止损委托单
                     if (StopLossRatio > 0 && StopLossPrice > 0)
                     {
                         StatusMessage = "正在下止损委托单...";
-                        var stopSuccess = await PlaceStopLossOrderAsync(request);
+                        
+                        // 对于限价单，使用限价单价格计算止损；对于市价单，使用最新价格
+                        var referencePrice = orderType == "LIMIT" ? Price : LatestPrice;
+                        var stopLossPrice = _calculationService.CalculateStopLossPrice(referencePrice, StopLossRatio, Side);
+                        
+                        var stopRequest = new OrderRequest
+                        {
+                            Symbol = Symbol,
+                            Side = Side == "BUY" ? "SELL" : "BUY", // 止损方向与开仓方向相反
+                            Type = "STOP_MARKET",
+                            Quantity = Quantity, // 止损数量与开仓数量相同
+                            StopPrice = stopLossPrice,
+                            ReduceOnly = true, // 止损单必须是减仓
+                            WorkingType = "CONTRACT_PRICE"
+                        };
+                        
+                        var stopSuccess = await _binanceService.PlaceOrderAsync(stopRequest);
                         if (stopSuccess)
                         {
-                            StatusMessage = "下单成功，已设置止损委托";
-                            _logger.LogInformation($"止损委托单设置成功: {Symbol} 止损价格 {StopLossPrice}");
+                            StatusMessage = $"{orderDescription}成功，已设置止损委托(止损价:{stopLossPrice:F4})";
+                            _logger.LogInformation($"止损委托单设置成功: {Symbol} 止损价格 {stopLossPrice:F4}");
                         }
                         else
                         {
-                            StatusMessage = "主单成功，止损委托失败";
+                            StatusMessage = $"{orderDescription}成功，止损委托失败";
                             _logger.LogWarning($"止损委托单设置失败: {Symbol}");
                         }
                     }
                     else
                     {
-                        StatusMessage = "市价单下单成功";
+                        StatusMessage = $"{orderDescription}下单成功";
                     }
 
                     // 刷新数据
@@ -296,8 +335,9 @@ namespace BinanceFuturesTrader.ViewModels
                 }
                 else
                 {
-                    StatusMessage = "市价单下单失败";
-                    _logger.LogWarning($"市价单下单失败: {Symbol} {Side} {Quantity}");
+                    var orderDescription = orderType == "LIMIT" ? "限价单" : "市价单";
+                    StatusMessage = $"{orderDescription}下单失败";
+                    _logger.LogWarning($"{orderDescription}下单失败: {Symbol} {Side} {Quantity}");
                 }
             }
             catch (Exception ex)
@@ -892,35 +932,6 @@ namespace BinanceFuturesTrader.ViewModels
         #endregion
 
         #region 私有辅助方法
-        private async Task<bool> PlaceStopLossOrderAsync(OrderRequest originalOrder)
-        {
-            try
-            {
-                var stopLossRequest = new OrderRequest
-                {
-                    Symbol = originalOrder.Symbol,
-                    Side = originalOrder.Side == "BUY" ? "SELL" : "BUY", // 反向操作
-                    Type = "STOP_MARKET",
-                    Quantity = originalOrder.Quantity,
-                    StopPrice = StopLossPrice,
-                    ReduceOnly = true
-                };
-
-                var success = await _binanceService.PlaceOrderAsync(stopLossRequest);
-                if (success)
-                {
-                    _logger.LogInformation($"止损单下单成功: {stopLossRequest.Symbol} {stopLossRequest.Side} {stopLossRequest.Quantity} @{stopLossRequest.StopPrice}");
-                }
-                
-                return success;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "下止损单失败");
-                return false;
-            }
-        }
-
         private string NormalizeSymbol(string symbol)
         {
             if (string.IsNullOrEmpty(symbol))
@@ -988,6 +999,12 @@ namespace BinanceFuturesTrader.ViewModels
                 {
                     StopLossPrice = newStopLossPrice;
                 }
+            }
+
+            // 重新验证限价单价格（当最新价格变化时）
+            if (OrderType == "LIMIT")
+            {
+                ValidateLimitOrderPrice();
             }
 
             // 通知可下单状态变化
@@ -1159,7 +1176,55 @@ namespace BinanceFuturesTrader.ViewModels
         {
             OnPropertyChanged(nameof(IsLimitConditionalOrder));
             OnPropertyChanged(nameof(IsConditionalOrderVisible));
+            
+            // 当订单类型变化时重新验证价格
+            ValidateLimitOrderPrice();
+            
             SaveTradingSettings();
+        }
+
+        partial void OnPriceChanged(decimal value)
+        {
+            ValidateLimitOrderPrice();
+        }
+        
+        /// <summary>
+        /// 验证限价单价格是否在合理范围内
+        /// </summary>
+        private void ValidateLimitOrderPrice()
+        {
+            if (OrderType != "LIMIT" || LatestPrice <= 0 || Price <= 0)
+            {
+                IsPriceValid = true;
+                PriceWarningMessage = "";
+                return;
+            }
+
+            // 计算价格偏离百分比
+            var deviationPercentage = Math.Abs((Price - LatestPrice) / LatestPrice) * 100;
+            var maxDeviationPercentage = 30m; // 最大偏离30%
+
+            if (deviationPercentage > maxDeviationPercentage)
+            {
+                IsPriceValid = false;
+                var direction = Price > LatestPrice ? "高于" : "低于";
+                PriceWarningMessage = $"⚠️ 价格{direction}市价{deviationPercentage:F1}%，超过30%限制";
+                _logger.LogWarning($"限价单价格偏离过大: 设置价格={Price}, 当前价格={LatestPrice}, 偏离={deviationPercentage:F1}%");
+            }
+            else if (deviationPercentage > 10m) // 偏离超过10%时给出提醒
+            {
+                IsPriceValid = true;
+                var direction = Price > LatestPrice ? "高于" : "低于";
+                PriceWarningMessage = $"💡 价格{direction}市价{deviationPercentage:F1}%，请确认无误";
+            }
+            else
+            {
+                IsPriceValid = true;
+                PriceWarningMessage = "";
+            }
+            
+            // 通知下单按钮状态可能发生变化
+            OnPropertyChanged(nameof(CanPlaceOrder));
         }
         #endregion
 

@@ -12,6 +12,8 @@
     <Window.Resources>
         <!-- 价格格式化转换器 -->
         <converters:PriceFormatConverter x:Key="PriceFormatConverter"/>
+        <!-- 字符串到可见性转换器 -->
+        <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter"/>
         
         <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
             <Setter Property="Margin" Value="3"/>
@@ -89,18 +91,17 @@
                         
                         <!-- 移动止损控制 -->
                         <Button Command="{Binding ToggleTrailingStopCommand}" Margin="6,0,0,0"
-                               Width="90" Height="28" FontSize="11">
+                               Width="90" Height="28" FontSize="11"
+                               ToolTip="{Binding TrailingStopButtonTooltip}">
                             <Button.Style>
                                 <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
                                     <Setter Property="Content" Value="启动移动止损"/>
                                     <Setter Property="Background" Value="Gray"/>
                                     <Setter Property="Foreground" Value="White"/>
-                                    <Setter Property="ToolTip" Value="启动移动止损（并存模式），与固定止损同时工作"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding TrailingStopEnabled}" Value="True">
                                             <Setter Property="Content" Value="关闭移动止损"/>
                                             <Setter Property="Background" Value="Purple"/>
-                                            <Setter Property="ToolTip" Value="关闭移动止损功能"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
@@ -111,7 +112,7 @@
                         <Button Command="{Binding OpenTrailingStopConfigDialogCommand}" Margin="6,0,0,0"
                                Width="90" Height="28" FontSize="11"
                                Background="MediumPurple" Foreground="White" FontWeight="Bold"
-                               ToolTip="打开移动止损配置对话框，直观设置所有参数">
+                               ToolTip="{Binding TrailingStopConfigInfo}">
                             <Button.Content>
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="⚙️" FontSize="12"/>
@@ -731,13 +732,46 @@
                                     <TextBox Text="{Binding Quantity}" Height="28" FontSize="11" Padding="8,6"/>
                                 </DockPanel>
 
-                                <DockPanel Grid.Row="2" Grid.Column="1" Margin="4,0,0,5">
-                                    <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" DockPanel.Dock="Left" 
-                                              VerticalAlignment="Center" Width="40"/>
-                                    <TextBox Text="{Binding Price}" Height="28" FontSize="11" Padding="8,6"
-                                    IsEnabled="{Binding IsLimitOrder}"
-                                    ToolTip="仅限价单需要"/>
-                                </DockPanel>
+                                <StackPanel Grid.Row="2" Grid.Column="1" Margin="4,0,0,5">
+                                    <DockPanel>
+                                        <TextBlock Text="价格:" FontWeight="Bold" FontSize="11" DockPanel.Dock="Left" 
+                                                  VerticalAlignment="Center" Width="40"/>
+                                        <TextBox Text="{Binding Price}" Height="28" FontSize="11" Padding="8,6"
+                                        IsEnabled="{Binding IsLimitOrder}"
+                                        ToolTip="仅限价单需要，价格不能偏离市价超过±30%">
+                                            <TextBox.Style>
+                                                <Style TargetType="TextBox">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPriceValid}" Value="False">
+                                                            <Setter Property="Background" Value="LightPink"/>
+                                                            <Setter Property="BorderBrush" Value="Red"/>
+                                                            <Setter Property="BorderThickness" Value="2"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBox.Style>
+                                        </TextBox>
+                                    </DockPanel>
+                                    <!-- 价格警告信息 -->
+                                    <TextBlock Text="{Binding PriceWarningMessage}" 
+                                              FontSize="10" Margin="40,2,0,0"
+                                              Visibility="{Binding PriceWarningMessage, Converter={StaticResource StringToVisibilityConverter}}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPriceValid}" Value="False">
+                                                        <Setter Property="Foreground" Value="Red"/>
+                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsPriceValid}" Value="True">
+                                                        <Setter Property="Foreground" Value="Orange"/>
+                                                        <Setter Property="FontWeight" Value="Normal"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
                             </Grid>
                             
                             <!-- 止损设置区 -->

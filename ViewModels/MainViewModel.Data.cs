@@ -55,6 +55,16 @@ namespace BinanceFuturesTrader.ViewModels
         {
             try
             {
+                // 🔧 优化：尝试智能更新，如果失败再进行完整重建
+                var intelligentUpdateSuccess = await TryIntelligentDataUpdate();
+                if (intelligentUpdateSuccess)
+                {
+                    _logger.LogDebug("智能数据更新成功，选择状态完全保持");
+                    return;
+                }
+                
+                _logger.LogDebug("智能更新失败，执行完整数据重建");
+                
                 // 保存当前选择状态
                 var selectedPositionSymbols = Positions.Where(p => p.IsSelected).Select(p => p.Symbol).ToHashSet();
                 var selectedOrderIds = Orders.Where(o => o.IsSelected).Select(o => o.OrderId).ToHashSet();
@@ -125,6 +135,9 @@ namespace BinanceFuturesTrader.ViewModels
                         OnPropertyChanged(nameof(HasSelectedPositions));
                         OnPropertyChanged(nameof(SelectedPositionCount));
                         
+                        // 🔧 新增：通知移动止损按钮工具提示更新
+                        OnPropertyChanged(nameof(TrailingStopButtonTooltip));
+                        
                         // 重新加载条件单数据（从API订单中识别条件单）
                         LoadConditionalOrdersFromApiOrders();
                         
@@ -153,13 +166,148 @@ namespace BinanceFuturesTrader.ViewModels
                             CalculateMaxRiskCapital();
                         }
                         
-                        _logger.LogDebug($"数据刷新完成，恢复了 {restoredPositionCount} 个持仓选择，{restoredOrderCount} 个订单选择");
+                        _logger.LogDebug($"完整数据重建完成，恢复了 {restoredPositionCount} 个持仓选择，{restoredOrderCount} 个订单选择");
                     });
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "刷新账户数据时发生错误");
+            }
+        }
+
+        /// <summary>
+        /// 智能数据更新：只更新数值，不重建集合
+        /// </summary>
+        private async Task<bool> TryIntelligentDataUpdate()
+        {
+            try
+            {
+                // 获取新数据
+                var newAccountInfo = await _binanceService.GetAccountInfoAsync();
+                var newPositions = await _binanceService.GetPositionsAsync();
+                var newOrders = await _binanceService.GetOpenOrdersAsync();
+
+                if (newAccountInfo == null || newPositions == null || newOrders == null)
+                    return false;
+
+                // 检查数据结构是否发生重大变化（新增或删除项目）
+                if (!IsDataStructureCompatible(newPositions, newOrders))
+                {
+                    _logger.LogDebug("检测到数据结构变化，无法进行智能更新");
+                    return false;
+                }
+
+                // 在UI线程中执行智能更新
+                bool updateResult = false;
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    updateResult = PerformIntelligentUpdate(newAccountInfo, newPositions, newOrders);
+                });
+
+                return updateResult;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "智能数据更新失败，将执行完整重建");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 检查数据结构是否兼容智能更新
+        /// </summary>
+        private bool IsDataStructureCompatible(List<PositionInfo> newPositions, List<OrderInfo> newOrders)
+        {
+            // 检查持仓数量和合约是否匹配
+            var currentPositionSymbols = Positions.Where(p => p.PositionAmt != 0).Select(p => p.Symbol).OrderBy(s => s).ToList();
+            var newPositionSymbols = newPositions.Where(p => p.PositionAmt != 0).Select(p => p.Symbol).OrderBy(s => s).ToList();
+            
+            if (!currentPositionSymbols.SequenceEqual(newPositionSymbols))
+            {
+                _logger.LogDebug($"持仓合约发生变化：{string.Join(",", currentPositionSymbols)} -> {string.Join(",", newPositionSymbols)}");
+                return false;
+            }
+
+            // 检查订单ID是否匹配（允许状态变化，但不允许新增或删除）
+            var currentOrderIds = Orders.Select(o => o.OrderId).OrderBy(id => id).ToList();
+            var newOrderIds = newOrders.Select(o => o.OrderId).OrderBy(id => id).ToList();
+            
+            if (!currentOrderIds.SequenceEqual(newOrderIds))
+            {
+                _logger.LogDebug($"委托单发生变化：{Orders.Count} -> {newOrders.Count} 个订单");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 执行智能更新：只更新数值，保持选择状态和集合结构
+        /// </summary>
+        private bool PerformIntelligentUpdate(AccountInfo newAccountInfo, List<PositionInfo> newPositions, List<OrderInfo> newOrders)
+        {
+            try
+            {
+                // 更新账户信息（直接替换，不影响选择）
+                newAccountInfo.CalculateMarginUsed(newPositions);
+                AccountInfo = newAccountInfo;
+
+                // 智能更新持仓数据：只更新数值，保持选择状态和对象引用
+                foreach (var currentPosition in Positions)
+                {
+                    var newPosition = newPositions.FirstOrDefault(p => p.Symbol == currentPosition.Symbol);
+                    if (newPosition != null)
+                    {
+                        var wasSelected = currentPosition.IsSelected; // 保存选择状态
+                        
+                        // 更新数值属性
+                        currentPosition.PositionAmt = newPosition.PositionAmt;
+                        currentPosition.EntryPrice = newPosition.EntryPrice;
+                        currentPosition.MarkPrice = newPosition.MarkPrice;
+                        currentPosition.UnrealizedProfit = newPosition.UnrealizedProfit;
+                        currentPosition.UpdateTime = newPosition.UpdateTime;
+                        currentPosition.Leverage = newPosition.Leverage;
+                        currentPosition.IsolatedMargin = newPosition.IsolatedMargin;
+                        
+                        // 恢复选择状态
+                        currentPosition.IsSelected = wasSelected;
+                    }
+                }
+
+                // 智能更新订单数据：只更新状态和数值，保持选择状态
+                foreach (var currentOrder in Orders)
+                {
+                    var newOrder = newOrders.FirstOrDefault(o => o.OrderId == currentOrder.OrderId);
+                    if (newOrder != null)
+                    {
+                        var wasSelected = currentOrder.IsSelected; // 保存选择状态
+                        
+                        // 更新可能变化的属性
+                        currentOrder.Status = newOrder.Status;
+                        currentOrder.ExecutedQty = newOrder.ExecutedQty;
+                        currentOrder.CumQty = newOrder.CumQty;
+                        currentOrder.CumQuote = newOrder.CumQuote;
+                        currentOrder.UpdateTime = newOrder.UpdateTime;
+                        
+                        // 恢复选择状态
+                        currentOrder.IsSelected = wasSelected;
+                    }
+                }
+
+                // 重新计算可用风险金
+                if (SelectedAccount != null)
+                {
+                    CalculateMaxRiskCapital();
+                }
+
+                _logger.LogDebug("智能数据更新完成，选择状态完全保持");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "智能更新执行失败");
+                return false;
             }
         }
 

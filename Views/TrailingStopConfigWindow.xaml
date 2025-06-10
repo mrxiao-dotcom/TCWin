@@ -74,33 +74,26 @@
                     </StackPanel>
                 </GroupBox>
                 
-                <!-- 回调率范围 -->
-                <GroupBox Header="回调率范围" Padding="15" Background="White" Margin="0,0,0,15">
+                <!-- 回调率设置 -->
+                <GroupBox Header="回调率设置" Padding="15" Background="White" Margin="0,0,0,15">
                     <StackPanel>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            
-                            <TextBlock Grid.Column="0" Text="最小回调率:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBox x:Name="MinCallbackTextBox" 
-                                   Grid.Column="1" 
+                        <TextBlock Text="移动止损回调率 (0.1-10%):" Margin="0,0,0,5"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Slider x:Name="CallbackSlider" 
+                                  Minimum="0.1" Maximum="10" 
+                                  Width="300" 
+                                  TickFrequency="1" 
+                                  TickPlacement="BottomRight"
+                                  ValueChanged="CallbackSlider_ValueChanged"/>
+                            <TextBox x:Name="CallbackTextBox" 
+                                   Width="60" 
                                    Height="25" 
+                                   Margin="10,0,0,0"
                                    VerticalContentAlignment="Center"
-                                   Margin="0,0,10,0"/>
-                            <TextBlock Grid.Column="2" Text="最大回调率:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBox x:Name="MaxCallbackTextBox" 
-                                   Grid.Column="3" 
-                                   Height="25" 
-                                   VerticalContentAlignment="Center"
-                                   Margin="0,0,10,0"/>
-                            <TextBlock Grid.Column="4" Text="%" VerticalAlignment="Center"/>
-                        </Grid>
-                        <TextBlock Text="回调率范围：1-50%，较小的回调率适合震荡行情，较大的适合趋势行情" 
+                                   TextChanged="CallbackTextBox_TextChanged"/>
+                            <TextBlock Text="%" VerticalAlignment="Center" Margin="5,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="币安API限制：最小0.1%，最大10%。1%适合震荡行情，5-10%适合趋势行情" 
                                  Foreground="Gray" FontSize="11" Margin="0,5,0,0"/>
                     </StackPanel>
                 </GroupBox>

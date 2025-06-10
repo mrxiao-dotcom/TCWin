@@ -15,6 +15,53 @@ namespace BinanceFuturesTrader.ViewModels
     /// </summary>
     public partial class MainViewModel
     {
+        #region 移动止损配置信息属性
+        /// <summary>
+        /// 移动止损配置信息描述
+        /// </summary>
+        public string TrailingStopConfigInfo
+        {
+            get
+            {
+                if (TrailingStopConfig == null)
+                    return "未配置";
+
+                var modeDescription = TrailingStopConfig.Mode switch
+                {
+                    TrailingStopMode.Replace => "替换模式",
+                    TrailingStopMode.Coexist => "并存模式",
+                    TrailingStopMode.SmartLayering => "智能分层模式",
+                    _ => "未知模式"
+                };
+
+                var scopeDescription = TrailingStopConfig.OnlyForProfitablePositions ? "仅盈利持仓" : "所有持仓";
+                
+                return $"{modeDescription} | {scopeDescription} | 回调率{TrailingStopConfig.CallbackRate:F1}%";
+            }
+        }
+
+        /// <summary>
+        /// 移动止损按钮工具提示
+        /// </summary>
+        public string TrailingStopButtonTooltip
+        {
+            get
+            {
+                if (TrailingStopEnabled)
+                {
+                    return $"关闭移动止损功能\n当前配置: {TrailingStopConfigInfo}";
+                }
+                else
+                {
+                    var hasSelected = Positions.Any(p => p.IsSelected && p.PositionAmt != 0);
+                    var targetInfo = hasSelected ? "将只对勾选的持仓" : 
+                        (TrailingStopConfig?.OnlyForProfitablePositions == true ? "将对盈利持仓" : "将对所有持仓");
+                    
+                    return $"启动移动止损功能\n{targetInfo}设置移动止损\n当前配置: {TrailingStopConfigInfo}";
+                }
+            }
+        }
+        #endregion
 
         #region 风险管理命令
         [RelayCommand]
@@ -615,1037 +662,162 @@ namespace BinanceFuturesTrader.ViewModels
         {
             try
             {
-                TrailingStopEnabled = !TrailingStopEnabled;
-                
                 if (TrailingStopEnabled)
                 {
-                    StatusMessage = "移动止损已启动，开始监控持仓...";
-                    _logger.LogInformation("移动止损功能已启动");
-                    
-                    // 立即处理一次移动止损
-                    await ProcessTrailingStopAsync();
-                }
-                else
-                {
+                    // 如果已启用，直接关闭
+                    TrailingStopEnabled = false;
+                    OnPropertyChanged(nameof(TrailingStopButtonTooltip));
                     StatusMessage = "移动止损已关闭";
                     _logger.LogInformation("移动止损功能已关闭");
+                    return;
                 }
+
+                // 🔧 新增：启动前先弹出配置对话框
+                var selectedPositions = Positions.Where(p => p.IsSelected && p.PositionAmt != 0).ToList();
+                var targetInfo = selectedPositions.Any() ? 
+                    $"检测到 {selectedPositions.Count} 个勾选的持仓" : 
+                    "将按配置规则处理持仓";
+
+                // 显示配置确认对话框
+                var configResult = ShowTrailingStopConfigDialog(targetInfo);
+                if (!configResult)
+                {
+                    StatusMessage = "移动止损设置已取消";
+                    return;
+                }
+
+                // 用户确认配置后，启动移动止损
+                TrailingStopEnabled = true;
+                OnPropertyChanged(nameof(TrailingStopButtonTooltip));
+                
+                StatusMessage = "移动止损已启动，开始监控持仓...";
+                _logger.LogInformation("移动止损功能已启动");
+                
+                // 立即处理一次移动止损
+                await ProcessTrailingStopAsync();
             }
             catch (Exception ex)
             {
                 StatusMessage = $"移动止损切换失败: {ex.Message}";
                 _logger.LogError(ex, "切换移动止损失败");
                 TrailingStopEnabled = false; // 出错时重置状态
-            }
-        }
-
-        private async Task ProcessTrailingStopAsync()
-        {
-            try
-            {
-                if (!TrailingStopEnabled)
-                    return;
-
-                var mode = TrailingStopConfig.Mode;
-                _logger.LogInformation($"开始处理移动止损（{mode}模式）...");
-                var processedCount = 0;
                 
-                // 根据配置决定处理哪些持仓
-                var targetPositions = TrailingStopConfig.OnlyForProfitablePositions 
-                    ? Positions.Where(p => p.PositionAmt != 0 && p.UnrealizedProfit > 0).ToList()
-                    : Positions.Where(p => p.PositionAmt != 0).ToList();
-                
-                foreach (var position in targetPositions)
-                {
-                    // 检查是否已有移动止损单
-                    var existingTrailingStops = Orders.Where(o => 
-                        o.Symbol == position.Symbol && 
-                        o.Type == "TRAILING_STOP_MARKET" && 
-                        o.Status == "NEW" &&
-                        o.ReduceOnly).ToList();
-                    
-                    if (existingTrailingStops.Any())
-                    {
-                        _logger.LogInformation($"持仓 {position.Symbol} 已有移动止损单，跳过");
-                        continue;
-                    }
-
-                    // 根据不同模式处理
-                    bool success = false;
-                    switch (mode)
-                    {
-                        case TrailingStopMode.Replace:
-                            success = await ProcessReplaceMode(position);
-                            break;
-                        case TrailingStopMode.Coexist:
-                            success = await ProcessCoexistMode(position);
-                            break;
-                        case TrailingStopMode.SmartLayering:
-                            success = await ProcessSmartLayeringMode(position);
-                            break;
-                    }
-                    
-                    if (success)
-                        processedCount++;
-                    
-                    // 避免API频率限制
-                    if (processedCount > 0)
-                        await Task.Delay(300);
-                }
-                
-                if (processedCount > 0)
-                {
-                    StatusMessage = $"移动止损处理完成（{mode}模式），共处理 {processedCount} 个持仓";
-                    _logger.LogInformation($"移动止损处理完成（{mode}模式），共处理 {processedCount} 个持仓");
-                }
-                else
-                {
-                    StatusMessage = $"没有需要处理的持仓（{mode}模式）";
-                    _logger.LogInformation($"没有找到需要设置移动止损的持仓（{mode}模式）");
-                }
-
-                // 更新移动止损状态
-                await UpdateTrailingStopStatusesAsync();
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"处理移动止损失败: {ex.Message}";
-                _logger.LogError(ex, "处理移动止损失败");
-            }
-        }
-
-        private async Task<bool> ConvertToTrailingStopAsync(OrderInfo stopOrder)
-        {
-            try
-            {
-                // 获取对应的持仓信息以计算开仓价
-                var position = Positions.FirstOrDefault(p => p.Symbol == stopOrder.Symbol);
-                if (position == null || position.PositionAmt == 0)
-                {
-                    _logger.LogWarning($"未找到对应持仓: {stopOrder.Symbol}");
-                    return false;
-                }
-
-                // 计算原始止损比例作为回调率
-                var callbackRate = CalculateStopLossRatio(position.EntryPrice, stopOrder.StopPrice, position.PositionAmt > 0);
-                if (callbackRate <= 0)
-                {
-                    _logger.LogWarning($"无法计算有效回调率: {stopOrder.Symbol}, 开仓价={position.EntryPrice}, 止损价={stopOrder.StopPrice}");
-                    return false;
-                }
-
-                // 取消现有止损单
-                var cancelled = await _binanceService.CancelOrderAsync(stopOrder.Symbol, stopOrder.OrderId);
-                if (!cancelled)
-                {
-                    _logger.LogWarning($"取消止损单失败: {stopOrder.Symbol}");
-                    return false;
-                }
-                
-                // 稍微等待确保订单取消完成
-                await Task.Delay(100);
-                
-                // 下移动止损单
-                var trailingStopRequest = new OrderRequest
-                {
-                    Symbol = stopOrder.Symbol,
-                    Side = stopOrder.Side,
-                    Type = "TRAILING_STOP_MARKET",
-                    Quantity = stopOrder.OrigQty,
-                    CallbackRate = callbackRate, // 使用计算出的回调率
-                    ReduceOnly = true,
-                    PositionSide = stopOrder.PositionSide,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                var success = await _binanceService.PlaceOrderAsync(trailingStopRequest);
-                if (success)
-                {
-                    _logger.LogInformation($"移动止损单创建成功: {stopOrder.Symbol} 回调率{callbackRate:F2}%");
-                    return true;
-                }
-                else
-                {
-                    _logger.LogWarning($"移动止损单创建失败: {stopOrder.Symbol}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"转换移动止损失败: {stopOrder.Symbol}");
-                return false;
-            }
-        }
-
-        private async Task<bool> CreateTrailingStopOrderAsync(PositionInfo position)
-        {
-            try
-            {
-                // 确定下单方向
-                var side = position.PositionAmt > 0 ? "SELL" : "BUY";
-                
-                // 获取当前价格作为参考
-                var currentPrice = await _binanceService.GetLatestPriceAsync(position.Symbol);
-                
-                // 计算合理的默认止损比例（基于盈利情况）
-                var defaultStopLossRatio = CalculateDefaultStopLossRatio(position, currentPrice);
-                
-                // 创建移动止损单
-                var trailingStopRequest = new OrderRequest
-                {
-                    Symbol = position.Symbol,
-                    Side = side,
-                    Type = "TRAILING_STOP_MARKET",
-                    Quantity = Math.Abs(position.PositionAmt),
-                    CallbackRate = defaultStopLossRatio, // 使用计算出的回调率
-                    ReduceOnly = true,
-                    PositionSide = position.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                var success = await _binanceService.PlaceOrderAsync(trailingStopRequest);
-                if (success)
-                {
-                    _logger.LogInformation($"新移动止损单创建成功: {position.Symbol} 回调率{defaultStopLossRatio:F2}%");
-                    return true;
-                }
-                else
-                {
-                    _logger.LogWarning($"新移动止损单创建失败: {position.Symbol}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"创建移动止损失败: {position.Symbol}");
-                return false;
+                // 🔧 出错时也要通知属性更新
+                OnPropertyChanged(nameof(TrailingStopButtonTooltip));
             }
         }
 
         /// <summary>
-        /// 创建与固定止损并存的移动止损单
+        /// 显示移动止损配置对话框
         /// </summary>
-        private async Task<bool> CreateCoexistingTrailingStopAsync(PositionInfo position, List<OrderInfo> existingFixedStops)
+        private bool ShowTrailingStopConfigDialog(string targetInfo)
         {
             try
             {
-                // 确定下单方向
-                var side = position.PositionAmt > 0 ? "SELL" : "BUY";
-                
-                // 获取当前价格作为参考
-                var currentPrice = await _binanceService.GetLatestPriceAsync(position.Symbol);
-                
-                // 【并存模式关键】：计算移动止损数量，避免超过持仓总量
-                var totalFixedStopQuantity = existingFixedStops.Sum(o => o.OrigQty);
-                var totalPositionQuantity = Math.Abs(position.PositionAmt);
-                
-                // 移动止损使用剩余数量，但至少保持持仓的20%，最多50%
-                var remainingQuantity = totalPositionQuantity - totalFixedStopQuantity;
-                var minTrailingQuantity = totalPositionQuantity * 0.2m; // 最少20%
-                var maxTrailingQuantity = totalPositionQuantity * 0.5m; // 最多50%
-                
-                var trailingQuantity = Math.Max(minTrailingQuantity, 
-                    Math.Min(maxTrailingQuantity, remainingQuantity));
-                
-                if (trailingQuantity <= 0)
-                {
-                    _logger.LogWarning($"持仓 {position.Symbol} 的可用数量不足，跳过移动止损设置");
-                    return false;
-                }
-                
-                // 计算移动止损的回调率（相对保守一些）
-                var profitPercentage = (position.UnrealizedProfit / position.NotionalValue) * 100;
-                decimal callbackRate;
-                
-                if (profitPercentage >= 10) callbackRate = 2.0m; // 2%
-                else if (profitPercentage >= 5) callbackRate = 1.5m; // 1.5%
-                else if (profitPercentage >= 2) callbackRate = 1.0m; // 1%
-                else callbackRate = 0.8m; // 0.8%
-                
-                // 创建移动止损单
-                var trailingStopRequest = new OrderRequest
-                {
-                    Symbol = position.Symbol,
-                    Side = side,
-                    Type = "TRAILING_STOP_MARKET",
-                    Quantity = trailingQuantity,
-                    CallbackRate = callbackRate, // 使用百分比值
-                    ReduceOnly = true,
-                    PositionSide = position.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                _logger.LogInformation($"创建并存移动止损: {position.Symbol}, 持仓总量: {totalPositionQuantity:F8}, 固定止损量: {totalFixedStopQuantity:F8}, 移动止损量: {trailingQuantity:F8}, 回调率: {callbackRate:F2}%");
-
-                var success = await _binanceService.PlaceOrderAsync(trailingStopRequest);
-                if (success)
-                {
-                    _logger.LogInformation($"✅ 并存移动止损单创建成功: {position.Symbol} 回调率{callbackRate:F2}%");
-                    return true;
-                }
-                else
-                {
-                    _logger.LogWarning($"❌ 并存移动止损单创建失败: {position.Symbol}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"创建并存移动止损失败: {position.Symbol}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 计算止损比例（用于移动止损回调率）
-        /// </summary>
-        /// <param name="entryPrice">开仓价</param>
-        /// <param name="stopPrice">止损价</param>
-        /// <param name="isLong">是否多头</param>
-        /// <returns>止损比例（百分比）</returns>
-        private decimal CalculateStopLossRatio(decimal entryPrice, decimal stopPrice, bool isLong)
-        {
-            if (entryPrice <= 0 || stopPrice <= 0)
-                return 0;
-
-            decimal stopLossRatio;
-            
-            if (isLong)
-            {
-                // 多头：止损比例 = (开仓价 - 止损价) / 开仓价 * 100
-                stopLossRatio = (entryPrice - stopPrice) / entryPrice * 100;
-            }
-            else
-            {
-                // 空头：止损比例 = (止损价 - 开仓价) / 开仓价 * 100
-                stopLossRatio = (stopPrice - entryPrice) / entryPrice * 100;
-            }
-
-            // 确保回调率在合理范围内 (0.1% - 15%)
-            stopLossRatio = Math.Max(0.1m, Math.Min(15.0m, stopLossRatio));
-            
-            _logger.LogInformation($"计算止损比例: 开仓价={entryPrice:F4}, 止损价={stopPrice:F4}, 方向={(isLong ? "多头" : "空头")}, 回调率={stopLossRatio:F2}%");
-            
-            return stopLossRatio;
-        }
-
-        /// <summary>
-        /// 计算默认止损比例（用于无现有止损单的持仓）
-        /// </summary>
-        /// <param name="position">持仓信息</param>
-        /// <param name="currentPrice">当前价格</param>
-        /// <returns>默认止损比例（百分比）</returns>
-        private decimal CalculateDefaultStopLossRatio(PositionInfo position, decimal currentPrice)
-        {
-            try
-            {
-                // 基于盈利百分比计算合理的回调率
-                var profitRatio = Math.Abs(position.UnrealizedProfit) / (Math.Abs(position.PositionAmt) * position.EntryPrice) * 100;
-                
-                // 根据盈利情况设置回调率：盈利越多，回调率可以越小（更保守）
-                decimal callbackRate = profitRatio switch
-                {
-                    > 10 => 1.0m,  // 盈利超过10%，使用1%回调率
-                    > 5 => 1.5m,   // 盈利5-10%，使用1.5%回调率
-                    > 2 => 2.0m,   // 盈利2-5%，使用2%回调率
-                    _ => 2.5m      // 盈利小于2%，使用2.5%回调率
-                };
-
-                _logger.LogInformation($"计算默认止损比例: {position.Symbol} 盈利率={profitRatio:F2}%, 回调率={callbackRate:F2}%");
-                
-                return callbackRate;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"计算默认止损比例失败: {position.Symbol}，使用2%默认值");
-                return 2.0m; // 安全默认值
-            }
-        }
-
-        private int GetMaxLeverageForSymbol(string symbol)
-        {
-            // 根据合约类型返回最大杠杆
-            return symbol.ToUpper() switch
-            {
-                "BTCUSDT" => 125,
-                "ETHUSDT" => 100,
-                "BNBUSDT" => 75,
-                "ADAUSDT" => 75,
-                "DOGEUSDT" => 50,
-                "WIFUSDT" => 50,
-                "PEPEUSDT" => 25,
-                "SHIBUSDT" => 25,
-                _ => 50 // 默认最大杠杆
-            };
-        }
-
-        [RelayCommand]
-        private void AnalyzePortfolioRisk()
-        {
-            try
-            {
-                if (AccountInfo == null || !Positions.Any())
-                {
-                    StatusMessage = "没有持仓数据可分析";
-                    return;
-                }
-
-                var totalBalance = AccountInfo.TotalWalletBalance;
-                var totalMarginUsed = AccountInfo.ActualMarginUsed;
-                var totalUnrealizedPnl = AccountInfo.TotalUnrealizedProfit;
-
-                var marginUtilization = totalBalance > 0 ? (totalMarginUsed / totalBalance) * 100 : 0;
-                var pnlPercent = totalBalance > 0 ? (totalUnrealizedPnl / totalBalance) * 100 : 0;
-
-                var riskLevel = marginUtilization switch
-                {
-                    < 30 => "低风险",
-                    < 60 => "中等风险",
-                    < 80 => "高风险",
-                    _ => "极高风险"
-                };
-
-                StatusMessage = $"风险分析 - {riskLevel}: 保证金占用{marginUtilization:F1}%, " +
-                               $"总浮盈{pnlPercent:+0.00;-0.00}%, 持仓数量{Positions.Count}";
-
-                _logger.LogInformation($"投资组合风险分析: {riskLevel}, 保证金占用{marginUtilization:F1}%, " +
-                    $"浮盈{pnlPercent:F2}%, 持仓{Positions.Count}个");
-
-                // 如果风险过高，提供建议
-                if (marginUtilization > 80)
-                {
-                    _logger.LogWarning("⚠️ 保证金占用过高，建议降低杠杆或减少持仓");
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"风险分析失败: {ex.Message}";
-                _logger.LogError(ex, "投资组合风险分析失败");
-            }
-        }
-
-        [RelayCommand]
-        private async Task OptimizeStopLossLevelsAsync()
-        {
-            var positionsWithoutStopLoss = Positions.Where(p => 
-                !Orders.Any(o => o.Symbol == p.Symbol && o.Type == "STOP_MARKET" && o.ReduceOnly))
-                .ToList();
-
-            if (!positionsWithoutStopLoss.Any())
-            {
-                StatusMessage = "所有持仓都已设置止损";
-                return;
-            }
-
-            try
-            {
-                IsLoading = true;
-                StatusMessage = $"正在为 {positionsWithoutStopLoss.Count} 个持仓优化止损...";
-
-                var successCount = 0;
-                foreach (var position in positionsWithoutStopLoss)
-                {
-                    try
-                    {
-                        // 根据波动率和风险偏好计算最佳止损位置
-                        var stopLossPrice = CalculateOptimalStopLoss(position);
-                        var side = position.PositionAmt > 0 ? "SELL" : "BUY";
-
-                        var stopLossRequest = new OrderRequest
-                        {
-                            Symbol = position.Symbol,
-                            Side = side,
-                            Type = "STOP_MARKET",
-                            Quantity = Math.Abs(position.PositionAmt),
-                            StopPrice = stopLossPrice,
-                            ReduceOnly = true,
-                            PositionSide = position.PositionSideString,
-                            WorkingType = "CONTRACT_PRICE"
-                        };
-
-                        var success = await _binanceService.PlaceOrderAsync(stopLossRequest);
-                        if (success)
-                        {
-                            successCount++;
-                            _logger.LogInformation($"优化止损设置成功: {position.Symbol} @{stopLossPrice:F4}");
-                        }
-
-                        await Task.Delay(200); // 避免API限制
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"为 {position.Symbol} 设置优化止损失败");
-                    }
-                }
-
-                StatusMessage = $"止损优化完成: 成功设置 {successCount}/{positionsWithoutStopLoss.Count} 个止损";
-                
-                if (successCount > 0)
-                {
-                    await RefreshDataAsync();
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"止损优化异常: {ex.Message}";
-                _logger.LogError(ex, "优化止损失败");
-            }
-            finally
-            {
-                IsLoading = false;
-            }
-        }
-
-        private decimal CalculateOptimalStopLoss(PositionInfo position)
-        {
-            // 基于ATR (平均真实波动率) 和风险偏好计算最佳止损位置
-            var isLong = position.PositionAmt > 0;
-            var entryPrice = position.EntryPrice;
-            
-            // 简化版本：使用固定的风险比例
-            var riskRatio = StopLossRatio / 100; // 使用用户设定的止损比例
-            
-            if (isLong)
-            {
-                return entryPrice * (1 - riskRatio);
-            }
-            else
-            {
-                return entryPrice * (1 + riskRatio);
-            }
-        }
-
-        [RelayCommand]
-        private void CalculateMaxPositionSize()
-        {
-            try
-            {
-                if (AccountInfo == null)
-                {
-                    StatusMessage = "请先刷新账户信息";
-                    return;
-                }
-
-                var maxRiskAmount = _calculationService.CalculateMaxRiskCapital(AccountInfo.AvailableBalance, 0.02m); // 2%风险
-                
-                if (LatestPrice > 0 && StopLossRatio > 0)
-                {
-                    var maxQuantity = maxRiskAmount / (LatestPrice * (StopLossRatio / 100));
-                    
-                    StatusMessage = $"最大建仓量: {maxQuantity:F6} (基于2%账户风险)";
-                    _logger.LogInformation($"计算最大建仓量: {maxQuantity:F6}, 风险金额: {maxRiskAmount:F2}U");
-                }
-                else
-                {
-                    StatusMessage = "请先设置当前价格和止损比例";
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"计算失败: {ex.Message}";
-                _logger.LogError(ex, "计算最大建仓量失败");
-            }
-        }
-
-        /// <summary>
-        /// 测试保盈止损功能 - 用于调试
-        /// </summary>
-        [RelayCommand]
-        public async Task TestProfitProtectionAsync()
-        {
-            try
-            {
-                _logger.LogInformation("🧪 开始测试保盈止损功能...");
-                
-                if (SelectedPosition == null)
-                {
-                    StatusMessage = "❌ 请先选择一个持仓进行测试";
-                    return;
-                }
-                
-                // 模拟保盈止损参数
-                var testProtectionAmount = 10.0m; // 保护10U盈利
-                var currentPrice = SelectedPosition.MarkPrice;
-                var entryPrice = SelectedPosition.EntryPrice;
-                var positionSize = Math.Abs(SelectedPosition.PositionAmt);
-                
-                _logger.LogInformation($"🧪 测试参数:");
-                _logger.LogInformation($"   持仓: {SelectedPosition.Symbol}");
-                _logger.LogInformation($"   方向: {SelectedPosition.PositionSideString}");
-                _logger.LogInformation($"   入场价: {entryPrice:F4}");
-                _logger.LogInformation($"   当前价: {currentPrice:F4}");
-                _logger.LogInformation($"   持仓量: {positionSize:F8}");
-                _logger.LogInformation($"   保护盈利: {testProtectionAmount:F2}U");
-                
-                // 计算止损价
-                decimal protectionPrice;
-                string side;
-                
-                if (SelectedPosition.PositionAmt > 0) // 多头
-                {
-                    protectionPrice = entryPrice + (testProtectionAmount / positionSize);
-                    side = "SELL";
-                    _logger.LogInformation($"🧪 多头止损价计算: {entryPrice:F4} + ({testProtectionAmount:F2} ÷ {positionSize:F8}) = {protectionPrice:F4}");
-                }
-                else // 空头
-                {
-                    protectionPrice = entryPrice - (testProtectionAmount / positionSize);
-                    side = "BUY";
-                    _logger.LogInformation($"🧪 空头止损价计算: {entryPrice:F4} - ({testProtectionAmount:F2} ÷ {positionSize:F8}) = {protectionPrice:F4}");
-                }
-                
-                // 创建测试订单
-                var testOrder = new OrderRequest
-                {
-                    Symbol = SelectedPosition.Symbol,
-                    Side = side,
-                    Type = "STOP_MARKET",
-                    Quantity = positionSize,
-                    StopPrice = protectionPrice,
-                    ReduceOnly = true,
-                    PositionSide = SelectedPosition.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-                
-                _logger.LogInformation($"🧪 测试订单详情:");
-                _logger.LogInformation($"   Symbol: {testOrder.Symbol}");
-                _logger.LogInformation($"   Side: {testOrder.Side}");
-                _logger.LogInformation($"   Type: {testOrder.Type}");
-                _logger.LogInformation($"   Quantity: {testOrder.Quantity:F8}");
-                _logger.LogInformation($"   StopPrice: {testOrder.StopPrice:F4}");
-                _logger.LogInformation($"   ReduceOnly: {testOrder.ReduceOnly}");
-                _logger.LogInformation($"   PositionSide: {testOrder.PositionSide}");
-                
-                StatusMessage = $"🧪 测试提交保盈止损单: {SelectedPosition.Symbol} @{protectionPrice:F4}...";
-                
-                var success = await _binanceService.PlaceOrderAsync(testOrder);
-                
-                if (success)
-                {
-                    StatusMessage = $"✅ 测试成功: 保盈止损单已提交 {SelectedPosition.Symbol} @{protectionPrice:F4}";
-                    _logger.LogInformation($"✅ 测试成功: 保盈止损单提交成功");
-                }
-                else
-                {
-                    StatusMessage = $"❌ 测试失败: 保盈止损单提交失败";
-                    _logger.LogError($"❌ 测试失败: 保盈止损单提交失败");
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"❌ 测试异常: {ex.Message}";
-                _logger.LogError(ex, "🧪 测试保盈止损功能异常");
-            }
-        }
-
-        /// <summary>
-        /// 测试币安API是否支持多个止损单
-        /// </summary>
-        [RelayCommand]
-        private async Task TestMultipleStopOrdersAsync()
-        {
-            try
-            {
-                IsLoading = true;
-                StatusMessage = "正在测试币安API多止损单支持...";
-                _logger.LogInformation("开始测试币安API是否支持多个止损单");
-
-                // 找一个有持仓的合约进行测试
-                var testPosition = Positions.FirstOrDefault(p => Math.Abs(p.PositionAmt) > 0);
-                if (testPosition == null)
-                {
-                    StatusMessage = "❌ 测试失败：需要至少一个持仓进行测试";
-                    _logger.LogWarning("无法测试：没有找到可用的持仓");
-                    return;
-                }
-
-                var symbol = testPosition.Symbol;
-                var isLong = testPosition.PositionAmt > 0;
-                var side = isLong ? "SELL" : "BUY";
-                var currentPrice = await _binanceService.GetLatestPriceAsync(symbol);
-                
-                // 计算两个不同的止损价格
-                var stopPrice1 = isLong ? currentPrice * 0.95m : currentPrice * 1.05m; // 5%止损
-                var stopPrice2 = isLong ? currentPrice * 0.98m : currentPrice * 1.02m; // 2%止损
-                
-                // 使用很小的测试数量
-                var testQuantity = Math.Abs(testPosition.PositionAmt) * 0.01m; // 1%的仓位用于测试
-                
-                _logger.LogInformation($"测试参数: {symbol}, 方向={side}, 数量={testQuantity:F8}, 止损价1={stopPrice1:F4}, 止损价2={stopPrice2:F4}");
-
-                // 第一个测试止损单
-                var request1 = new OrderRequest
-                {
-                    Symbol = symbol,
-                    Side = side,
-                    Type = "STOP_MARKET",
-                    Quantity = testQuantity,
-                    StopPrice = stopPrice1,
-                    ReduceOnly = true,
-                    PositionSide = testPosition.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                StatusMessage = "正在创建第一个测试止损单...";
-                var success1 = await _binanceService.PlaceOrderAsync(request1);
-                _logger.LogInformation($"第一个测试止损单结果: {success1}");
-                
-                if (!success1)
-                {
-                    StatusMessage = "❌ 测试失败：第一个止损单创建失败";
-                    return;
-                }
-
-                await Task.Delay(1000); // 等待1秒
-
-                // 第二个测试止损单
-                var request2 = new OrderRequest
-                {
-                    Symbol = symbol,
-                    Side = side,
-                    Type = "STOP_MARKET",
-                    Quantity = testQuantity,
-                    StopPrice = stopPrice2,
-                    ReduceOnly = true,
-                    PositionSide = testPosition.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                StatusMessage = "正在创建第二个测试止损单...";
-                var success2 = await _binanceService.PlaceOrderAsync(request2);
-                _logger.LogInformation($"第二个测试止损单结果: {success2}");
-
-                // 分析测试结果
-                if (success1 && success2)
-                {
-                    StatusMessage = "✅ 测试成功：币安API支持多个止损单！";
-                    _logger.LogInformation("🎉 测试成功：币安API支持为同一持仓创建多个止损单");
-                    
-                    // 等待一下，然后清理测试订单
-                    await Task.Delay(2000);
-                    StatusMessage = "正在清理测试订单...";
-                    await CleanupTestOrdersAsync(symbol);
-                    
-                    StatusMessage = "✅ 多止损单支持测试完成，可以启用并存模式";
-                }
-                else if (success1 && !success2)
-                {
-                    StatusMessage = "❌ 测试结果：币安API只允许一个止损单";
-                    _logger.LogWarning("测试结果：第二个止损单创建失败，可能API只允许一个止损单");
-                    
-                    // 清理第一个测试订单
-                    await CleanupTestOrdersAsync(symbol);
-                }
-                else
-                {
-                    StatusMessage = "❌ 测试失败：无法创建止损单";
-                    _logger.LogError("测试失败：两个止损单都创建失败");
-                }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"❌ 测试异常: {ex.Message}";
-                _logger.LogError(ex, "测试多止损单支持时发生异常");
-            }
-            finally
-            {
-                IsLoading = false;
-            }
-        }
-
-        /// <summary>
-        /// 处理替换模式（原有逻辑）
-        /// </summary>
-        private async Task<bool> ProcessReplaceMode(PositionInfo position)
-        {
-            var existingStopOrder = Orders.FirstOrDefault(o => 
-                o.Symbol == position.Symbol && 
-                o.Type == "STOP_MARKET" && 
-                o.Status == "NEW" &&
-                o.ReduceOnly);
-            
-            if (existingStopOrder != null)
-            {
-                // 转换现有止损单为移动止损
-                return await ConvertToTrailingStopAsync(existingStopOrder);
-            }
-            else
-            {
-                // 创建新的移动止损单
-                return await CreateTrailingStopOrderAsync(position);
-            }
-        }
-
-        /// <summary>
-        /// 处理并存模式
-        /// </summary>
-        private async Task<bool> ProcessCoexistMode(PositionInfo position)
-        {
-            var existingFixedStops = Orders.Where(o => 
-                o.Symbol == position.Symbol && 
-                o.Type == "STOP_MARKET" && 
-                o.Status == "NEW" &&
-                o.ReduceOnly).ToList();
-            
-            if (existingFixedStops.Any())
-            {
-                _logger.LogInformation($"持仓 {position.Symbol} 存在 {existingFixedStops.Count} 个固定止损单，将并存添加移动止损");
-                return await CreateCoexistingTrailingStopAsync(position, existingFixedStops);
-            }
-            else
-            {
-                // 如果没有止损单，直接创建移动止损
-                return await CreateTrailingStopOrderAsync(position);
-            }
-        }
-
-        /// <summary>
-        /// 处理智能分层模式
-        /// </summary>
-        private async Task<bool> ProcessSmartLayeringMode(PositionInfo position)
-        {
-            try
-            {
-                _logger.LogInformation($"开始智能分层模式处理: {position.Symbol}");
-                
-                // 先清理现有的止损单
-                var existingStops = Orders.Where(o => 
-                    o.Symbol == position.Symbol && 
-                    (o.Type == "STOP_MARKET" || o.Type == "TRAILING_STOP_MARKET") &&
-                    o.Status == "NEW" &&
-                    o.ReduceOnly).ToList();
-
-                foreach (var order in existingStops)
-                {
-                    await _binanceService.CancelOrderAsync(order.Symbol, order.OrderId);
-                    await Task.Delay(100);
-                }
-
-                var totalQuantity = Math.Abs(position.PositionAmt);
-                var fixedQuantity = totalQuantity * TrailingStopConfig.FixedStopRatio;
-                var trailingQuantity = totalQuantity * TrailingStopConfig.TrailingStopRatio;
-                
-                var side = position.PositionAmt > 0 ? "SELL" : "BUY";
-                var currentPrice = await _binanceService.GetLatestPriceAsync(position.Symbol);
-                
-                // 创建固定止损单（更严格的止损）
-                var fixedStopPrice = position.PositionAmt > 0 
-                    ? currentPrice * 0.95m  // 多头5%止损
-                    : currentPrice * 1.05m; // 空头5%止损
-
-                var fixedStopRequest = new OrderRequest
-                {
-                    Symbol = position.Symbol,
-                    Side = side,
-                    Type = "STOP_MARKET",
-                    Quantity = fixedQuantity,
-                    StopPrice = fixedStopPrice,
-                    ReduceOnly = true,
-                    PositionSide = position.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                // 创建移动止损单（更宽松的回调）
-                var callbackRate = CalculateSmartCallbackRate(position);
-                var trailingStopRequest = new OrderRequest
-                {
-                    Symbol = position.Symbol,
-                    Side = side,
-                    Type = "TRAILING_STOP_MARKET",
-                    Quantity = trailingQuantity,
-                    CallbackRate = callbackRate,
-                    ReduceOnly = true,
-                    PositionSide = position.PositionSideString,
-                    WorkingType = "CONTRACT_PRICE"
-                };
-
-                // 先创建固定止损
-                var fixedSuccess = await _binanceService.PlaceOrderAsync(fixedStopRequest);
-                await Task.Delay(200);
-                
-                // 再创建移动止损
-                var trailingSuccess = await _binanceService.PlaceOrderAsync(trailingStopRequest);
-                
-                if (fixedSuccess && trailingSuccess)
-                {
-                    _logger.LogInformation($"✅ 智能分层成功: {position.Symbol} 固定止损{fixedQuantity:F8} 移动止损{trailingQuantity:F8}");
-                    return true;
-                }
-                else
-                {
-                    _logger.LogWarning($"❌ 智能分层失败: {position.Symbol} 固定:{fixedSuccess} 移动:{trailingSuccess}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"智能分层模式处理失败: {position.Symbol}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 计算智能回调率
-        /// </summary>
-        private decimal CalculateSmartCallbackRate(PositionInfo position)
-        {
-            var profitPercentage = position.NotionalValue > 0 
-                ? (position.UnrealizedProfit / position.NotionalValue) * 100 
-                : 0;
-            
-            // 根据盈利情况动态调整回调率
-            if (profitPercentage >= 15) return Math.Min(TrailingStopConfig.MaxCallbackRate, 3.0m);
-            if (profitPercentage >= 10) return 2.5m;
-            if (profitPercentage >= 5) return 2.0m;
-            if (profitPercentage >= 2) return 1.5m;
-            return Math.Max(TrailingStopConfig.MinCallbackRate, 1.0m);
-        }
-
-        /// <summary>
-        /// 更新移动止损状态
-        /// </summary>
-        private async Task UpdateTrailingStopStatusesAsync()
-        {
-            try
-            {
-                var currentStatuses = new List<TrailingStopStatus>();
-                
-                foreach (var position in Positions.Where(p => p.PositionAmt != 0))
-                {
-                    var trailingStops = Orders.Where(o => 
-                        o.Symbol == position.Symbol && 
-                        o.Type == "TRAILING_STOP_MARKET" && 
-                        o.Status == "NEW" &&
-                        o.ReduceOnly).ToList();
-
-                    var fixedStops = Orders.Where(o => 
-                        o.Symbol == position.Symbol && 
-                        o.Type == "STOP_MARKET" && 
-                        o.Status == "NEW" &&
-                        o.ReduceOnly).ToList();
-
-                    foreach (var trailingOrder in trailingStops)
-                    {
-                        var status = new TrailingStopStatus
-                        {
-                            Symbol = position.Symbol,
-                            TrailingOrderId = trailingOrder.OrderId,
-                            TrailingQuantity = trailingOrder.OrigQty,
-                            CallbackRate = trailingOrder.CallbackRate ?? 0,
-                            Mode = TrailingStopConfig.Mode,
-                            Status = "活跃"
-                        };
-
-                        if (fixedStops.Any())
-                        {
-                            var fixedOrder = fixedStops.First();
-                            status.FixedOrderId = fixedOrder.OrderId;
-                            status.FixedQuantity = fixedOrder.OrigQty;
-                        }
-
-                        currentStatuses.Add(status);
-                    }
-                }
-
-                // 更新UI集合
-                TrailingStopStatuses.Clear();
-                foreach (var status in currentStatuses)
-                {
-                    TrailingStopStatuses.Add(status);
-                }
-
-                _logger.LogInformation($"移动止损状态更新完成，当前活跃: {currentStatuses.Count} 个");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "更新移动止损状态失败");
-            }
-        }
-
-        /// <summary>
-        /// 清理测试订单
-        /// </summary>
-        private async Task CleanupTestOrdersAsync(string symbol)
-        {
-            try
-            {
-                _logger.LogInformation($"开始清理 {symbol} 的测试订单");
-                
-                // 刷新订单数据
-                await RefreshDataAsync();
-                
-                // 找到刚才的测试订单（根据时间和数量特征识别）
-                var recentTestOrders = Orders.Where(o => 
-                    o.Symbol == symbol && 
-                    o.Type == "STOP_MARKET" && 
-                    o.ReduceOnly &&
-                    (DateTime.Now - o.Time).TotalMinutes < 5 && // 5分钟内创建的
-                    o.OrigQty <= Math.Abs(Positions.FirstOrDefault(p => p.Symbol == symbol)?.PositionAmt ?? 0) * 0.02m // 小数量
-                ).ToList();
-
-                foreach (var order in recentTestOrders)
-                {
-                    try
-                    {
-                        var cancelled = await _binanceService.CancelOrderAsync(order.Symbol, order.OrderId);
-                        if (cancelled)
-                        {
-                            _logger.LogInformation($"✅ 测试订单清理成功: {order.Symbol} #{order.OrderId}");
-                        }
-                        else
-                        {
-                            _logger.LogWarning($"⚠️ 测试订单清理失败: {order.Symbol} #{order.OrderId}");
-                        }
-                        await Task.Delay(200);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"清理测试订单异常: {order.OrderId}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "清理测试订单过程异常");
-            }
-        }
-        /// <summary>
-        /// 显示移动止损配置并提供修改选项
-        /// </summary>
-        [RelayCommand]
-        private void OpenTrailingStopConfigDialog()
-        {
-            try
-            {
-                _logger.LogInformation("开始打开移动止损配置对话框...");
+                _logger.LogInformation("弹出移动止损配置确认对话框...");
                 
                 // 确保TrailingStopConfig不为null
                 if (TrailingStopConfig == null)
                 {
                     _logger.LogWarning("TrailingStopConfig为null，创建默认配置");
                     TrailingStopConfig = new TrailingStopConfig();
-                    StatusMessage = "⚠️ 初始化默认配置";
                 }
 
-                _logger.LogInformation($"当前配置: Mode={TrailingStopConfig.Mode}, MinCallback={TrailingStopConfig.MinCallbackRate}, MaxCallback={TrailingStopConfig.MaxCallbackRate}");
+                // 获取目标持仓信息
+                var selectedPositions = Positions.Where(p => p.IsSelected && p.PositionAmt != 0).ToList();
+                var targetPositions = selectedPositions.Any() ? selectedPositions : 
+                    (TrailingStopConfig.OnlyForProfitablePositions 
+                        ? Positions.Where(p => p.PositionAmt != 0 && p.UnrealizedProfit > 0).ToList()
+                        : Positions.Where(p => p.PositionAmt != 0).ToList());
+
+                // 🔧 简化：先显示确认对话框
+                var modeDescription = TrailingStopConfig.Mode switch
+                {
+                    TrailingStopMode.Replace => "替换模式",
+                    TrailingStopMode.Coexist => "并存模式",
+                    TrailingStopMode.SmartLayering => "智能分层模式",
+                    _ => "未知模式"
+                };
+
+                var scopeDescription = TrailingStopConfig.OnlyForProfitablePositions ? "仅盈利持仓" : "所有持仓";
+                var positionDetails = targetPositions.Any() ? 
+                    string.Join(", ", targetPositions.Select(p => $"{p.Symbol}({p.Direction})")) :
+                    "无符合条件的持仓";
+
+                var confirmMessage = $"确认启动移动止损功能？\n\n" +
+                                   $"📋 目标范围: {targetInfo}\n" +
+                                   $"📊 当前配置: {modeDescription} | {scopeDescription} | 回调率 {TrailingStopConfig.CallbackRate:F1}%\n" +
+                                   $"🎯 目标持仓: {positionDetails}\n" +
+                                   $"📈 将处理 {targetPositions.Count} 个持仓\n\n" +
+                                   $"点击\"是\"使用当前配置启动，点击\"否\"打开配置设置";
+
+                var result = MessageBox.Show(confirmMessage, "移动止损确认", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    // 直接使用当前配置启动
+                    StatusMessage = $"✅ 使用当前配置启动移动止损: {modeDescription}";
+                    _logger.LogInformation($"用户确认使用当前配置启动移动止损: {modeDescription}");
+                    return true;
+                }
+                else if (result == MessageBoxResult.No)
+                {
+                    // 打开配置设置
+                    return OpenConfigurationDialog();
+                }
+                else
+                {
+                    // 取消
+                    StatusMessage = "移动止损启动已取消";
+                    _logger.LogInformation("用户取消了移动止损启动");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                var errorMsg = $"显示配置对话框失败: {ex.Message}";
+                StatusMessage = errorMsg;
+                _logger.LogError(ex, "显示移动止损配置对话框失败");
                 
+                // 显示错误信息
+                try
+                {
+                    MessageBox.Show($"配置对话框显示失败:\n\n错误: {ex.Message}\n\n将使用当前配置继续", 
+                                  "警告", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return true; // 使用当前配置继续
+                }
+                catch
+                {
+                    _logger.LogError("无法显示错误对话框");
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 打开配置设置对话框
+        /// </summary>
+        private bool OpenConfigurationDialog()
+        {
+            try
+            {
                 // 检查主窗口
                 if (Application.Current?.MainWindow == null)
                 {
                     _logger.LogError("Application.Current.MainWindow为null");
                     StatusMessage = "❌ 无法获取主窗口引用";
-                    return;
+                    return false;
                 }
 
                 _logger.LogInformation("创建配置对话框窗口...");
                 
-                // 直接打开静态配置对话框
+                // 使用原有的配置对话框
                 var configWindow = new Views.TrailingStopConfigWindow(TrailingStopConfig)
                 {
                     Owner = Application.Current.MainWindow
                 };
 
-                _logger.LogInformation("显示对话框...");
+                _logger.LogInformation("显示配置对话框...");
                 var result = configWindow.ShowDialog();
 
                 if (result == true && configWindow.IsConfirmed)
@@ -1661,109 +833,368 @@ namespace BinanceFuturesTrader.ViewModels
                         _ => "未知模式"
                     };
 
-                    StatusMessage = $"✅ 移动止损配置已更新: {modeDescription}";
-                    _logger.LogInformation($"移动止损配置已更新: {modeDescription}, 回调率: {TrailingStopConfig.MinCallbackRate:F1}%-{TrailingStopConfig.MaxCallbackRate:F1}%");
+                    StatusMessage = $"✅ 移动止损配置已更新并启动: {modeDescription}";
+                    _logger.LogInformation($"移动止损配置已更新: {modeDescription}, 回调率: {TrailingStopConfig.CallbackRate:F1}%");
+                    
+                    // 🔧 通知配置信息属性更新
+                    OnPropertyChanged(nameof(TrailingStopConfigInfo));
+                    OnPropertyChanged(nameof(TrailingStopButtonTooltip));
+                    
+                    return true;
                 }
                 else
                 {
-                    StatusMessage = "配置修改已取消";
-                    _logger.LogInformation("用户取消了配置修改");
+                    StatusMessage = "移动止损配置已取消";
+                    _logger.LogInformation("用户取消了移动止损配置");
+                    return false;
                 }
             }
             catch (Exception ex)
             {
-                var errorMsg = $"打开配置对话框失败: {ex.Message}";
-                StatusMessage = errorMsg;
-                _logger.LogError(ex, "打开移动止损配置对话框失败，详细错误信息: {ErrorDetails}", ex.ToString());
-                
-                // 显示更详细的错误信息给用户
-                try
-                {
-                    MessageBox.Show($"配置对话框打开失败:\n\n错误: {ex.Message}\n\n位置: {ex.StackTrace?.Split('\n').FirstOrDefault()}", 
-                                  "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-                catch
-                {
-                    // 如果连MessageBox都显示不了，至少记录到日志
-                    _logger.LogError("无法显示错误对话框");
-                }
+                _logger.LogError(ex, "打开配置对话框失败");
+                StatusMessage = $"配置对话框失败: {ex.Message}";
+                return false;
             }
         }
 
-
-
-
-
-
-
-
-
-        /// <summary>
-        /// 查看移动止损状态
-        /// </summary>
-        [RelayCommand]
-        private async Task ViewTrailingStopStatusAsync()
+        private async Task ProcessTrailingStopAsync()
         {
             try
             {
-                IsLoading = true;
-                StatusMessage = "正在更新移动止损状态...";
+                if (!TrailingStopEnabled)
+                    return;
+
+                var mode = TrailingStopConfig.Mode;
+                _logger.LogInformation($"开始处理移动止损（{mode}模式）...");
                 
-                await UpdateTrailingStopStatusesAsync();
+                // 🔧 修改：优先处理勾选的持仓，如果没有勾选则处理所有符合条件的持仓
+                List<PositionInfo> targetPositions;
+                var selectedPositions = Positions.Where(p => p.IsSelected && p.PositionAmt != 0).ToList();
                 
-                var activeCount = TrailingStopStatuses.Count(s => s.IsActive);
-                StatusMessage = $"移动止损状态更新完成，当前活跃: {activeCount} 个";
-                
-                // 输出详细状态到日志
-                foreach (var status in TrailingStopStatuses)
+                if (selectedPositions.Any())
                 {
-                    _logger.LogInformation($"移动止损状态: {status.Symbol} 模式:{status.Mode} 数量:{status.TrailingQuantity:F8} 回调率:{status.CallbackRate:F2}%");
+                    // 有勾选的持仓，只处理勾选的
+                    targetPositions = selectedPositions;
+                    _logger.LogInformation($"检测到 {selectedPositions.Count} 个勾选的持仓，将只对勾选的持仓设置移动止损");
+                    StatusMessage = $"正在为 {selectedPositions.Count} 个勾选的持仓设置移动止损...";
                 }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"查看状态失败: {ex.Message}";
-                _logger.LogError(ex, "查看移动止损状态失败");
-            }
-            finally
-            {
-                IsLoading = false;
-            }
-        }
-
-        /// <summary>
-        /// 切换移动止损模式
-        /// </summary>
-        private void SwitchTrailingStopMode()
-        {
-            try
-            {
-                var currentMode = TrailingStopConfig.Mode;
-                var nextMode = currentMode switch
+                else
                 {
-                    TrailingStopMode.Replace => TrailingStopMode.Coexist,
-                    TrailingStopMode.Coexist => TrailingStopMode.SmartLayering,
-                    TrailingStopMode.SmartLayering => TrailingStopMode.Replace,
-                    _ => TrailingStopMode.Coexist
-                };
-                
-                TrailingStopConfig.Mode = nextMode;
-                var modeDescription = nextMode switch
+                    // 没有勾选的持仓，按配置处理
+                    targetPositions = TrailingStopConfig.OnlyForProfitablePositions 
+                        ? Positions.Where(p => p.PositionAmt != 0 && p.UnrealizedProfit > 0).ToList()
+                        : Positions.Where(p => p.PositionAmt != 0).ToList();
+                    _logger.LogInformation($"没有勾选持仓，按配置处理 {targetPositions.Count} 个持仓");
+                }
+
+                // 🔧 新增：展示当前配置信息
+                var modeDescription = TrailingStopConfig.Mode switch
                 {
                     TrailingStopMode.Replace => "替换模式",
-                    TrailingStopMode.Coexist => "并存模式",
+                    TrailingStopMode.Coexist => "并存模式", 
                     TrailingStopMode.SmartLayering => "智能分层模式",
                     _ => "未知模式"
                 };
                 
-                StatusMessage = $"移动止损模式已切换为: {modeDescription}";
-                _logger.LogInformation($"移动止损模式切换: {currentMode} → {nextMode}");
+                var scopeDescription = selectedPositions.Any() ? "勾选持仓" : 
+                    (TrailingStopConfig.OnlyForProfitablePositions ? "仅盈利持仓" : "所有持仓");
+                
+                _logger.LogInformation($"📋 移动止损配置 - 模式: {modeDescription}, 处理范围: {scopeDescription}, 回调率: {TrailingStopConfig.CallbackRate:F1}%");
+                if (mode == TrailingStopMode.Coexist)
+                {
+                    _logger.LogInformation($"📋 分配比例: {TrailingStopConfig.AllocationRatio * 100:F1}%用于移动止损");
+                }
+                else if (mode == TrailingStopMode.SmartLayering)
+                {
+                    _logger.LogInformation($"📋 分层比例: 固定止损{TrailingStopConfig.FixedStopRatio * 100:F0}%, 移动止损{TrailingStopConfig.TrailingStopRatio * 100:F0}%");
+                }
+                
+                var processedCount = 0;
+                
+                foreach (var position in targetPositions)
+                {
+                    bool success = false;
+                    
+                    try
+                    {
+                        switch (mode)
+                        {
+                            case TrailingStopMode.Replace:
+                                success = await ProcessReplaceMode(position);
+                                break;
+                            case TrailingStopMode.Coexist:
+                                success = await ProcessCoexistMode(position);
+                                break;
+                            case TrailingStopMode.SmartLayering:
+                                success = await ProcessSmartLayeringMode(position);
+                                break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"处理持仓失败: {position.Symbol}");
+                        success = false;
+                    }
+                    
+                    if (success)
+                        processedCount++;
+                    
+                    // 避免API频率限制
+                    if (processedCount > 0)
+                        await Task.Delay(300);
+                }
+                
+                if (processedCount > 0)
+                {
+                    var processingInfo = selectedPositions.Any() ? "勾选持仓" : "符合条件的持仓";
+                    StatusMessage = $"✅ 移动止损设置完成 - {modeDescription}，共处理 {processedCount} 个{processingInfo}，回调率 {TrailingStopConfig.CallbackRate:F1}%";
+                    _logger.LogInformation($"移动止损处理完成（{modeDescription}），共处理 {processedCount} 个持仓");
+                }
+                else
+                {
+                    var processingInfo = selectedPositions.Any() ? "勾选的持仓" : "符合条件的持仓";
+                    StatusMessage = $"ℹ️ 没有需要处理的{processingInfo} - {modeDescription}，回调率 {TrailingStopConfig.CallbackRate:F1}%";
+                    _logger.LogInformation($"没有找到需要设置移动止损的持仓（{modeDescription}）");
+                }
             }
             catch (Exception ex)
             {
-                StatusMessage = $"切换模式失败: {ex.Message}";
-                _logger.LogError(ex, "切换移动止损模式失败");
+                StatusMessage = $"处理移动止损失败: {ex.Message}";
+                _logger.LogError(ex, "处理移动止损失败");
             }
+        }
+
+        /// <summary>
+        /// 替换模式：直接用移动止损替换现有止损单
+        /// </summary>
+        private async Task<bool> ProcessReplaceMode(PositionInfo position)
+        {
+            // 检查是否已有移动止损单
+            var existingTrailingStops = Orders.Where(o => 
+                o.Symbol == position.Symbol && 
+                o.Type == "TRAILING_STOP_MARKET" && 
+                o.Status == "NEW" &&
+                o.ReduceOnly).ToList();
+            
+            if (existingTrailingStops.Any())
+            {
+                _logger.LogInformation($"持仓 {position.Symbol} 已有移动止损单，跳过");
+                return false;
+            }
+
+            // 取消现有的普通止损单
+            var existingStopOrders = Orders.Where(o => 
+                o.Symbol == position.Symbol && 
+                o.Type == "STOP_MARKET" && 
+                o.Status == "NEW" &&
+                o.ReduceOnly).ToList();
+            
+            foreach (var stopOrder in existingStopOrders)
+            {
+                await _binanceService.CancelOrderAsync(stopOrder.Symbol, stopOrder.OrderId);
+                await Task.Delay(100); // 等待取消完成
+            }
+
+            // 创建移动止损单（使用全部持仓数量）
+            var side = position.PositionAmt > 0 ? "SELL" : "BUY";
+            var trailingStopRequest = new OrderRequest
+            {
+                Symbol = position.Symbol,
+                Side = side,
+                Type = "TRAILING_STOP_MARKET",
+                Quantity = Math.Abs(position.PositionAmt),
+                CallbackRate = TrailingStopConfig.CallbackRate,
+                ReduceOnly = true,
+                PositionSide = position.PositionSideString,
+                WorkingType = "CONTRACT_PRICE"
+            };
+
+            var success = await _binanceService.PlaceOrderAsync(trailingStopRequest);
+            if (success)
+            {
+                _logger.LogInformation($"移动止损单创建成功(替换模式): {position.Symbol} 数量{Math.Abs(position.PositionAmt):F4} 回调率{TrailingStopConfig.CallbackRate:F2}%");
+            }
+            else
+            {
+                _logger.LogWarning($"移动止损单创建失败(替换模式): {position.Symbol}");
+            }
+            
+            return success;
+        }
+
+        /// <summary>
+        /// 并存模式：按分配比例创建移动止损单，与现有止损单并存
+        /// </summary>
+        private async Task<bool> ProcessCoexistMode(PositionInfo position)
+        {
+            // 检查是否已有移动止损单
+            var existingTrailingStops = Orders.Where(o => 
+                o.Symbol == position.Symbol && 
+                o.Type == "TRAILING_STOP_MARKET" && 
+                o.Status == "NEW" &&
+                o.ReduceOnly).ToList();
+            
+            if (existingTrailingStops.Any())
+            {
+                _logger.LogInformation($"持仓 {position.Symbol} 已有移动止损单，跳过");
+                return false;
+            }
+
+            // 计算移动止损数量（使用分配比例）
+            var trailingQuantity = Math.Abs(position.PositionAmt) * TrailingStopConfig.AllocationRatio;
+            
+            // 数量精度调整
+            var (stepSize, _) = await _binanceService.GetSymbolPrecisionAsync(position.Symbol);
+            trailingQuantity = Math.Round(trailingQuantity / stepSize) * stepSize;
+            
+            if (trailingQuantity <= 0)
+            {
+                _logger.LogWarning($"移动止损数量太小，跳过 {position.Symbol}: {trailingQuantity:F8}");
+                return false;
+            }
+
+            // 创建移动止损单
+            var side = position.PositionAmt > 0 ? "SELL" : "BUY";
+            var trailingStopRequest = new OrderRequest
+            {
+                Symbol = position.Symbol,
+                Side = side,
+                Type = "TRAILING_STOP_MARKET",
+                Quantity = trailingQuantity,
+                CallbackRate = TrailingStopConfig.CallbackRate,
+                ReduceOnly = true,
+                PositionSide = position.PositionSideString,
+                WorkingType = "CONTRACT_PRICE"
+            };
+
+            var success = await _binanceService.PlaceOrderAsync(trailingStopRequest);
+            if (success)
+            {
+                var percentageUsed = TrailingStopConfig.AllocationRatio * 100;
+                _logger.LogInformation($"移动止损单创建成功(并存模式): {position.Symbol} 数量{trailingQuantity:F4}({percentageUsed:F1}%) 回调率{TrailingStopConfig.CallbackRate:F2}%");
+            }
+            else
+            {
+                _logger.LogWarning($"移动止损单创建失败(并存模式): {position.Symbol}");
+            }
+            
+            return success;
+        }
+
+        /// <summary>
+        /// 智能分层模式：同时创建固定止损和移动止损
+        /// </summary>
+        private async Task<bool> ProcessSmartLayeringMode(PositionInfo position)
+        {
+            // 检查是否已有移动止损单
+            var existingTrailingStops = Orders.Where(o => 
+                o.Symbol == position.Symbol && 
+                o.Type == "TRAILING_STOP_MARKET" && 
+                o.Status == "NEW" &&
+                o.ReduceOnly).ToList();
+            
+            if (existingTrailingStops.Any())
+            {
+                _logger.LogInformation($"持仓 {position.Symbol} 已有移动止损单，跳过");
+                return false;
+            }
+
+            var absolutePositionAmt = Math.Abs(position.PositionAmt);
+            var side = position.PositionAmt > 0 ? "SELL" : "BUY";
+            var isLong = position.PositionAmt > 0;
+            
+            // 获取精度信息
+            var (stepSize, tickSize) = await _binanceService.GetSymbolPrecisionAsync(position.Symbol);
+            
+            // 计算分层数量
+            var fixedQuantity = absolutePositionAmt * TrailingStopConfig.FixedStopRatio;
+            var trailingQuantity = absolutePositionAmt * TrailingStopConfig.TrailingStopRatio;
+            
+            // 数量精度调整
+            fixedQuantity = Math.Round(fixedQuantity / stepSize) * stepSize;
+            trailingQuantity = Math.Round(trailingQuantity / stepSize) * stepSize;
+            
+            if (fixedQuantity <= 0 && trailingQuantity <= 0)
+            {
+                _logger.LogWarning($"分层数量都太小，跳过 {position.Symbol}");
+                return false;
+            }
+
+            var fixedSuccess = true;
+            var trailingSuccess = true;
+
+            // 创建固定止损单（如果数量大于0）
+            if (fixedQuantity > 0)
+            {
+                // 计算固定止损价格（相对保守，比如5%）
+                var fixedStopLossRatio = 5.0m; // 5%固定止损
+                var fixedStopPrice = isLong 
+                    ? position.EntryPrice * (1 - fixedStopLossRatio / 100)
+                    : position.EntryPrice * (1 + fixedStopLossRatio / 100);
+                
+                // 价格精度调整
+                fixedStopPrice = Math.Round(fixedStopPrice / tickSize) * tickSize;
+                
+                var fixedStopRequest = new OrderRequest
+                {
+                    Symbol = position.Symbol,
+                    Side = side,
+                    Type = "STOP_MARKET",
+                    Quantity = fixedQuantity,
+                    StopPrice = fixedStopPrice,
+                    ReduceOnly = true,
+                    PositionSide = position.PositionSideString,
+                    WorkingType = "CONTRACT_PRICE"
+                };
+
+                fixedSuccess = await _binanceService.PlaceOrderAsync(fixedStopRequest);
+                if (fixedSuccess)
+                {
+                    _logger.LogInformation($"固定止损单创建成功: {position.Symbol} 数量{fixedQuantity:F4} 止损价{fixedStopPrice:F4}");
+                }
+                else
+                {
+                    _logger.LogWarning($"固定止损单创建失败: {position.Symbol}");
+                }
+                
+                await Task.Delay(200); // API间隔
+            }
+
+            // 创建移动止损单（如果数量大于0）
+            if (trailingQuantity > 0)
+            {
+                var trailingStopRequest = new OrderRequest
+                {
+                    Symbol = position.Symbol,
+                    Side = side,
+                    Type = "TRAILING_STOP_MARKET",
+                    Quantity = trailingQuantity,
+                    CallbackRate = TrailingStopConfig.CallbackRate,
+                    ReduceOnly = true,
+                    PositionSide = position.PositionSideString,
+                    WorkingType = "CONTRACT_PRICE"
+                };
+
+                trailingSuccess = await _binanceService.PlaceOrderAsync(trailingStopRequest);
+                if (trailingSuccess)
+                {
+                    _logger.LogInformation($"移动止损单创建成功: {position.Symbol} 数量{trailingQuantity:F4} 回调率{TrailingStopConfig.CallbackRate:F2}%");
+                }
+                else
+                {
+                    _logger.LogWarning($"移动止损单创建失败: {position.Symbol}");
+                }
+            }
+
+            var success = (fixedQuantity <= 0 || fixedSuccess) && (trailingQuantity <= 0 || trailingSuccess);
+            if (success)
+            {
+                var fixedPct = TrailingStopConfig.FixedStopRatio * 100;
+                var trailingPct = TrailingStopConfig.TrailingStopRatio * 100;
+                _logger.LogInformation($"智能分层创建成功: {position.Symbol} 固定{fixedPct:F0}%({fixedQuantity:F4}) + 移动{trailingPct:F0}%({trailingQuantity:F4})");
+            }
+            
+            return success;
         }
 
         /// <summary>

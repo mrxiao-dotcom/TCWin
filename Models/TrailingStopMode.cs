@@ -49,14 +49,10 @@ namespace BinanceFuturesTrader.Models
         public decimal TrailingStopRatio { get; set; } = 0.3m;
 
         /// <summary>
-        /// 最小移动止损回调率（百分比）
+        /// 移动止损回调率（百分比），范围0.1-10%（币安API限制）
+        /// 表示价格回调此比例时触发止损平仓
         /// </summary>
-        public decimal MinCallbackRate { get; set; } = 1.0m;
-
-        /// <summary>
-        /// 最大移动止损回调率（百分比）
-        /// </summary>
-        public decimal MaxCallbackRate { get; set; } = 10.0m;
+        public decimal CallbackRate { get; set; } = 2.0m;
 
         /// <summary>
         /// 是否只对盈利持仓启用

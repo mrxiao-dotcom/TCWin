@@ -78,6 +78,9 @@ namespace BinanceFuturesTrader.ViewModels
                 OnPropertyChanged(nameof(SelectedPositions));
                 OnPropertyChanged(nameof(HasSelectedPositions));
                 OnPropertyChanged(nameof(SelectedPositionCount));
+                
+                // 🔧 新增：通知移动止损按钮工具提示更新
+                OnPropertyChanged(nameof(TrailingStopButtonTooltip));
             }
             catch (Exception ex)
             {
@@ -108,6 +111,9 @@ namespace BinanceFuturesTrader.ViewModels
                 OnPropertyChanged(nameof(SelectedPositions));
                 OnPropertyChanged(nameof(HasSelectedPositions));
                 OnPropertyChanged(nameof(SelectedPositionCount));
+                
+                // 🔧 新增：通知移动止损按钮工具提示更新
+                OnPropertyChanged(nameof(TrailingStopButtonTooltip));
             }
             catch (Exception ex)
             {
@@ -136,6 +142,9 @@ namespace BinanceFuturesTrader.ViewModels
                 OnPropertyChanged(nameof(SelectedPositions));
                 OnPropertyChanged(nameof(HasSelectedPositions));
                 OnPropertyChanged(nameof(SelectedPositionCount));
+                
+                // 🔧 新增：通知移动止损按钮工具提示更新
+                OnPropertyChanged(nameof(TrailingStopButtonTooltip));
             }
             catch (Exception ex)
             {
