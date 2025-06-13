@@ -4,6 +4,7 @@
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:converters="clr-namespace:BinanceFuturesTrader.Converters"
         Title="币安期货交易管理器" 
+        Icon="Icons/app.ico"
         Height="900" Width="1400" 
         MinHeight="700" MinWidth="1200"
         WindowStartupLocation="CenterScreen"
@@ -885,8 +886,12 @@
                                    ToolTip="执行市价单下单操作"/>
                             <Button Content="条件单" Click="ToggleConditionalOrder_Click"
                                    Background="Blue" Foreground="White" FontWeight="Bold"
-                                           Width="55" Height="30" FontSize="11"
+                                           Width="55" Height="30" FontSize="11" Margin="0,0,8,0"
                                    ToolTip="显示/隐藏条件单设置"/>
+                            <Button Content="一键保本加仓" Command="{Binding OneClickBreakEvenAddPositionCommand}"
+                                   Background="Purple" Foreground="White" FontWeight="Bold"
+                                           Width="95" Height="30" FontSize="10"
+                                   ToolTip="自动判断条件并进行保本加仓操作：需要浮盈>0.5倍风险金"/>
                         </StackPanel>
                     </Grid>
                         </DockPanel>

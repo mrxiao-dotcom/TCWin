@@ -118,6 +118,7 @@ namespace BinanceFuturesTrader.ViewModels
                             }
                         }
                         
+                        // 恢复订单选择状态
                         foreach (var order in Orders)
                         {
                             if (selectedOrderIds.Contains(order.OrderId))
@@ -125,6 +126,12 @@ namespace BinanceFuturesTrader.ViewModels
                                 order.IsSelected = true;
                                 restoredOrderCount++;
                             }
+                        }
+                        
+                        // 🔧 修复：为所有订单添加选择状态监听
+                        foreach (var order in Orders)
+                        {
+                            order.SelectionChanged += OnOrderSelectionChanged;
                         }
                         
                         // 强制通知选择状态属性更新
@@ -300,6 +307,12 @@ namespace BinanceFuturesTrader.ViewModels
                 {
                     CalculateMaxRiskCapital();
                 }
+                
+                // 🔧 修复：确保所有订单都有选择状态监听
+                foreach (var order in Orders)
+                {
+                    order.SelectionChanged += OnOrderSelectionChanged;
+                }
 
                 _logger.LogDebug("智能数据更新完成，选择状态完全保持");
                 return true;
@@ -419,6 +432,16 @@ namespace BinanceFuturesTrader.ViewModels
         {
             try
             {
+                // 🔧 修复：先移除旧订单的选择状态监听
+                foreach (var order in FilteredOrders)
+                {
+                    order.SelectionChanged -= OnOrderSelectionChanged;
+                }
+                foreach (var order in ReduceOnlyOrders)
+                {
+                    order.SelectionChanged -= OnOrderSelectionChanged;
+                }
+                
                 FilteredOrders.Clear();
                 ReduceOnlyOrders.Clear();
 
@@ -440,6 +463,8 @@ namespace BinanceFuturesTrader.ViewModels
                     if (order.ReduceOnly || order.ClosePosition)
                     {
                         ReduceOnlyOrders.Add(order);
+                        // 🔧 新增：为减仓型订单添加选择状态监听
+                        order.SelectionChanged += OnOrderSelectionChanged;
                         reduceOnlyCount++;
                         _logger.LogDebug($"   ✅ 识别为减仓型订单: {order.Symbol} {order.Type}");
                     }
@@ -448,6 +473,8 @@ namespace BinanceFuturesTrader.ViewModels
                         // 加仓型订单（ReduceOnly=false）显示在下方条件单列表
                         // 包括用于开仓的TAKE_PROFIT_MARKET、STOP_MARKET等条件单
                         FilteredOrders.Add(order);
+                        // 🔧 新增：为加仓型订单添加选择状态监听
+                        order.SelectionChanged += OnOrderSelectionChanged;
                         addPositionCount++;
                         _logger.LogDebug($"   ➕ 识别为加仓型订单: {order.Symbol} {order.Type}");
                     }

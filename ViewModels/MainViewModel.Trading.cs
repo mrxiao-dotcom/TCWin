@@ -352,6 +352,236 @@ namespace BinanceFuturesTrader.ViewModels
         }
         #endregion
 
+        #region 一键保本加仓功能命令
+        [RelayCommand]
+        private async Task OneClickBreakEvenAddPositionAsync()
+        {
+            try
+            {
+                IsLoading = true;
+                _logger.LogInformation("开始执行一键保本加仓操作");
+
+                // 1. 基础条件检查
+                if (SelectedAccount == null)
+                {
+                    StatusMessage = "❌ 请先选择账户配置";
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(Symbol))
+                {
+                    StatusMessage = "❌ 请先选择交易合约";
+                    return;
+                }
+
+                if (AccountInfo == null)
+                {
+                    StatusMessage = "❌ 请先刷新账户信息";
+                    return;
+                }
+
+                var normalizedSymbol = NormalizeSymbol(Symbol);
+                
+                // 2. 获取当前合约的持仓
+                var currentPosition = Positions.FirstOrDefault(p => 
+                    p.Symbol == normalizedSymbol && Math.Abs(p.PositionAmt) > 0);
+
+                if (currentPosition == null)
+                {
+                    StatusMessage = $"❌ 当前合约 {normalizedSymbol} 无持仓，无法执行保本加仓";
+                    return;
+                }
+
+                // 3. 检查是否有浮盈
+                if (currentPosition.UnrealizedProfit <= 0)
+                {
+                    StatusMessage = $"❌ 当前持仓浮盈为 {currentPosition.UnrealizedProfit:F2}U，需要有浮盈才能执行保本加仓";
+                    return;
+                }
+
+                // 4. 计算风险金
+                var accountEquity = AccountInfo.TotalEquity;
+                var riskTimes = SelectedAccount.RiskCapitalTimes;
+                var riskCapital = accountEquity / riskTimes;
+                var minRequiredProfit = riskCapital * 0.5m; // 0.5倍风险金
+
+                if (currentPosition.UnrealizedProfit < minRequiredProfit)
+                {
+                    StatusMessage = $"❌ 当前浮盈 {currentPosition.UnrealizedProfit:F2}U < 0.5倍风险金({minRequiredProfit:F2}U)，条件不满足";
+                    return;
+                }
+
+                _logger.LogInformation($"条件检查通过 - 持仓: {currentPosition.Symbol}, 浮盈: {currentPosition.UnrealizedProfit:F2}U, 要求浮盈: {minRequiredProfit:F2}U");
+
+                // 5. 获取最新价格
+                var latestPrice = await _binanceService.GetLatestPriceAsync(normalizedSymbol);
+                if (latestPrice <= 0)
+                {
+                    StatusMessage = $"❌ 无法获取 {normalizedSymbol} 的最新价格";
+                    return;
+                }
+
+                // 6. 确定加仓方向（与当前持仓方向一致）
+                var addPositionSide = currentPosition.PositionAmt > 0 ? "BUY" : "SELL";
+                
+                                 // 7. 根据风险金和止损比例计算加仓数量
+                if (StopLossRatio <= 0)
+                {
+                    StatusMessage = "❌ 请先设置有效的止损比例";
+                    return;
+                }
+
+                // 风险金 = 允许单笔亏损的金额
+                var riskAmount = riskCapital;
+                
+                // 止损比例转换为小数
+                var stopLossPercentage = StopLossRatio / 100m;
+                
+                // 可以持仓的货值 = 风险金 ÷ 止损比例
+                var positionValue = riskAmount / stopLossPercentage;
+                
+                // 加仓数量 = 货值 ÷ 最新价格
+                var addQuantity = positionValue / latestPrice;
+
+                if (addQuantity <= 0)
+                {
+                    StatusMessage = "❌ 无法计算有效的加仓数量";
+                    return;
+                }
+
+                // 检查交易规则和精度
+                try
+                {
+                    var (minQty, maxQty, stepSize, tickSize, maxLeverage) = await _binanceService.GetSymbolTradingRulesAsync(normalizedSymbol);
+                    
+                    // 调整数量到正确的精度
+                    addQuantity = Math.Floor(addQuantity / stepSize) * stepSize;
+                    
+                    if (addQuantity < minQty)
+                    {
+                        StatusMessage = $"❌ 计算的加仓数量 {addQuantity:F6} 小于最小交易数量 {minQty:F6}";
+                        return;
+                    }
+                    
+                    if (addQuantity > maxQty)
+                    {
+                        StatusMessage = $"❌ 计算的加仓数量 {addQuantity:F6} 超过最大交易数量 {maxQty:F6}";
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, $"获取交易规则失败，使用默认精度处理: {normalizedSymbol}");
+                    // 使用默认精度处理（保留6位小数）
+                    addQuantity = Math.Round(addQuantity, 6);
+                }
+
+                                 _logger.LogInformation($"计算加仓参数 - 方向: {addPositionSide}, 风险金: {riskAmount:F2}U, 止损比例: {StopLossRatio}%, 货值: {positionValue:F2}U, 价格: {latestPrice:F4}, 计算数量: {addQuantity:F6}");
+
+                // 8. 执行加仓下单
+                var addOrderRequest = new OrderRequest
+                {
+                    Symbol = normalizedSymbol,
+                    Side = addPositionSide,
+                    Type = "MARKET",
+                    Quantity = addQuantity,
+                    TimeInForce = "GTC"
+                };
+
+                var addOrderSuccess = await _binanceService.PlaceOrderAsync(addOrderRequest);
+                if (!addOrderSuccess)
+                {
+                    StatusMessage = "❌ 加仓下单失败";
+                    return;
+                }
+
+                                 StatusMessage = $"✅ 加仓下单成功 - {addPositionSide} {addQuantity:F6} (货值: {positionValue:F2}U) @ 市价";
+                _logger.LogInformation($"加仓下单成功: {addOrderRequest.Symbol} {addOrderRequest.Side} {addOrderRequest.Quantity:F6}, 货值: {positionValue:F2}U");
+
+                // 9. 等待一段时间让订单执行和数据更新
+                await Task.Delay(2000);
+                
+                // 10. 刷新持仓数据获取新的综合开仓价
+                await RefreshDataAsync();
+                
+                // 11. 获取更新后的持仓信息
+                var updatedPosition = Positions.FirstOrDefault(p => 
+                    p.Symbol == normalizedSymbol && Math.Abs(p.PositionAmt) > 0);
+
+                if (updatedPosition == null)
+                {
+                    StatusMessage = "⚠️ 加仓完成但无法获取更新后的持仓信息";
+                    return;
+                }
+
+                // 12. 清除旧的止损委托（仅删除止损类型，保留止盈和条件单）
+                var oldStopOrders = Orders.Where(o => 
+                    o.Symbol == normalizedSymbol && 
+                    (o.Type == "STOP_MARKET" || o.Type == "STOP_LIMIT") &&
+                    o.ReduceOnly).ToList();
+
+                foreach (var order in oldStopOrders)
+                {
+                    try
+                    {
+                        var cancelSuccess = await _binanceService.CancelOrderAsync(normalizedSymbol, order.OrderId);
+                        if (cancelSuccess)
+                        {
+                            _logger.LogInformation($"已取消旧止损单: {order.OrderId}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, $"取消旧止损单失败: {order.OrderId}");
+                    }
+                }
+
+                // 13. 设置新的保本止损委托
+                var newStopPrice = updatedPosition.EntryPrice; // 使用综合开仓价作为止损价
+                var stopOrderSide = updatedPosition.PositionAmt > 0 ? "SELL" : "BUY"; // 平仓方向
+                var stopQuantity = Math.Abs(updatedPosition.PositionAmt); // 全部持仓数量
+
+                var stopOrderRequest = new OrderRequest
+                {
+                    Symbol = normalizedSymbol,
+                    Side = stopOrderSide,
+                    Type = "STOP_MARKET",
+                    Quantity = stopQuantity,
+                    StopPrice = newStopPrice,
+                    TimeInForce = "GTC",
+                    ReduceOnly = true
+                };
+
+                var stopOrderSuccess = await _binanceService.PlaceOrderAsync(stopOrderRequest);
+                if (stopOrderSuccess)
+                {
+                    StatusMessage = $"🎯 保本止损设置成功 - {stopOrderSide} {stopQuantity:F6} @ {newStopPrice:F4} (保本价)";
+                    _logger.LogInformation($"保本止损设置成功: {stopOrderRequest.Symbol} {stopOrderRequest.Side} {stopOrderRequest.Quantity:F6} @ {stopOrderRequest.StopPrice:F4}");
+                }
+                else
+                {
+                    StatusMessage = "⚠️ 加仓成功但保本止损设置失败，请手动设置";
+                    _logger.LogWarning("保本止损设置失败");
+                }
+
+                // 14. 最终数据刷新
+                await RefreshDataAsync();
+
+                StatusMessage = $"✅ 一键保本加仓完成 - 浮盈: {currentPosition.UnrealizedProfit:F2}U → 保本价: {newStopPrice:F4}";
+                
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "一键保本加仓操作失败");
+                StatusMessage = $"❌ 一键保本加仓失败: {ex.Message}";
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+        #endregion
+
         #region 计算功能命令
         [RelayCommand]
         private async Task CalculateMaxRiskCapital()

@@ -211,6 +211,19 @@ namespace BinanceFuturesTrader.ViewModels
         
         // 判断是否有选中的单个持仓（用于保本止损和保盈止损按钮）
         public bool HasSelectedPosition => SelectedPosition != null;
+
+        // 🔧 新增：订单选择状态变化处理方法
+        private void OnOrderSelectionChanged(object? sender, EventArgs e)
+        {
+            // 当任何订单的选择状态改变时，通知相关属性更新
+            OnPropertyChanged(nameof(HasSelectedOrders));
+            OnPropertyChanged(nameof(SelectedOrderCount));
+            OnPropertyChanged(nameof(HasSelectedStopOrders));
+            OnPropertyChanged(nameof(SelectedStopOrderCount));
+            OnPropertyChanged(nameof(SelectedOrders));
+            
+            _logger.LogDebug($"订单选择状态变化，当前选中: {SelectedOrderCount} 个");
+        }
         #endregion
 
         #region 测试方法
@@ -378,8 +391,30 @@ namespace BinanceFuturesTrader.ViewModels
 
         public void Cleanup()
         {
-            StopTimers();
-            _logger.LogInformation("MainViewModel清理完成");
+            try
+            {
+                StopTimers();
+                
+                // 🔧 修复：移除所有订单的选择状态监听，避免内存泄漏
+                foreach (var order in Orders)
+                {
+                    order.SelectionChanged -= OnOrderSelectionChanged;
+                }
+                foreach (var order in FilteredOrders)
+                {
+                    order.SelectionChanged -= OnOrderSelectionChanged;
+                }
+                foreach (var order in ReduceOnlyOrders)
+                {
+                    order.SelectionChanged -= OnOrderSelectionChanged;
+                }
+                
+                _logger.LogInformation("MainViewModel清理完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "MainViewModel清理失败");
+            }
         }
         #endregion
     }

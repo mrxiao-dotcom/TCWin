@@ -32,8 +32,18 @@ namespace BinanceFuturesTrader.Models
         public bool IsSelected
         {
             get => _isSelected;
-            set => SetProperty(ref _isSelected, value);
+            set 
+            {
+                if (SetProperty(ref _isSelected, value))
+                {
+                    // 🔧 修复：当选择状态改变时，触发外部通知事件
+                    SelectionChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
         }
+        
+        // 🔧 新增：选择状态变化事件
+        public event EventHandler? SelectionChanged;
         
         // 计算属性
         public decimal RemainingQty => OrigQty - ExecutedQty;

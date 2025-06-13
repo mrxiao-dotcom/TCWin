@@ -5,6 +5,15 @@
     <TargetFramework>net6.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
+    <!-- 应用程序图标配置 -->
+    <ApplicationIcon>Icons\app.ico</ApplicationIcon>
+    <AssemblyTitle>币安期货交易管理器</AssemblyTitle>
+    <AssemblyDescription>专业的币安期货交易管理工具</AssemblyDescription>
+    <AssemblyCompany>Trading Tools</AssemblyCompany>
+    <AssemblyProduct>Binance Futures Trader</AssemblyProduct>
+    <AssemblyCopyright>Copyright © 2024</AssemblyCopyright>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +25,11 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- 包含图标文件 -->
+  <ItemGroup>
+    <Resource Include="Icons\**\*" />
   </ItemGroup>
 
 </Project> 
