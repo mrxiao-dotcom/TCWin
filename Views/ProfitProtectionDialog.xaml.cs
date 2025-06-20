@@ -93,15 +93,18 @@ namespace BinanceFuturesTrader.Views
                 var isLong = _direction == "做多";
                 decimal stopPrice;
                 
+                // 🔧 修复：考虑滑点和手续费损耗，在开仓价基础上加1U缓冲
+                var bufferPerUnit = 1.0m / _quantity; // 1U分摊到每个单位的价格缓冲
+                
                 if (isLong)
                 {
-                    // 做多：止损价 = 开仓价 + (保底盈利 / 持仓数量)
-                    stopPrice = _entryPrice + (protectionAmount / _quantity);
+                    // 做多：止损价 = 开仓价 + (保底盈利 / 持仓数量) + 缓冲
+                    stopPrice = _entryPrice + (protectionAmount / _quantity) + bufferPerUnit;
                 }
                 else
                 {
-                    // 做空：止损价 = 开仓价 - (保底盈利 / 持仓数量)
-                    stopPrice = _entryPrice - (protectionAmount / _quantity);
+                    // 做空：止损价 = 开仓价 - (保底盈利 / 持仓数量) - 缓冲
+                    stopPrice = _entryPrice - (protectionAmount / _quantity) - bufferPerUnit;
                 }
 
                 // 调整价格精度（简化版）
@@ -127,8 +130,10 @@ namespace BinanceFuturesTrader.Views
                                $"止损价：{PriceFormatConverter.FormatPrice(stopPrice)}\n" +
                                $"当前价：{PriceFormatConverter.FormatPrice(_currentPrice)}\n" +
                                $"保底盈利：{protectionAmount:F2} USDT\n" +
+                               $"缓冲：{bufferPerUnit:F6} (1U分摊)\n" +
                                $"验证结果：{validationMessage}\n\n" +
-                               $"💡 触发时实际收益约为：{protectionAmount:F2} USDT";
+                               $"💡 触发时实际收益约为：{protectionAmount:F2} USDT\n" +
+                               $"🛡️ 已考虑滑点和手续费损耗";
 
                 CalculationResultText.Text = resultText;
                 CalculationResultText.Foreground = isValid ? 

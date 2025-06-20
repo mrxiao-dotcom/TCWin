@@ -532,6 +532,14 @@
                            Background="DarkOrange" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="12"
                            ToolTip="⚠️ 请先在【持仓表格】中点击选择一行持仓，然后点击此按钮设置保盈止损（选择订单无效）"/>
+                    <Button Content="分仓止盈" Command="{Binding PartialProfitTakingCommand}"
+                           Background="Green" Foreground="White" FontWeight="Bold"
+                           Width="80" Height="28" FontSize="12"
+                           ToolTip="⚠️ 将持仓拆分成多个止盈订单，分批获利平仓（仅支持有浮盈的持仓）"/>
+                    <Button Content="状态测试" Command="{Binding TestPartialProfitStatusCommand}"
+                           Background="Purple" Foreground="White" FontWeight="Bold"
+                           Width="70" Height="28" FontSize="11"
+                           ToolTip="测试分仓止盈按钮状态（临时调试按钮）"/>
                 <Button Content="刷新" Command="{Binding RefreshCommandStatesCommand}"
                        Background="Gray" Foreground="White" FontWeight="Bold"
                        Width="50" Height="28" FontSize="12"

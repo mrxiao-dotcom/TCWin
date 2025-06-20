@@ -521,6 +521,7 @@ namespace BinanceFuturesTrader.ViewModels
                     {
                         AddProfitProtectionStopLossCommand?.NotifyCanExecuteChanged();
                         AddBreakEvenStopLossCommand?.NotifyCanExecuteChanged();
+                        PartialProfitTakingCommand?.NotifyCanExecuteChanged();
                         System.Windows.Input.CommandManager.InvalidateRequerySuggested();
                     }
                     catch (Exception refreshEx)
@@ -540,6 +541,7 @@ namespace BinanceFuturesTrader.ViewModels
                     {
                         AddProfitProtectionStopLossCommand?.NotifyCanExecuteChanged();
                         AddBreakEvenStopLossCommand?.NotifyCanExecuteChanged();
+                        PartialProfitTakingCommand?.NotifyCanExecuteChanged();
                         System.Windows.Input.CommandManager.InvalidateRequerySuggested();
                     }
                     catch (Exception refreshEx)

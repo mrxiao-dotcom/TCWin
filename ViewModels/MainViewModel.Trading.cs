@@ -540,6 +540,25 @@ namespace BinanceFuturesTrader.ViewModels
                 var newStopPrice = updatedPosition.EntryPrice; // 使用综合开仓价作为止损价
                 var stopOrderSide = updatedPosition.PositionAmt > 0 ? "SELL" : "BUY"; // 平仓方向
                 var stopQuantity = Math.Abs(updatedPosition.PositionAmt); // 全部持仓数量
+                
+                // 🔧 修复：考虑滑点和手续费损耗，在开仓价基础上加1U缓冲
+                var bufferPerUnit = 1.0m / stopQuantity; // 1U分摊到每个单位的价格缓冲
+                
+                if (updatedPosition.PositionAmt > 0) // 多头
+                {
+                    // 多头保本止损：止损价 = 开仓价 + 缓冲
+                    newStopPrice = updatedPosition.EntryPrice + bufferPerUnit;
+                }
+                else // 空头
+                {
+                    // 空头保本止损：止损价 = 开仓价 - 缓冲
+                    newStopPrice = updatedPosition.EntryPrice - bufferPerUnit;
+                }
+                
+                // 调整价格精度（保留4位小数）
+                newStopPrice = Math.Round(newStopPrice, 4);
+
+                _logger.LogInformation($"📊 一键保本加仓止损参数: 合约={normalizedSymbol}, 方向={(updatedPosition.PositionAmt > 0 ? "多头" : "空头")}, 数量={stopQuantity:F8}, 原开仓价={updatedPosition.EntryPrice:F4}, 缓冲={bufferPerUnit:F6}, 最终止损价={newStopPrice:F4}");
 
                 var stopOrderRequest = new OrderRequest
                 {
@@ -555,7 +574,7 @@ namespace BinanceFuturesTrader.ViewModels
                 var stopOrderSuccess = await _binanceService.PlaceOrderAsync(stopOrderRequest);
                 if (stopOrderSuccess)
                 {
-                    StatusMessage = $"🎯 保本止损设置成功 - {stopOrderSide} {stopQuantity:F6} @ {newStopPrice:F4} (保本价)";
+                    StatusMessage = $"🎯 保本止损设置成功 - {stopOrderSide} {stopQuantity:F6} @ {newStopPrice:F4} (保本价+缓冲)";
                     _logger.LogInformation($"保本止损设置成功: {stopOrderRequest.Symbol} {stopOrderRequest.Side} {stopOrderRequest.Quantity:F6} @ {stopOrderRequest.StopPrice:F4}");
                 }
                 else
@@ -787,8 +806,15 @@ namespace BinanceFuturesTrader.ViewModels
                 StatusMessage = $"✅ 可用风险金: {result:F0}U (标准{standardRiskCapital:F2} + 浮盈{finalProfitLossStr})";
                 _logger.LogInformation($"计算可用风险金: {result:F0}U，标准风险金{standardRiskCapital:F2} + 盈亏风险金{totalProfitLossRiskCapital:F2}");
                 
-                // 🚀 自动填写止损金额并执行以损定量
-                await AutoSetStopLossAmountAndCalculateQuantityAsync(result);
+                // ✅ 修复：仅在止损金额为0时才自动设置，避免覆盖用户手动设置的比例
+                if (StopLossAmount <= 0)
+                {
+                    await AutoSetStopLossAmountAndCalculateQuantityAsync(result);
+                }
+                else
+                {
+                    _logger.LogInformation($"止损金额已设置为 {StopLossAmount:F0}U，跳过自动设置");
+                }
             }
             catch (Exception ex)
             {

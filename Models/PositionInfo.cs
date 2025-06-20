@@ -7,13 +7,94 @@ namespace BinanceFuturesTrader.Models
     public class PositionInfo : INotifyPropertyChanged
     {
         public string Symbol { get; set; } = string.Empty;
-        public decimal PositionAmt { get; set; }
-        public decimal EntryPrice { get; set; }
-        public decimal MarkPrice { get; set; }
-        public decimal UnrealizedProfit { get; set; }
+        
+        // 🔧 修复：将关键数值属性改为支持属性变更通知，确保UI能实时更新
+        private decimal _positionAmt;
+        public decimal PositionAmt
+        {
+            get => _positionAmt;
+            set
+            {
+                if (SetProperty(ref _positionAmt, value))
+                {
+                    // 当持仓数量变化时，通知所有相关的计算属性
+                    OnPropertyChanged(nameof(NotionalValue));
+                    OnPropertyChanged(nameof(PositionValue));
+                    OnPropertyChanged(nameof(RequiredMargin));
+                    OnPropertyChanged(nameof(ProfitRate));
+                    OnPropertyChanged(nameof(Direction));
+                    OnPropertyChanged(nameof(DirectionColor));
+                    OnPropertyChanged(nameof(PnlPercent));
+                }
+            }
+        }
+        
+        private decimal _entryPrice;
+        public decimal EntryPrice
+        {
+            get => _entryPrice;
+            set
+            {
+                if (SetProperty(ref _entryPrice, value))
+                {
+                    // 当开仓价格变化时，通知相关的计算属性
+                    OnPropertyChanged(nameof(PnlPercent));
+                    OnPropertyChanged(nameof(ProfitRate));
+                }
+            }
+        }
+        
+        private decimal _markPrice;
+        public decimal MarkPrice
+        {
+            get => _markPrice;
+            set
+            {
+                if (SetProperty(ref _markPrice, value))
+                {
+                    // 当标记价格变化时，通知所有价格相关的计算属性
+                    OnPropertyChanged(nameof(NotionalValue));
+                    OnPropertyChanged(nameof(PositionValue));
+                    OnPropertyChanged(nameof(RequiredMargin));
+                    OnPropertyChanged(nameof(ProfitRate));
+                }
+            }
+        }
+        
+        private decimal _unrealizedProfit;
+        public decimal UnrealizedProfit
+        {
+            get => _unrealizedProfit;
+            set
+            {
+                if (SetProperty(ref _unrealizedProfit, value))
+                {
+                    // 🔧 关键修复：当浮盈变化时，通知UI更新颜色和百分比
+                    OnPropertyChanged(nameof(ProfitColor));
+                    OnPropertyChanged(nameof(PnlPercent));
+                    OnPropertyChanged(nameof(ProfitRate));
+                }
+            }
+        }
+        
         public decimal PositionSide { get; set; }
         public string PositionSideString { get; set; } = string.Empty;
-        public int Leverage { get; set; }
+        
+        private int _leverage;
+        public int Leverage
+        {
+            get => _leverage;
+            set
+            {
+                if (SetProperty(ref _leverage, value))
+                {
+                    // 当杠杆变化时，通知保证金相关的计算属性
+                    OnPropertyChanged(nameof(RequiredMargin));
+                    OnPropertyChanged(nameof(ProfitRate));
+                }
+            }
+        }
+        
         public string MarginType { get; set; } = string.Empty;
         public decimal IsolatedMargin { get; set; }
         public DateTime UpdateTime { get; set; }

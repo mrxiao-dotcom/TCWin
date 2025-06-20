@@ -10,11 +10,11 @@ none
 false
 TRACE;RELEASE;NET;NET6_0;NETCOREAPP
 D:\CSharpProjects\TCWin\App.xaml
-52068190451
+61865998496
 
-36-334045624
+37-1821475903
 228-404541334
-MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;
+MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\PartialProfitDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;
 
 False
 

@@ -114,11 +114,28 @@ namespace BinanceFuturesTrader.ViewModels
                 StatusMessage = $"正在为 {targetPosition.Symbol} 添加保本止损...";
                 _logger.LogInformation($"🎯 开始为 {targetPosition.Symbol} 添加保本止损，用户已确认");
 
-                // 计算保本价格（入场价格）
+                // 计算保本价格（入场价格 + 1U缓冲）
                 var stopPrice = targetPosition.EntryPrice;
                 var side = targetPosition.PositionAmt > 0 ? "SELL" : "BUY";
 
-                _logger.LogInformation($"📊 保本止损参数: 合约={symbol}, 方向={direction}, 数量={quantity:F8}, 止损价={stopPrice:F4}");
+                // 🔧 修复：考虑滑点和手续费损耗，在开仓价基础上加1U缓冲
+                var bufferPerUnit = 1.0m / quantity; // 1U分摊到每个单位的价格缓冲
+                
+                if (targetPosition.PositionAmt > 0) // 多头
+                {
+                    // 多头保本止损：止损价 = 开仓价 + 缓冲
+                    stopPrice = targetPosition.EntryPrice + bufferPerUnit;
+                }
+                else // 空头
+                {
+                    // 空头保本止损：止损价 = 开仓价 - 缓冲
+                    stopPrice = targetPosition.EntryPrice - bufferPerUnit;
+                }
+                
+                // 调整价格精度（保留4位小数）
+                stopPrice = Math.Round(stopPrice, 4);
+
+                _logger.LogInformation($"📊 保本止损参数: 合约={symbol}, 方向={direction}, 数量={quantity:F8}, 原开仓价={targetPosition.EntryPrice:F4}, 缓冲={bufferPerUnit:F6}, 最终止损价={stopPrice:F4}");
 
                 // 先刷新数据确保获取最新的订单信息
                 StatusMessage = "正在刷新数据，获取最新委托单信息...";
@@ -505,6 +522,241 @@ namespace BinanceFuturesTrader.ViewModels
             return true;
         }
 
+        #region 分仓止盈功能
+        
+        /// <summary>
+        /// 测试分仓止盈状态 - 临时调试方法
+        /// </summary>
+        [RelayCommand]
+        private void TestPartialProfitStatus()
+        {
+            try
+            {
+                var result = CanExecutePartialProfitTaking();
+                var message = $"分仓止盈状态检查结果: {result}\n\n";
+                
+                if (SelectedPosition == null)
+                {
+                    message += "❌ 未选中持仓\n";
+                }
+                else
+                {
+                    message += $"✅ 已选中持仓: {SelectedPosition.Symbol}\n";
+                    message += $"   持仓数量: {SelectedPosition.PositionAmt:F6}\n";
+                    message += $"   浮盈: {SelectedPosition.UnrealizedProfit:F2}U\n";
+                    message += $"   是否加载中: {IsLoading}\n";
+                }
+                
+                System.Windows.MessageBox.Show(message, "分仓止盈状态诊断", 
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                
+                _logger.LogInformation($"分仓止盈状态诊断: {result}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "分仓止盈状态测试失败");
+                System.Windows.MessageBox.Show($"状态检查失败: {ex.Message}", "错误", 
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 分仓止盈命令
+        /// </summary>
+        [RelayCommand(CanExecute = nameof(CanExecutePartialProfitTaking))]
+        private async Task PartialProfitTakingAsync()
+        {
+            var targetPosition = SelectedPosition;
+            
+            if (targetPosition == null)
+            {
+                StatusMessage = "请先选择要设置分仓止盈的持仓";
+                return;
+            }
+
+            try
+            {
+                _logger.LogInformation($"📊 开始设置分仓止盈: {targetPosition.Symbol}, 浮盈: {targetPosition.UnrealizedProfit:F2}U");
+
+                // 🚨 增强调试：详细检查传入参数
+                var direction = targetPosition.PositionAmt > 0 ? "做多" : "做空";
+                var quantity = Math.Abs(targetPosition.PositionAmt);
+                
+                _logger.LogInformation($"🔍 分仓止盈参数检查:");
+                _logger.LogInformation($"  原始PositionAmt: {targetPosition.PositionAmt}");
+                _logger.LogInformation($"  计算后Quantity: {quantity}");
+                _logger.LogInformation($"  Direction: {direction}");
+                _logger.LogInformation($"  Symbol: {targetPosition.Symbol}");
+                _logger.LogInformation($"  EntryPrice: {targetPosition.EntryPrice}");
+                _logger.LogInformation($"  UnrealizedProfit: {targetPosition.UnrealizedProfit}");
+                _logger.LogInformation($"  MarkPrice: {targetPosition.MarkPrice}");
+                
+                // 💡 预先验证参数，避免在对话框构造函数中出错
+                if (quantity <= 0)
+                {
+                    var errorMsg = $"持仓数量异常: 原始={targetPosition.PositionAmt}, 计算后={quantity}";
+                    _logger.LogError(errorMsg);
+                    StatusMessage = errorMsg;
+                    System.Windows.MessageBox.Show(errorMsg, "参数错误", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+                
+                if (targetPosition.UnrealizedProfit <= 0)
+                {
+                    var errorMsg = $"浮盈不足: {targetPosition.UnrealizedProfit:F2}，分仓止盈要求有浮盈";
+                    _logger.LogError(errorMsg);
+                    StatusMessage = errorMsg;
+                    System.Windows.MessageBox.Show(errorMsg, "浮盈不足", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+                
+                _logger.LogInformation($"🔍 创建分仓止盈对话框参数: Symbol={targetPosition.Symbol}, Direction={direction}, Quantity={quantity}, EntryPrice={targetPosition.EntryPrice}, UnrealizedProfit={targetPosition.UnrealizedProfit}, MarkPrice={targetPosition.MarkPrice}");
+                
+                var dialog = new Views.PartialProfitDialog(
+                    targetPosition.Symbol,
+                    direction,
+                    quantity,
+                    targetPosition.EntryPrice,
+                    targetPosition.UnrealizedProfit,
+                    targetPosition.MarkPrice
+                );
+
+                // 设置窗口所有者
+                dialog.Owner = Application.Current.MainWindow;
+
+                // 显示对话框
+                var result = dialog.ShowDialog();
+
+                if (result == true && dialog.ProfitRequests.Any())
+                {
+                    IsLoading = true;
+                    StatusMessage = $"正在提交 {dialog.ProfitRequests.Count} 个分仓止盈订单...";
+
+                    var successCount = 0;
+                    var totalRequests = dialog.ProfitRequests.Count;
+
+                    foreach (var request in dialog.ProfitRequests)
+                    {
+                        try
+                        {
+                            var orderRequest = new OrderRequest
+                            {
+                                Symbol = request.Symbol,
+                                Side = request.Side,
+                                Type = "STOP_MARKET", // 使用止损单，回落触发到目标价出场
+                                Quantity = request.Quantity,
+                                StopPrice = request.Price, // 止损触发价格
+                                ReduceOnly = true,
+                                PositionSide = targetPosition.PositionSideString,
+                                WorkingType = "CONTRACT_PRICE" // 基于合约价格触发
+                            };
+
+                            _logger.LogInformation($"🚀 准备提交分仓止盈订单 #{request.OrderIndex}: {request.Symbol} {request.Side} {request.Quantity:F6} @{request.Price:F4}，目标浮盈 {request.TargetProfit:F2}U");
+                            _logger.LogInformation($"📋 订单详细参数 #{request.OrderIndex}: Type={orderRequest.Type}, ReduceOnly={orderRequest.ReduceOnly}, PositionSide={orderRequest.PositionSide}, WorkingType={orderRequest.WorkingType}");
+
+                            var success = await _binanceService.PlaceOrderAsync(orderRequest);
+
+                            if (success)
+                            {
+                                successCount++;
+                                _logger.LogInformation($"✅ 分仓止盈订单 #{request.OrderIndex} 提交成功 - 成功数: {successCount}/{totalRequests}");
+                            }
+                            else
+                            {
+                                _logger.LogError($"❌ 分仓止盈订单 #{request.OrderIndex} 提交失败 - 成功数: {successCount}/{totalRequests}");
+                                _logger.LogError($"❌ 失败订单详情: {request.Symbol} {request.Side} {request.Quantity:F6} @{request.Price:F4}");
+                                
+                                // 检查是否是API配置问题
+                                if (SelectedAccount == null)
+                                {
+                                    _logger.LogError($"❌ 账户配置为空，可能是API配置问题");
+                                }
+                            }
+
+                            // 更新进度状态
+                            StatusMessage = $"分仓止盈进度: {successCount + (totalRequests - dialog.ProfitRequests.ToList().IndexOf(request) - 1)}/{totalRequests} 完成";
+
+                            // 避免API频率限制
+                            await Task.Delay(200);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"❌ 分仓止盈订单 #{request.OrderIndex} 提交异常: {ex.Message}");
+                            _logger.LogError($"❌ 异常订单详情: {request.Symbol} {request.Side} {request.Quantity:F6} @{request.Price:F4}");
+                            _logger.LogError($"❌ 完整异常信息: {ex}");
+                        }
+                    }
+
+                    StatusMessage = $"✅ 分仓止盈设置完成: {successCount}/{totalRequests} 个订单成功提交";
+                    _logger.LogInformation($"分仓止盈执行完成: 成功 {successCount}/{totalRequests} 个订单");
+
+                    // 刷新数据显示新的委托单
+                    await Task.Delay(1000);
+                    await RefreshDataAsync();
+                }
+                else
+                {
+                    StatusMessage = "分仓止盈设置已取消";
+                    _logger.LogInformation("用户取消分仓止盈设置");
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"分仓止盈设置失败: {ex.Message}";
+                _logger.LogError(ex, "分仓止盈设置过程异常");
+            }
+            finally
+            {
+                IsLoading = false;
+            }
+        }
+
+        /// <summary>
+        /// 检查是否可以执行分仓止盈
+        /// </summary>
+        private bool CanExecutePartialProfitTaking()
+        {
+            try
+            {
+                // 检查是否正在加载
+                if (IsLoading)
+                {
+                    _logger.LogDebug("🔍 分仓止盈CanExecute: IsLoading=true");
+                    return false;
+                }
+
+                // 检查是否选中了持仓
+                if (SelectedPosition == null)
+                {
+                    _logger.LogDebug("🔍 分仓止盈CanExecute: 未选中持仓");
+                    return false;
+                }
+
+                // 检查是否有持仓数量
+                if (SelectedPosition.PositionAmt == 0)
+                {
+                    _logger.LogDebug($"🔍 分仓止盈CanExecute: {SelectedPosition.Symbol} 无持仓 (数量={SelectedPosition.PositionAmt})");
+                    return false;
+                }
+
+                // 检查是否有浮盈
+                if (SelectedPosition.UnrealizedProfit <= 0)
+                {
+                    _logger.LogDebug($"🔍 分仓止盈CanExecute: {SelectedPosition.Symbol} 盈利不足 ({SelectedPosition.UnrealizedProfit:F2}U)");
+                    return false;
+                }
+
+                _logger.LogInformation($"✅ 分仓止盈CanExecute: {SelectedPosition.Symbol} 盈利={SelectedPosition.UnrealizedProfit:F2}U，数量={SelectedPosition.PositionAmt:F6} - 可执行");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "分仓止盈CanExecute检查异常");
+                return false;
+            }
+        }
+        #endregion
+
         /// <summary>
         /// 刷新状态和数据
         /// </summary>
@@ -522,6 +774,8 @@ namespace BinanceFuturesTrader.ViewModels
                 // 强制刷新所有RelayCommand的CanExecute状态
                 AddProfitProtectionStopLossCommand.NotifyCanExecuteChanged();
                 AddBreakEvenStopLossCommand.NotifyCanExecuteChanged();
+                PartialProfitTakingCommand.NotifyCanExecuteChanged();
+                TestPartialProfitStatusCommand.NotifyCanExecuteChanged();
                 
                 // 强制刷新WPF命令管理器
                 System.Windows.Input.CommandManager.InvalidateRequerySuggested();

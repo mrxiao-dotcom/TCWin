@@ -71,3 +71,5 @@ D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\BinanceFuturesTrader.genrunti
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\ref\BinanceFuturesTrader.dll
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\TrailingStopConfigWindow.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\TrailingStopConfigWindow.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\PartialProfitDialog.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\PartialProfitDialog.g.cs

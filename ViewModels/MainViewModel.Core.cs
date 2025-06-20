@@ -144,6 +144,11 @@ namespace BinanceFuturesTrader.ViewModels
                 LoadRecentContracts();
                 
                 _isInitializing = false;
+                
+                // 🔧 新增：初始化完成后自动启动定时器，确保持仓数据能够实时刷新
+                StartTimers();
+                _logger.LogInformation("定时器已自动启动，确保5秒刷新频率");
+                
                 _logger.LogInformation("MainViewModel初始化完成");
             }
             catch (Exception ex)
@@ -360,12 +365,24 @@ namespace BinanceFuturesTrader.ViewModels
 
         private async void AccountTimer_Tick(object? sender, EventArgs e)
         {
-            if (SelectedAccount == null || !AutoRefreshEnabled)
+            // 🔧 修改：如果没有启用自动刷新，直接返回
+            if (!AutoRefreshEnabled)
+            {
                 return;
+            }
+            
+            // 🔧 修改：如果没有选择账户，给出提示但不阻止定时器运行
+            if (SelectedAccount == null)
+            {
+                // 只在第一次遇到这个情况时输出日志，避免重复日志
+                _logger.LogDebug("定时器运行中，但未选择账户 - 请选择账户以开始数据刷新");
+                return;
+            }
 
             try
             {
                 await RefreshAccountDataWithSelectionPreservation();
+                _logger.LogDebug($"定时器自动刷新完成 - 下次刷新时间: {DateTime.Now.AddSeconds(5):HH:mm:ss}");
             }
             catch (Exception ex)
             {
@@ -392,8 +409,8 @@ namespace BinanceFuturesTrader.ViewModels
         public void Cleanup()
         {
             try
-            {
-                StopTimers();
+        {
+            StopTimers();
                 
                 // 🔧 修复：移除所有订单的选择状态监听，避免内存泄漏
                 foreach (var order in Orders)
@@ -409,7 +426,7 @@ namespace BinanceFuturesTrader.ViewModels
                     order.SelectionChanged -= OnOrderSelectionChanged;
                 }
                 
-                _logger.LogInformation("MainViewModel清理完成");
+            _logger.LogInformation("MainViewModel清理完成");
             }
             catch (Exception ex)
             {
