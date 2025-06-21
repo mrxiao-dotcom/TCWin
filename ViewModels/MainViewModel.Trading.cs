@@ -1319,6 +1319,24 @@ namespace BinanceFuturesTrader.ViewModels
                 Quantity = 0;
                 _logger.LogInformation($"切换账户到 {value.Name}，交易数量已重置为0");
 
+                // 🛑 切换账户时自动停止自动盯盘功能
+                if (IsAutoMonitorRunning)
+                {
+                    _logger.LogInformation("检测到账户切换，自动停止自动盯盘功能");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await StopAutoMonitorAsync(clearConfig: true);
+                            _logger.LogInformation("账户切换时自动停止自动盯盘成功");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "账户切换时停止自动盯盘失败");
+                        }
+                    });
+                }
+
                 // 清空之前账户的条件单和订单数据
                 ConditionalOrders.Clear();
                 Positions.Clear();
@@ -1352,6 +1370,24 @@ namespace BinanceFuturesTrader.ViewModels
             }
             else
             {
+                // 🛑 清空账户选择时也停止自动盯盘
+                if (IsAutoMonitorRunning)
+                {
+                    _logger.LogInformation("检测到账户清空，自动停止自动盯盘功能");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await StopAutoMonitorAsync(clearConfig: true);
+                            _logger.LogInformation("账户清空时自动停止自动盯盘成功");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "账户清空时停止自动盯盘失败");
+                        }
+                    });
+                }
+
                 StopTimers();
                 
                 // 清空所有数据

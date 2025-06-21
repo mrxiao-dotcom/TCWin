@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -7,6 +8,7 @@ using System.Windows.Threading;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
 using BinanceFuturesTrader.Converters;
+using BinanceFuturesTrader.Views;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,6 +28,7 @@ namespace BinanceFuturesTrader.ViewModels
         private readonly RecentContractsService _recentContractsService;
         private readonly ILogger<MainViewModel> _logger;
         private readonly IServiceProvider _serviceProvider;
+        private AutoMonitorService? _autoMonitorService;
         #endregion
 
         #region 定时器
@@ -94,6 +97,23 @@ namespace BinanceFuturesTrader.ViewModels
         // 移动止损状态监控
         [ObservableProperty]
         private ObservableCollection<TrailingStopStatus> _trailingStopStatuses = new();
+
+        // 自动监控相关属性
+        [ObservableProperty]
+        private bool _isAutoMonitorRunning = false;
+
+        [ObservableProperty]
+        private string _autoMonitorButtonText = "自动盯盘";
+
+        [ObservableProperty]
+        private string _autoMonitorButtonColor = "#4A90E2";
+
+        [ObservableProperty]
+        private string _autoMonitorStatusMessage = "未启动";
+
+        // 每个账户独立的自动盯盘配置
+        private readonly Dictionary<string, AutoMonitorConfig> _accountAutoMonitorConfigs = new();
+        private AutoMonitorConfig? _currentAutoMonitorConfig;
         #endregion
 
         #region 构造函数

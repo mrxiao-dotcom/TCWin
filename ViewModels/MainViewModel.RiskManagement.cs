@@ -524,41 +524,7 @@ namespace BinanceFuturesTrader.ViewModels
 
         #region 分仓止盈功能
         
-        /// <summary>
-        /// 测试分仓止盈状态 - 临时调试方法
-        /// </summary>
-        [RelayCommand]
-        private void TestPartialProfitStatus()
-        {
-            try
-            {
-                var result = CanExecutePartialProfitTaking();
-                var message = $"分仓止盈状态检查结果: {result}\n\n";
-                
-                if (SelectedPosition == null)
-                {
-                    message += "❌ 未选中持仓\n";
-                }
-                else
-                {
-                    message += $"✅ 已选中持仓: {SelectedPosition.Symbol}\n";
-                    message += $"   持仓数量: {SelectedPosition.PositionAmt:F6}\n";
-                    message += $"   浮盈: {SelectedPosition.UnrealizedProfit:F2}U\n";
-                    message += $"   是否加载中: {IsLoading}\n";
-                }
-                
-                System.Windows.MessageBox.Show(message, "分仓止盈状态诊断", 
-                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
-                
-                _logger.LogInformation($"分仓止盈状态诊断: {result}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "分仓止盈状态测试失败");
-                System.Windows.MessageBox.Show($"状态检查失败: {ex.Message}", "错误", 
-                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-            }
-        }
+
 
         /// <summary>
         /// 分仓止盈命令
@@ -775,7 +741,6 @@ namespace BinanceFuturesTrader.ViewModels
                 AddProfitProtectionStopLossCommand.NotifyCanExecuteChanged();
                 AddBreakEvenStopLossCommand.NotifyCanExecuteChanged();
                 PartialProfitTakingCommand.NotifyCanExecuteChanged();
-                TestPartialProfitStatusCommand.NotifyCanExecuteChanged();
                 
                 // 强制刷新WPF命令管理器
                 System.Windows.Input.CommandManager.InvalidateRequerySuggested();
@@ -1598,7 +1563,5 @@ namespace BinanceFuturesTrader.ViewModels
         }
 
         #endregion
-
-
     }
-} 
+}

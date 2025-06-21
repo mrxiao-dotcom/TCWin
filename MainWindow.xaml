@@ -536,10 +536,26 @@
                            Background="Green" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="12"
                            ToolTip="⚠️ 将持仓拆分成多个止盈订单，分批获利平仓（仅支持有浮盈的持仓）"/>
-                    <Button Content="状态测试" Command="{Binding TestPartialProfitStatusCommand}"
-                           Background="Purple" Foreground="White" FontWeight="Bold"
-                           Width="70" Height="28" FontSize="11"
-                           ToolTip="测试分仓止盈按钮状态（临时调试按钮）"/>
+                    <Button Content="{Binding AutoMonitorButtonText}" Command="{Binding ToggleAutoMonitorCommand}"
+                           Width="80" Height="28" FontSize="11" FontWeight="Bold"
+                           ToolTip="{Binding AutoMonitorStatusMessage}">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+                                <Setter Property="Background" Value="{Binding AutoMonitorButtonColor}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsAutoMonitorRunning}" Value="True">
+                                        <Setter Property="Background" Value="#E74C3C"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsAutoMonitorRunning}" Value="False">
+                                        <Setter Property="Background" Value="#4A90E2"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
                 <Button Content="刷新" Command="{Binding RefreshCommandStatesCommand}"
                        Background="Gray" Foreground="White" FontWeight="Bold"
                        Width="50" Height="28" FontSize="12"
