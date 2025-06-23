@@ -74,7 +74,10 @@
                     <StackPanel>
                         <CheckBox x:Name="AddPositionEnabledCheckBox" Content="启用自动推仓" FontWeight="Bold" Margin="0,5"/>
                         
-                        <TextBlock Text="推仓阶梯配置（4个阶梯）：" Margin="0,10,0,5" FontWeight="Bold"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                            <TextBlock Text="推仓阶梯配置：" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="AddPositionStageCountText" Text="（4个阶梯）" FontWeight="Bold" VerticalAlignment="Center" Margin="5,0"/>
+                        </StackPanel>
                         
                         <!-- 推仓阶梯表格 -->
                         <DataGrid x:Name="AddPositionDataGrid" Height="180" Margin="0,10" 
@@ -91,6 +94,18 @@
                             </DataGrid.Columns>
                         </DataGrid>
                         
+                        <!-- 添加推仓阶梯按钮 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,5">
+                            <Button x:Name="AddPositionStageButton" Content="+ 增加推仓阶梯" 
+                                    Width="120" Height="30" FontSize="12" 
+                                    Background="#4A90E2" Foreground="White"
+                                    Click="AddPositionStageButton_Click" Margin="0,0,10,0"/>
+                            <Button x:Name="RemovePositionStageButton" Content="- 删除最后阶梯" 
+                                    Width="120" Height="30" FontSize="12" 
+                                    Background="#E74C3C" Foreground="White"
+                                    Click="RemovePositionStageButton_Click"/>
+                        </StackPanel>
+                        
                         <TextBlock Text="说明：当浮盈达到对应阶梯的触发值时，自动执行一键保本加仓操作" 
                                    Margin="0,5" FontSize="11" Foreground="Gray"/>
                     </StackPanel>
@@ -101,7 +116,10 @@
                     <StackPanel>
                         <CheckBox x:Name="ProfitProtectionEnabledCheckBox" Content="启用自动保盈止损" FontWeight="Bold" Margin="0,5"/>
                         
-                        <TextBlock Text="保盈止损阶梯配置（3个阶梯）：" Margin="0,10,0,5" FontWeight="Bold"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                            <TextBlock Text="保盈止损阶梯配置：" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="ProfitProtectionStageCountText" Text="（3个阶梯）" FontWeight="Bold" VerticalAlignment="Center" Margin="5,0"/>
+                        </StackPanel>
                         
                         <!-- 保盈止损阶梯表格 -->
                         <DataGrid x:Name="ProfitProtectionDataGrid" Height="140" Margin="0,10" 
@@ -116,6 +134,18 @@
                                 <DataGridTextColumn Header="说明" Binding="{Binding Description}" Width="*" IsReadOnly="True"/>
                             </DataGrid.Columns>
                         </DataGrid>
+                        
+                        <!-- 添加保盈止损阶梯按钮 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,5">
+                            <Button x:Name="ProfitProtectionStageButton" Content="+ 增加止盈阶梯" 
+                                    Width="120" Height="30" FontSize="12" 
+                                    Background="#4A90E2" Foreground="White"
+                                    Click="ProfitProtectionStageButton_Click" Margin="0,0,10,0"/>
+                            <Button x:Name="RemoveProfitProtectionStageButton" Content="- 删除最后阶梯" 
+                                    Width="120" Height="30" FontSize="12" 
+                                    Background="#E74C3C" Foreground="White"
+                                    Click="RemoveProfitProtectionStageButton_Click"/>
+                        </StackPanel>
                         
                         <TextBlock Text="说明：当浮盈达到对应阶梯的触发值时，自动设置保盈止损保护已获得的利润" 
                                    Margin="0,5" FontSize="11" Foreground="Gray"/>

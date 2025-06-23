@@ -247,8 +247,7 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
-                                 MinHeight="150"
-                                 MaxHeight="400">
+                                 MinHeight="120">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
                                 <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="45" MinWidth="45">
@@ -422,8 +421,7 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
-                                 MinHeight="150"
-                                 MaxHeight="400">
+                                 MinHeight="120">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
                                 <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="55" MinWidth="50">
@@ -515,19 +513,21 @@
 
         <!-- 操作按钮区 -->
         <materialDesign:Card Grid.Row="2" Padding="6" Margin="0,5">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                <!-- 第一组：持仓相关操作 -->
-                <Button Content="一键清仓" Command="{Binding ClearAllPositionsAndOrdersCommand}" 
-                       Background="DarkRed" Foreground="White" FontWeight="Bold"
-                       Width="80" Height="28" FontSize="12"
-                       ToolTip="清空所有持仓和委托单（市价平仓）"/>
-                <Button Content="平仓" Command="{Binding ClosePositionCommand}"
-                       Width="60" Height="28" FontSize="12"
-                       ToolTip="平掉选中的持仓"/>
-                <Button Content="增加保本止损" Command="{Binding AddBreakEvenStopLossCommand}"
-                       Background="Orange" Foreground="White" FontWeight="Bold"
-                       Width="95" Height="28" FontSize="12"
-                       ToolTip="为选中持仓添加保本止损单（触发价=开仓价）"/>
+            <DockPanel>
+                <!-- 左侧按钮组 -->
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                    <!-- 第一组：持仓相关操作 -->
+                    <Button Content="一键清仓" Command="{Binding ClearAllPositionsAndOrdersCommand}" 
+                           Background="DarkRed" Foreground="White" FontWeight="Bold"
+                           Width="80" Height="28" FontSize="12"
+                           ToolTip="清空所有持仓和委托单（市价平仓）"/>
+                    <Button Content="平仓" Command="{Binding ClosePositionCommand}"
+                           Width="60" Height="28" FontSize="12"
+                           ToolTip="平掉选中的持仓"/>
+                    <Button Content="增加保本止损" Command="{Binding AddBreakEvenStopLossCommand}"
+                           Background="Orange" Foreground="White" FontWeight="Bold"
+                           Width="95" Height="28" FontSize="12"
+                           ToolTip="为选中持仓添加保本止损单（触发价=开仓价）"/>
                     <Button Content="保盈止损" Command="{Binding AddProfitProtectionStopLossCommand}"
                            Background="DarkOrange" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="12"
@@ -536,6 +536,43 @@
                            Background="Green" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="12"
                            ToolTip="⚠️ 将持仓拆分成多个止盈订单，分批获利平仓（仅支持有浮盈的持仓）"/>
+                    <Button Content="刷新" Command="{Binding RefreshCommandStatesCommand}"
+                           Background="Gray" Foreground="White" FontWeight="Bold"
+                           Width="50" Height="28" FontSize="12"
+                           ToolTip="刷新按钮状态和数据"/>
+                    
+                    <!-- 分隔符1 -->
+                    <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
+                              Foreground="Gray" Margin="5,0"/>
+                    
+                    <!-- 第二组：委托单相关操作 -->
+                    <Button Content="清理委托单" Command="{Binding CancelAllOrdersCommand}"
+                           Width="80" Height="28" FontSize="12"
+                           ToolTip="取消所有未成交的委托订单"/>
+                    <Button Content="清除选定委托" Command="{Binding CancelSelectedOrdersCommand}"
+                           Background="Red" Foreground="White" FontWeight="Bold"
+                           Width="95" Height="28" FontSize="12"
+                           IsEnabled="{Binding HasSelectedOrders}"
+                           ToolTip="取消选中的委托订单"/>
+                    
+                    <!-- 分隔符2 -->
+                    <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
+                              Foreground="Gray" Margin="5,0"/>
+                    
+                    <!-- 第三组：查询操作 -->
+                    <Button Content="查询订单历史" Command="{Binding CheckOrderHistoryCommand}"
+                           Background="Blue" Foreground="White" FontWeight="Bold"
+                           Width="100" Height="28" FontSize="12"
+                           ToolTip="查询最近50条订单历史，寻找已执行或已取消的止损单"/>
+                </StackPanel>
+                
+                <!-- 右侧监控按钮组 -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <!-- 分隔符3 -->
+                    <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
+                              Foreground="Gray" Margin="5,0"/>
+                    
+                    <!-- 第四组：自动监控功能 -->
                     <Button Content="{Binding AutoMonitorButtonText}" Command="{Binding ToggleAutoMonitorCommand}"
                            Width="80" Height="28" FontSize="11" FontWeight="Bold"
                            ToolTip="{Binding AutoMonitorStatusMessage}">
@@ -556,35 +593,15 @@
                             </Style>
                         </Button.Style>
                     </Button>
-                <Button Content="刷新" Command="{Binding RefreshCommandStatesCommand}"
-                       Background="Gray" Foreground="White" FontWeight="Bold"
-                       Width="50" Height="28" FontSize="12"
-                       ToolTip="刷新按钮状态和数据"/>
+                    <Button Content="查看监控" Command="{Binding ViewMonitorStatusCommand}"
+                           Background="#2ECC71" Foreground="White" FontWeight="Bold"
+                           Width="80" Height="28" FontSize="11"
+                           ToolTip="查看当前账户的自动监控配置信息和执行情况"/>
+                </StackPanel>
                 
-                <!-- 分隔符1 -->
-                <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
-                          Foreground="Gray" Margin="5,0"/>
-                
-                <!-- 第二组：委托单相关操作 -->
-                <Button Content="清理委托单" Command="{Binding CancelAllOrdersCommand}"
-                       Width="80" Height="28" FontSize="12"
-                       ToolTip="取消所有未成交的委托订单"/>
-                <Button Content="清除选定委托" Command="{Binding CancelSelectedOrdersCommand}"
-                       Background="Red" Foreground="White" FontWeight="Bold"
-                       Width="95" Height="28" FontSize="12"
-                       IsEnabled="{Binding HasSelectedOrders}"
-                       ToolTip="取消选中的委托订单"/>
-                
-                <!-- 分隔符2 -->
-                <TextBlock Text=" | " VerticalAlignment="Center" FontSize="14" FontWeight="Bold" 
-                          Foreground="Gray" Margin="5,0"/>
-                
-                <!-- 第三组：查询操作 -->
-                <Button Content="查询订单历史" Command="{Binding CheckOrderHistoryCommand}"
-                       Background="Blue" Foreground="White" FontWeight="Bold"
-                       Width="100" Height="28" FontSize="12"
-                       ToolTip="查询最近50条订单历史，寻找已执行或已取消的止损单"/>
-            </StackPanel>
+                <!-- 中间填充空间 -->
+                <Grid/>
+            </DockPanel>
         </materialDesign:Card>
 
         <!-- 下单区 -->

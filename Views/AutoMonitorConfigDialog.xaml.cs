@@ -133,6 +133,10 @@ namespace BinanceFuturesTrader.Views
         /// </summary>
         public ObservableCollection<ProfitProtectionStageViewModel> ProfitProtectionStages { get; set; }
 
+        // 账户信息（用于生成智能默认配置）
+        private decimal _accountEquity = 1000m;
+        private int _riskCapitalTimes = 10;
+
         public AutoMonitorConfigDialog()
         {
             // 初始化集合
@@ -142,6 +146,20 @@ namespace BinanceFuturesTrader.Views
             InitializeComponent();
             InitializeDefaults();
             InitializeDataGrids();
+        }
+
+        /// <summary>
+        /// 使用账户信息的构造函数（推荐使用）
+        /// </summary>
+        /// <param name="accountEquity">账户权益</param>
+        /// <param name="riskCapitalTimes">风险金倍数</param>
+        public AutoMonitorConfigDialog(decimal accountEquity, int riskCapitalTimes) : this()
+        {
+            _accountEquity = accountEquity > 0 ? accountEquity : 1000m; // 默认1000U
+            _riskCapitalTimes = riskCapitalTimes > 0 ? riskCapitalTimes : 10; // 默认10倍
+            
+            // 重新初始化为智能默认配置
+            InitializeSmartDefaults();
         }
 
         /// <summary>
@@ -167,22 +185,133 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 初始化阶梯默认值
+        /// 初始化智能默认配置
+        /// </summary>
+        private void InitializeSmartDefaults()
+        {
+            // 使用智能配置生成器
+            var smartConfig = AutoMonitorConfig.CreateSmartDefault(_accountEquity, _riskCapitalTimes);
+            
+            // 基础设置
+            ConfigNameTextBox.Text = smartConfig.Name;
+            ScanIntervalTextBox.Text = smartConfig.ScanIntervalSeconds.ToString();
+            
+            // 自动保本设置
+            BreakEvenEnabledCheckBox.IsChecked = smartConfig.BreakEvenConfig.IsEnabled;
+            BreakEvenTriggerTextBox.Text = smartConfig.BreakEvenConfig.TriggerProfitAmount.ToString("F0");
+            
+            // 自动推仓设置
+            AddPositionEnabledCheckBox.IsChecked = smartConfig.AddPositionConfig.IsEnabled;
+            
+            // 自动保盈止损设置
+            ProfitProtectionEnabledCheckBox.IsChecked = smartConfig.ProfitProtectionConfig.IsEnabled;
+            
+            InitializeSmartStageDefaults(smartConfig);
+        }
+
+        /// <summary>
+        /// 初始化阶梯默认值（旧版本兼容）
         /// </summary>
         private void InitializeStageDefaults()
         {
-            // 推仓阶梯默认配置
+            // 🔧 修改：使用风险金计算默认阶梯值
+            var singleRiskCapital = _accountEquity / _riskCapitalTimes;
+            var riskCapitalIncrement = Math.Round(singleRiskCapital, 0);
+            
+            // 推仓阶梯默认配置（基于风险金计算）
             AddPositionStages.Clear();
-            AddPositionStages.Add(new AddPositionStageViewModel { Stage = 1, TriggerProfitAmount = 20, RiskCapitalMultiplier = 1.2m, StopLossPercentage = 80, IsEnabled = true, Description = "浮盈20U时推仓，风险金1.2倍，止损80%" });
-            AddPositionStages.Add(new AddPositionStageViewModel { Stage = 2, TriggerProfitAmount = 50, RiskCapitalMultiplier = 1.5m, StopLossPercentage = 70, IsEnabled = true, Description = "浮盈50U时推仓，风险金1.5倍，止损70%" });
-            AddPositionStages.Add(new AddPositionStageViewModel { Stage = 3, TriggerProfitAmount = 100, RiskCapitalMultiplier = 2.0m, StopLossPercentage = 60, IsEnabled = true, Description = "浮盈100U时推仓，风险金2.0倍，止损60%" });
-            AddPositionStages.Add(new AddPositionStageViewModel { Stage = 4, TriggerProfitAmount = 200, RiskCapitalMultiplier = 2.5m, StopLossPercentage = 50, IsEnabled = false, Description = "浮盈200U时推仓，风险金2.5倍，止损50%" });
+            AddPositionStages.Add(new AddPositionStageViewModel { 
+                Stage = 1, 
+                TriggerProfitAmount = riskCapitalIncrement, 
+                RiskCapitalMultiplier = 1.0m, 
+                StopLossPercentage = 10, 
+                IsEnabled = true, 
+                Description = $"浮盈{riskCapitalIncrement:F0}U时推仓，风险金1.0倍，止损10%" 
+            });
+            AddPositionStages.Add(new AddPositionStageViewModel { 
+                Stage = 2, 
+                TriggerProfitAmount = riskCapitalIncrement * 2, 
+                RiskCapitalMultiplier = 1.0m, 
+                StopLossPercentage = 10, 
+                IsEnabled = true, 
+                Description = $"浮盈{riskCapitalIncrement * 2:F0}U时推仓，风险金1.0倍，止损10%" 
+            });
+            AddPositionStages.Add(new AddPositionStageViewModel { 
+                Stage = 3, 
+                TriggerProfitAmount = riskCapitalIncrement * 3, 
+                RiskCapitalMultiplier = 1.0m, 
+                StopLossPercentage = 10, 
+                IsEnabled = true, 
+                Description = $"浮盈{riskCapitalIncrement * 3:F0}U时推仓，风险金1.0倍，止损10%" 
+            });
+            AddPositionStages.Add(new AddPositionStageViewModel { 
+                Stage = 4, 
+                TriggerProfitAmount = riskCapitalIncrement * 4, 
+                RiskCapitalMultiplier = 1.0m, 
+                StopLossPercentage = 10, 
+                IsEnabled = false, 
+                Description = $"浮盈{riskCapitalIncrement * 4:F0}U时推仓，风险金1.0倍，止损10%" 
+            });
 
-            // 保盈止损阶梯默认配置
+            // 保盈止损阶梯默认配置（基于风险金的10倍作为基础）
+            var profitProtectionBase = riskCapitalIncrement * 10;
             ProfitProtectionStages.Clear();
-            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { Stage = 1, TriggerProfitAmount = 30, ProtectionAmount = 10, IsEnabled = true, Description = "浮盈30U时保护10U利润" });
-            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { Stage = 2, TriggerProfitAmount = 80, ProtectionAmount = 30, IsEnabled = true, Description = "浮盈80U时保护30U利润" });
-            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { Stage = 3, TriggerProfitAmount = 150, ProtectionAmount = 60, IsEnabled = true, Description = "浮盈150U时保护60U利润" });
+            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
+                Stage = 1, 
+                TriggerProfitAmount = profitProtectionBase, 
+                ProtectionAmount = profitProtectionBase * 0.8m, 
+                IsEnabled = true, 
+                Description = $"浮盈{profitProtectionBase:F0}U时保护{profitProtectionBase * 0.8m:F0}U利润" 
+            });
+            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
+                Stage = 2, 
+                TriggerProfitAmount = profitProtectionBase * 2, 
+                ProtectionAmount = profitProtectionBase * 2 * 0.8m, 
+                IsEnabled = true, 
+                Description = $"浮盈{profitProtectionBase * 2:F0}U时保护{profitProtectionBase * 2 * 0.8m:F0}U利润" 
+            });
+            ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
+                Stage = 3, 
+                TriggerProfitAmount = profitProtectionBase * 3, 
+                ProtectionAmount = profitProtectionBase * 3 * 0.8m, 
+                IsEnabled = true, 
+                Description = $"浮盈{profitProtectionBase * 3:F0}U时保护{profitProtectionBase * 3 * 0.8m:F0}U利润" 
+            });
+        }
+
+        /// <summary>
+        /// 初始化智能阶梯默认值
+        /// </summary>
+        private void InitializeSmartStageDefaults(AutoMonitorConfig smartConfig)
+        {
+            // 推仓阶梯智能配置
+            AddPositionStages.Clear();
+            foreach (var tier in smartConfig.AddPositionConfig.Tiers)
+            {
+                AddPositionStages.Add(new AddPositionStageViewModel 
+                { 
+                    Stage = tier.TierIndex, 
+                    TriggerProfitAmount = tier.TriggerProfitAmount, 
+                    RiskCapitalMultiplier = tier.RiskMultiplier, 
+                    StopLossPercentage = tier.StopLossRatio * 100, // 转换为百分比显示
+                    IsEnabled = true, 
+                    Description = $"浮盈{tier.TriggerProfitAmount:F0}U时推仓，风险金{tier.RiskMultiplier:F1}倍，止损{tier.StopLossRatio * 100:F0}%" 
+                });
+            }
+
+            // 保盈止损阶梯智能配置
+            ProfitProtectionStages.Clear();
+            foreach (var tier in smartConfig.ProfitProtectionConfig.Tiers)
+            {
+                ProfitProtectionStages.Add(new ProfitProtectionStageViewModel 
+                { 
+                    Stage = tier.TierIndex, 
+                    TriggerProfitAmount = tier.TriggerProfitAmount, 
+                    ProtectionAmount = tier.ProtectionAmount, 
+                    IsEnabled = true, 
+                    Description = $"浮盈{tier.TriggerProfitAmount:F0}U时保护{tier.ProtectionAmount:F0}U利润" 
+                });
+            }
         }
 
         /// <summary>
@@ -192,6 +321,22 @@ namespace BinanceFuturesTrader.Views
         {
             AddPositionDataGrid.ItemsSource = AddPositionStages;
             ProfitProtectionDataGrid.ItemsSource = ProfitProtectionStages;
+            
+            // 更新阶梯数量显示
+            UpdateStageCountDisplay();
+        }
+
+        /// <summary>
+        /// 更新阶梯数量显示
+        /// </summary>
+        private void UpdateStageCountDisplay()
+        {
+            AddPositionStageCountText.Text = $"（{AddPositionStages.Count}个阶梯）";
+            ProfitProtectionStageCountText.Text = $"（{ProfitProtectionStages.Count}个阶梯）";
+            
+            // 更新删除按钮状态（至少保留1个阶梯）
+            RemovePositionStageButton.IsEnabled = AddPositionStages.Count > 1;
+            RemoveProfitProtectionStageButton.IsEnabled = ProfitProtectionStages.Count > 1;
         }
 
         /// <summary>
@@ -228,6 +373,149 @@ namespace BinanceFuturesTrader.Views
         {
             DialogResult = false;
             Close();
+        }
+
+        /// <summary>
+        /// 增加推仓阶梯按钮点击事件
+        /// </summary>
+        private void AddPositionStageButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var newStageIndex = AddPositionStages.Count + 1;
+                var lastStage = AddPositionStages.LastOrDefault();
+                
+                // 🔧 修改：使用一份风险金作为默认间距，而不是固定100U
+                var singleRiskCapital = _accountEquity / _riskCapitalTimes; // 计算一份风险金
+                var riskCapitalIncrement = Math.Round(singleRiskCapital, 0); // 四舍五入到整数
+                
+                // 智能计算新阶梯的默认值
+                var newTriggerAmount = lastStage != null 
+                    ? lastStage.TriggerProfitAmount + riskCapitalIncrement 
+                    : riskCapitalIncrement; // 第一个阶梯就是一份风险金
+                    
+                var newRiskMultiplier = lastStage != null ? lastStage.RiskCapitalMultiplier : 1.0m;
+                var newStopLossPercentage = lastStage != null ? lastStage.StopLossPercentage : 10m;
+                
+                var newStage = new AddPositionStageViewModel
+                {
+                    Stage = newStageIndex,
+                    TriggerProfitAmount = newTriggerAmount,
+                    RiskCapitalMultiplier = newRiskMultiplier,
+                    StopLossPercentage = newStopLossPercentage,
+                    IsEnabled = true,
+                    Description = $"浮盈{newTriggerAmount:F0}U时推仓，风险金{newRiskMultiplier:F1}倍，止损{newStopLossPercentage:F0}%"
+                };
+                
+                AddPositionStages.Add(newStage);
+                UpdateStageCountDisplay();
+                
+                // 显示智能计算的提示信息
+                var message = $"已添加推仓阶梯{newStageIndex}：\n" +
+                             $"触发值：{newTriggerAmount:F0}U\n" +
+                             $"(基于一份风险金 {riskCapitalIncrement:F0}U = 账户权益{_accountEquity:F0}U ÷ 风险次数{_riskCapitalTimes})";
+                MessageBox.Show(message, "阶梯添加成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"添加推仓阶梯失败：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 删除推仓阶梯按钮点击事件
+        /// </summary>
+        private void RemovePositionStageButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (AddPositionStages.Count > 1)
+                {
+                    var result = MessageBox.Show("确定要删除最后一个推仓阶梯吗？", "确认删除", 
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        AddPositionStages.RemoveAt(AddPositionStages.Count - 1);
+                        UpdateStageCountDisplay();
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("至少需要保留一个推仓阶梯", "提示", 
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"删除推仓阶梯失败：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 增加保盈止损阶梯按钮点击事件
+        /// </summary>
+        private void ProfitProtectionStageButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var newStageIndex = ProfitProtectionStages.Count + 1;
+                var lastStage = ProfitProtectionStages.LastOrDefault();
+                
+                // 智能计算新阶梯的默认值
+                var newTriggerAmount = lastStage != null ? lastStage.TriggerProfitAmount + 1000 : 1000;
+                var newProtectionAmount = lastStage != null ? newTriggerAmount * 0.8m : 800; // 保护80%利润
+                
+                var newStage = new ProfitProtectionStageViewModel
+                {
+                    Stage = newStageIndex,
+                    TriggerProfitAmount = newTriggerAmount,
+                    ProtectionAmount = newProtectionAmount,
+                    IsEnabled = true,
+                    Description = $"浮盈{newTriggerAmount:F0}U时保护{newProtectionAmount:F0}U利润"
+                };
+                
+                ProfitProtectionStages.Add(newStage);
+                UpdateStageCountDisplay();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"添加保盈止损阶梯失败：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 删除保盈止损阶梯按钮点击事件
+        /// </summary>
+        private void RemoveProfitProtectionStageButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (ProfitProtectionStages.Count > 1)
+                {
+                    var result = MessageBox.Show("确定要删除最后一个保盈止损阶梯吗？", "确认删除", 
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        ProfitProtectionStages.RemoveAt(ProfitProtectionStages.Count - 1);
+                        UpdateStageCountDisplay();
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("至少需要保留一个保盈止损阶梯", "提示", 
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"删除保盈止损阶梯失败：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>

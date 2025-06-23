@@ -93,7 +93,7 @@ namespace BinanceFuturesTrader.Services
                 MarginType = "ISOLATED", 
                 OrderType = "MARKET",
                 StopLossRatio = 5.0m,
-                Symbol = "BTCUSDT",
+                Symbol = "",
                 PositionSide = "BOTH"
             };
         }

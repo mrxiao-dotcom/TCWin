@@ -4,7 +4,7 @@ namespace BinanceFuturesTrader.Models
 {
     public class TradingSettings
     {
-        public string Symbol { get; set; } = "BTCUSDT";
+        public string Symbol { get; set; } = "";
         public string Side { get; set; } = "BUY";
         public int Leverage { get; set; } = 1;
         public string MarginType { get; set; } = "CROSSED";

@@ -706,37 +706,133 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private async Task CheckOrderHistoryAsync()
         {
-            if (string.IsNullOrEmpty(Symbol))
+            if (SelectedAccount == null)
             {
-                StatusMessage = "请先输入合约名称";
+                StatusMessage = "请先选择账户";
                 return;
             }
 
             try
             {
                 IsLoading = true;
-                StatusMessage = "正在查询订单历史...";
+                StatusMessage = "正在查询账户订单历史...";
 
-                var history = await _binanceService.GetAllOrdersAsync(Symbol, 100);
-                
-                if (history.Any())
+                // 🔧 修复：查询账户所有相关合约的成交记录，包括已平仓的合约
+                var allSymbols = new HashSet<string>();
+
+                // 1. 添加当前有持仓的合约
+                var activeSymbols = Positions
+                    .Where(p => Math.Abs(p.PositionAmt) > 0.0001m)
+                    .Select(p => p.Symbol)
+                    .ToList();
+                foreach (var symbol in activeSymbols)
                 {
-                    StatusMessage = $"查询到 {history.Count} 条历史订单";
-                    _logger.LogInformation($"查询到 {Symbol} 的 {history.Count} 条历史订单");
+                    allSymbols.Add(symbol);
+                }
+
+                // 2. 添加当前有委托的合约
+                var orderSymbols = Orders
+                    .Select(o => o.Symbol)
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .ToList();
+                foreach (var symbol in orderSymbols)
+                {
+                    allSymbols.Add(symbol);
+                }
+
+                // 3. 添加最近合约服务中的合约（这些可能是已平仓的合约）
+                var recentSymbols = _recentContractsService.LoadRecentContracts();
+                foreach (var symbol in recentSymbols.Take(10)) // 最多取10个最近合约
+                {
+                    allSymbols.Add(symbol);
+                }
+
+                // 4. 如果以上都没有，使用一些常见的合约作为兜底
+                if (!allSymbols.Any())
+                {
+                    var commonSymbols = new[] { "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "SOLUSDT" };
+                    foreach (var symbol in commonSymbols)
+                    {
+                        allSymbols.Add(symbol);
+                    }
+                    _logger.LogInformation("使用常见合约作为查询范围");
+                }
+
+                var symbolsToQuery = allSymbols.ToList();
+                _logger.LogInformation($"查询 {symbolsToQuery.Count} 个合约的订单历史: {string.Join(", ", symbolsToQuery)}");
+
+                var allFilledOrders = new List<OrderInfo>();
+
+                // 并行查询所有相关合约的订单历史
+                var tasks = symbolsToQuery.Select(async symbol =>
+                {
+                    try
+                    {
+                        // 对于有持仓的合约，查询更多历史记录
+                        var limit = activeSymbols.Contains(symbol) ? 100 : 50;
+                        var orders = await _binanceService.GetAllOrdersAsync(symbol, limit);
+                        
+                        // 🔧 修复：不过滤任何成交记录，包括已平仓的交易
+                        return orders?.Where(o => o.Status == "FILLED" || o.Status == "PARTIALLY_FILLED") ?? new List<OrderInfo>();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, $"查询合约 {symbol} 历史失败");
+                        return new List<OrderInfo>();
+                    }
+                });
+
+                var results = await Task.WhenAll(tasks);
+                allFilledOrders = results.SelectMany(orders => orders).ToList();
+
+                if (allFilledOrders.Any())
+                {
+                    // 按时间倒序排列，取最近成交的20笔
+                    var recentFilledOrders = allFilledOrders
+                        .OrderByDescending(o => o.UpdateTime)
+                        .Take(20)
+                        .ToList();
+
+                    StatusMessage = $"查询到账户最近 {recentFilledOrders.Count} 笔成交记录";
+                    _logger.LogInformation($"查询到账户 {SelectedAccount.Name} 最近 {recentFilledOrders.Count} 笔成交记录");
+                    
+                    // 显示订单历史弹窗
+                    ShowOrderHistoryDialog(recentFilledOrders);
                 }
                 else
                 {
-                    StatusMessage = "未找到历史订单";
+                    StatusMessage = "未找到账户成交记录";
+                    _logger.LogInformation($"账户 {SelectedAccount.Name} 未找到成交记录");
                 }
             }
             catch (Exception ex)
             {
                 StatusMessage = $"查询失败: {ex.Message}";
-                _logger.LogError(ex, "查询订单历史失败");
+                _logger.LogError(ex, "查询账户订单历史失败");
             }
             finally
             {
                 IsLoading = false;
+            }
+        }
+
+        /// <summary>
+        /// 显示订单历史对话框
+        /// </summary>
+        private void ShowOrderHistoryDialog(List<OrderInfo> orders)
+        {
+            try
+            {
+                // 🔧 修复：显示账户名称而不是特定合约名称
+                var displayTitle = SelectedAccount?.Name ?? "未知账户";
+                var historyWindow = new Views.OrderHistoryWindow(orders, displayTitle);
+                historyWindow.Owner = System.Windows.Application.Current.MainWindow;
+                historyWindow.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "显示订单历史对话框失败");
+                StatusMessage = $"显示历史记录失败: {ex.Message}";
             }
         }
         #endregion

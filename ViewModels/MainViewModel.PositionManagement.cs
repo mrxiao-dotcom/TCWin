@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows;
 using BinanceFuturesTrader.Models;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
@@ -301,45 +303,222 @@ namespace BinanceFuturesTrader.ViewModels
                 return;
             }
 
+            // 🔧 新增：显示确认对话框
             try
             {
-                IsLoading = true;
-                StatusMessage = "正在清理所有持仓和订单...";
-
-                // 先取消所有订单
-                var cancelSuccess = await _binanceService.CancelAllOrdersAsync();
-                if (cancelSuccess)
+                var confirmDialog = new Views.ClearAllConfirmationDialog();
+                confirmDialog.Owner = Application.Current.MainWindow;
+                
+                var result = confirmDialog.ShowDialog();
+                if (result != true || !confirmDialog.IsConfirmed)
                 {
-                    _logger.LogInformation("所有订单取消成功");
+                    StatusMessage = "一键清仓操作已取消";
+                    _logger.LogInformation("用户取消了一键清仓操作");
+                    return;
                 }
-                else
-                {
-                    _logger.LogWarning("取消订单失败");
-                }
-
-                await Task.Delay(1000); // 等待订单取消生效
-
-                // 再平掉所有持仓
-                var closeSuccess = await _binanceService.CloseAllPositionsAsync();
-                if (closeSuccess)
-                {
-                    _logger.LogInformation("所有持仓平仓成功");
-                    StatusMessage = "所有持仓和订单清理完成";
-                }
-                else
-                {
-                    _logger.LogWarning("平仓失败");
-                    StatusMessage = "清理完成，但部分操作可能失败";
-                }
-
-                // 刷新数据
-                await Task.Delay(2000); // 等待操作生效
-                await RefreshDataAsync();
             }
             catch (Exception ex)
             {
-                StatusMessage = $"清理异常: {ex.Message}";
-                _logger.LogError(ex, "清理持仓和订单过程中发生异常");
+                StatusMessage = $"显示确认对话框失败: {ex.Message}";
+                _logger.LogError(ex, "显示一键清仓确认对话框失败");
+                return;
+            }
+
+            try
+            {
+                IsLoading = true;
+                StatusMessage = "正在执行一键清仓...";
+                _logger.LogInformation("🚨 开始执行一键清仓操作");
+
+                var successOperations = 0;
+                var totalOperations = 0;
+
+                // 🔧 改进：第一步 - 详细清理所有委托订单
+                StatusMessage = "正在取消所有委托订单...";
+                _logger.LogInformation("📋 第一步：取消所有委托订单");
+                
+                try
+                {
+                                         // 获取所有开放订单
+                     var openOrders = await _binanceService.GetOpenOrdersAsync();
+                     if (openOrders != null && openOrders.Count > 0)
+                     {
+                         _logger.LogInformation($"发现 {openOrders.Count} 个待取消的订单");
+                        
+                        foreach (var order in openOrders)
+                        {
+                            try
+                            {
+                                totalOperations++;
+                                var cancelResult = await _binanceService.CancelOrderAsync(order.Symbol, order.OrderId);
+                                if (cancelResult)
+                                {
+                                    successOperations++;
+                                    _logger.LogInformation($"✅ 取消订单成功: {order.Symbol} #{order.OrderId} ({order.Type})");
+                                }
+                                else
+                                {
+                                    _logger.LogWarning($"❌ 取消订单失败: {order.Symbol} #{order.OrderId}");
+                                }
+                                
+                                // 避免API限制
+                                await Task.Delay(100);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"取消订单异常: {order.Symbol} #{order.OrderId}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation("没有发现待取消的订单");
+                    }
+
+                    // 🔧 新增：使用全局取消作为备份
+                    var globalCancelSuccess = await _binanceService.CancelAllOrdersAsync();
+                    if (globalCancelSuccess)
+                    {
+                        _logger.LogInformation("✅ 全局订单取消成功");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ 全局订单取消失败");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "取消订单过程中发生异常");
+                }
+
+                // 等待订单取消生效
+                StatusMessage = "等待订单取消生效...";
+                await Task.Delay(2000);
+
+                // 🔧 改进：第二步 - 详细平掉所有持仓
+                StatusMessage = "正在平掉所有持仓...";
+                _logger.LogInformation("📊 第二步：平掉所有持仓");
+                
+                try
+                {
+                    // 获取当前所有持仓
+                    var positions = await _binanceService.GetPositionsAsync();
+                    var activePositions = positions?.Where(p => Math.Abs(p.PositionAmt) > 0.001m).ToList() ?? new List<PositionInfo>();
+                    
+                    if (activePositions.Any())
+                    {
+                        _logger.LogInformation($"发现 {activePositions.Count} 个待平仓的持仓");
+                        
+                        foreach (var position in activePositions)
+                        {
+                            try
+                            {
+                                totalOperations++;
+                                var side = position.PositionAmt > 0 ? "SELL" : "BUY";
+                                var quantity = Math.Abs(position.PositionAmt);
+                                
+                                var closeRequest = new OrderRequest
+                                {
+                                    Symbol = position.Symbol,
+                                    Side = side,
+                                    Type = "MARKET",
+                                    Quantity = quantity,
+                                    ReduceOnly = true,
+                                    PositionSide = position.PositionSideString
+                                };
+                                
+                                var closeResult = await _binanceService.PlaceOrderAsync(closeRequest);
+                                if (closeResult)
+                                {
+                                    successOperations++;
+                                    _logger.LogInformation($"✅ 平仓成功: {position.Symbol} {position.PositionSideString} {quantity:F6}");
+                                }
+                                else
+                                {
+                                    _logger.LogWarning($"❌ 平仓失败: {position.Symbol} {position.PositionSideString}");
+                                }
+                                
+                                // 避免API限制
+                                await Task.Delay(200);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"平仓异常: {position.Symbol} {position.PositionSideString}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation("没有发现待平仓的持仓");
+                    }
+
+                    // 🔧 新增：使用全局平仓作为备份
+                    var globalCloseSuccess = await _binanceService.CloseAllPositionsAsync();
+                    if (globalCloseSuccess)
+                    {
+                        _logger.LogInformation("✅ 全局持仓平仓成功");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ 全局持仓平仓失败");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "平仓过程中发生异常");
+                }
+
+                // 🔧 新增：第三步 - 最终验证和清理
+                StatusMessage = "正在进行最终验证...";
+                _logger.LogInformation("🔍 第三步：最终验证和清理");
+                
+                await Task.Delay(3000); // 等待所有操作生效
+                
+                // 验证清理结果
+                var finalPositions = await _binanceService.GetPositionsAsync();
+                var finalActivePositions = finalPositions?.Where(p => Math.Abs(p.PositionAmt) > 0.001m).ToList() ?? new List<PositionInfo>();
+                
+                                 var finalOrders = await _binanceService.GetOpenOrdersAsync();
+                 var finalActiveOrders = finalOrders?.Where(o => o.Status == "NEW").ToList() ?? new List<OrderInfo>();
+
+                 // 生成清理报告
+                 var positionsCleaned = finalActivePositions.Count == 0;
+                 var ordersCleaned = finalActiveOrders.Count == 0;
+                
+                if (positionsCleaned && ordersCleaned)
+                {
+                    StatusMessage = $"✅ 一键清仓完成！成功执行 {successOperations}/{totalOperations} 个操作";
+                    _logger.LogInformation($"🎉 一键清仓完全成功！所有持仓和订单已清空");
+                }
+                else
+                {
+                    var remainingInfo = "";
+                    if (!positionsCleaned) remainingInfo += $"剩余持仓: {finalActivePositions.Count}个 ";
+                    if (!ordersCleaned) remainingInfo += $"剩余订单: {finalActiveOrders.Count}个";
+                    
+                    StatusMessage = $"⚠️ 清仓部分完成：{remainingInfo}";
+                    _logger.LogWarning($"一键清仓部分完成：{remainingInfo}");
+                    
+                    // 记录剩余的持仓和订单
+                    foreach (var pos in finalActivePositions)
+                    {
+                        _logger.LogWarning($"剩余持仓: {pos.Symbol} {pos.PositionSideString} {pos.PositionAmt:F6}");
+                    }
+                    foreach (var order in finalActiveOrders)
+                    {
+                        _logger.LogWarning($"剩余订单: {order.Symbol} #{order.OrderId} {order.Type}");
+                    }
+                }
+
+                // 刷新数据
+                await RefreshDataAsync();
+                
+                _logger.LogInformation($"🚨 一键清仓操作完成，成功率: {successOperations}/{totalOperations}");
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"一键清仓异常: {ex.Message}";
+                _logger.LogError(ex, "一键清仓过程中发生异常");
             }
             finally
             {

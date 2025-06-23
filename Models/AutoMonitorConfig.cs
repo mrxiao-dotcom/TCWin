@@ -48,6 +48,47 @@ namespace BinanceFuturesTrader.Models
         /// 最后修改时间
         /// </summary>
         public DateTime LastModifiedTime { get; set; } = DateTime.Now;
+
+        /// <summary>
+        /// 根据账户信息创建智能默认配置
+        /// </summary>
+        /// <param name="accountEquity">账户权益（USDT）</param>
+        /// <param name="riskCapitalTimes">风险金倍数（默认10）</param>
+        /// <returns>配置好的自动盯盘配置</returns>
+        public static AutoMonitorConfig CreateSmartDefault(decimal accountEquity, int riskCapitalTimes = 10)
+        {
+            var riskCapital = accountEquity / riskCapitalTimes;
+            
+            var config = new AutoMonitorConfig
+            {
+                Name = $"智能配置（权益{accountEquity:F0}U）",
+                BreakEvenConfig = new AutoBreakEvenConfig
+                {
+                    TriggerProfitAmount = Math.Max(riskCapital * 0.1m, 10m) // 最少10U
+                },
+                AddPositionConfig = new AutoAddPositionConfig
+                {
+                    Tiers = new List<AddPositionTier>
+                    {
+                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = riskCapital * 1m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = riskCapital * 2m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = riskCapital * 3m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 4, TriggerProfitAmount = riskCapital * 4m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m }
+                    }
+                },
+                ProfitProtectionConfig = new AutoProfitProtectionConfig
+                {
+                    Tiers = new List<ProfitProtectionTier>
+                    {
+                        new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = riskCapital * 10m, ProtectionAmount = riskCapital * 10m * 0.8m },
+                        new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = riskCapital * 20m, ProtectionAmount = riskCapital * 20m * 0.8m },
+                        new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = riskCapital * 30m, ProtectionAmount = riskCapital * 30m * 0.8m }
+                    }
+                }
+            };
+            
+            return config;
+        }
     }
 
     /// <summary>
@@ -83,13 +124,16 @@ namespace BinanceFuturesTrader.Models
         
         /// <summary>
         /// 推仓阶梯列表（4个阶梯）
+        /// 默认配置：触发金额为风险金的1/2/3/4倍，风险金倍数为1倍，止损比例为10%
+        /// 假设风险金倍数为10，账户权益为1000U，则风险金为100U
+        /// 第1档：浮盈100U时触发，第2档：浮盈200U时触发，以此类推
         /// </summary>
         public List<AddPositionTier> Tiers { get; set; } = new List<AddPositionTier>
         {
-            new AddPositionTier { TierIndex = 1, TriggerProfitAmount = 20.0m, RiskMultiplier = 1.5m, StopLossRatio = 0.02m },
-            new AddPositionTier { TierIndex = 2, TriggerProfitAmount = 50.0m, RiskMultiplier = 2.0m, StopLossRatio = 0.025m },
-            new AddPositionTier { TierIndex = 3, TriggerProfitAmount = 100.0m, RiskMultiplier = 2.5m, StopLossRatio = 0.03m },
-            new AddPositionTier { TierIndex = 4, TriggerProfitAmount = 200.0m, RiskMultiplier = 3.0m, StopLossRatio = 0.035m }
+            new AddPositionTier { TierIndex = 1, TriggerProfitAmount = 100.0m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+            new AddPositionTier { TierIndex = 2, TriggerProfitAmount = 200.0m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+            new AddPositionTier { TierIndex = 3, TriggerProfitAmount = 300.0m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+            new AddPositionTier { TierIndex = 4, TriggerProfitAmount = 400.0m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m }
         };
     }
 
@@ -146,12 +190,15 @@ namespace BinanceFuturesTrader.Models
         
         /// <summary>
         /// 保盈止损阶梯列表（3个阶梯）
+        /// 默认配置：触发金额为风险金的10倍，保护金额为触发金额的80%
+        /// 假设风险金倍数为10，账户权益为1000U，则风险金为100U
+        /// 第1档：浮盈1000U时触发，保护800U盈利
         /// </summary>
         public List<ProfitProtectionTier> Tiers { get; set; } = new List<ProfitProtectionTier>
         {
-            new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = 30.0m, ProtectionAmount = 15.0m },
-            new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = 80.0m, ProtectionAmount = 40.0m },
-            new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = 150.0m, ProtectionAmount = 75.0m }
+            new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = 1000.0m, ProtectionAmount = 800.0m },
+            new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = 2000.0m, ProtectionAmount = 1600.0m },
+            new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = 3000.0m, ProtectionAmount = 2400.0m }
         };
     }
 

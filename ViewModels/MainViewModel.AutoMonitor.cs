@@ -54,10 +54,14 @@ namespace BinanceFuturesTrader.ViewModels
             {
                 _logger.LogInformation("🚀 开始启动自动监控流程...");
                 
-                // 打开配置对话框
+                // 获取账户信息用于生成智能默认配置
+                var accountEquity = AccountInfo?.TotalEquity ?? 1000m;
+                var riskCapitalTimes = SelectedAccount.RiskCapitalTimes;
+                
+                // 打开配置对话框（使用智能默认配置）
                 _logger.LogInformation("准备创建配置对话框...");
-                var configDialog = new AutoMonitorConfigDialog();
-                _logger.LogInformation("配置对话框创建成功");
+                var configDialog = new AutoMonitorConfigDialog(accountEquity, riskCapitalTimes);
+                _logger.LogInformation($"配置对话框创建成功（权益{accountEquity:F0}U，风险金倍数{riskCapitalTimes}）");
                 
                 // 从当前账户的配置中加载设置
                 if (SelectedAccount != null)
@@ -70,7 +74,7 @@ namespace BinanceFuturesTrader.ViewModels
                     }
                     else
                     {
-                        _logger.LogInformation($"账户 {SelectedAccount.Name} 没有现有配置，使用默认配置");
+                        _logger.LogInformation($"账户 {SelectedAccount.Name} 没有现有配置，使用智能默认配置");
                     }
                 }
                 else
@@ -226,6 +230,125 @@ namespace BinanceFuturesTrader.ViewModels
         }
 
         /// <summary>
+        /// 查看监控命令
+        /// </summary>
+        [RelayCommand]
+        private async Task ViewMonitorStatusAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍 查看监控按钮被点击");
+                
+                if (SelectedAccount == null)
+                {
+                    MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // 获取当前账户的配置信息
+                var accountConfig = _accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var config) ? config : null;
+                
+                // 构建显示信息
+                var statusMessage = $"=== 账户 {SelectedAccount.Name} 自动监控状态 ===\n\n";
+                
+                // 当前会话状态
+                statusMessage += "📊 当前会话状态:\n";
+                statusMessage += $"🔄 监控状态: {(IsAutoMonitorRunning ? "运行中" : "未启动")}\n";
+                statusMessage += $"📝 状态说明: {AutoMonitorStatusMessage}\n";
+                statusMessage += $"⚠️  注意: 此状态仅显示当前程序会话的监控状态\n\n";
+                
+                // 配置信息
+                if (accountConfig != null)
+                {
+                    statusMessage += $"⚙️ 配置名称: {accountConfig.Name}\n";
+                    statusMessage += $"⏱️ 扫描间隔: {accountConfig.ScanIntervalSeconds}秒\n\n";
+                    
+                    // 自动保本配置
+                    statusMessage += $"🛡️ 自动保本: {(accountConfig.BreakEvenConfig.IsEnabled ? "启用" : "禁用")}\n";
+                    if (accountConfig.BreakEvenConfig.IsEnabled)
+                    {
+                        statusMessage += $"   触发盈利: {accountConfig.BreakEvenConfig.TriggerProfitAmount:F2}U\n";
+                    }
+                    statusMessage += "\n";
+                    
+                    // 自动推仓配置
+                    statusMessage += $"🚀 自动推仓: {(accountConfig.AddPositionConfig.IsEnabled ? "启用" : "禁用")}\n";
+                    if (accountConfig.AddPositionConfig.IsEnabled)
+                    {
+                        var totalTiers = accountConfig.AddPositionConfig.Tiers.Count;
+                        
+                        statusMessage += $"   配置阶梯: {totalTiers}个 (每个合约独立触发)\n";
+                        statusMessage += $"   ⚠️  注意: 每个合约都可以独立触发所有阶梯，实际执行记录请查看成交历史\n";
+                        
+                        foreach (var tier in accountConfig.AddPositionConfig.Tiers)
+                        {
+                            statusMessage += $"   阶梯{tier.TierIndex}: {tier.TriggerProfitAmount:F2}U → {tier.RiskMultiplier:F1}倍风险金, 止损{tier.StopLossRatio * 100:F1}%\n";
+                        }
+                    }
+                    statusMessage += "\n";
+                    
+                    // 自动保盈止损配置
+                    statusMessage += $"🛡️ 保盈止损: {(accountConfig.ProfitProtectionConfig.IsEnabled ? "启用" : "禁用")}\n";
+                    if (accountConfig.ProfitProtectionConfig.IsEnabled)
+                    {
+                        var totalTiers = accountConfig.ProfitProtectionConfig.Tiers.Count;
+                        
+                        statusMessage += $"   配置阶梯: {totalTiers}个 (每个合约独立触发)\n";
+                        
+                        foreach (var tier in accountConfig.ProfitProtectionConfig.Tiers)
+                        {
+                            statusMessage += $"   阶梯{tier.TierIndex}: {tier.TriggerProfitAmount:F2}U → 保护{tier.ProtectionAmount:F2}U\n";
+                        }
+                    }
+                }
+                else
+                {
+                    statusMessage += "❌ 当前账户暂无监控配置\n";
+                }
+                
+                // 执行历史（当前会话）
+                statusMessage += "\n📈 当前会话执行记录:\n";
+                if (_autoMonitorService != null)
+                {
+                    var history = _autoMonitorService.GetExecutionHistory();
+                    var recentHistory = history.Skip(Math.Max(0, history.Count - 5)).ToList(); // 最近5条
+                    
+                    if (recentHistory.Any())
+                    {
+                        foreach (var item in recentHistory)
+                        {
+                            var status = item.IsSuccess ? "✅" : "❌";
+                            statusMessage += $"   {status} {item.ExecutionTime:MM-dd HH:mm:ss} [{item.Symbol}] {item.ExecutionType}\n";
+                        }
+                    }
+                    else
+                    {
+                        statusMessage += "   当前会话暂无执行记录\n";
+                    }
+                }
+                else
+                {
+                    statusMessage += "   监控服务未初始化\n";
+                }
+                
+                // 重要提示
+                statusMessage += "\n💡 重要说明:\n";
+                statusMessage += "   • 如果显示'未启动'但成交历史中有推仓记录，说明之前会话执行过自动盯盘\n";
+                statusMessage += "   • 程序重启后需要重新配置和启动自动盯盘功能\n";
+                statusMessage += "   • 查看完整历史记录请到'查询订单历史'功能中查看";
+
+                MessageBox.Show(statusMessage, "监控状态详情", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "查看监控状态时发生错误");
+                MessageBox.Show($"查看失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
         /// 获取自动监控执行历史
         /// </summary>
         public async Task ShowAutoMonitorHistoryAsync()
@@ -285,4 +408,5 @@ namespace BinanceFuturesTrader.ViewModels
 }
 
 // 扩展现有的MonitorStatusChangedEventArgs和ExecutionResultEventArgs
+// 如果AutoMonitorService.cs文件中已经定义了这些类，这里就不需要重复定义了 
 // 如果AutoMonitorService.cs文件中已经定义了这些类，这里就不需要重复定义了 

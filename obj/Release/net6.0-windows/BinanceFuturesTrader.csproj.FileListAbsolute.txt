@@ -75,3 +75,7 @@ D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\PartialProfitDialog.bam
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\PartialProfitDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AutoMonitorConfigDialog.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AutoMonitorConfigDialog.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderHistoryWindow.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderHistoryWindow.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ClearAllConfirmationDialog.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ClearAllConfirmationDialog.g.cs

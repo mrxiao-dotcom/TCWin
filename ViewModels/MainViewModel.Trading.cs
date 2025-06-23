@@ -20,7 +20,7 @@ namespace BinanceFuturesTrader.ViewModels
     {
         #region 交易参数属性
         [ObservableProperty]
-        private string _symbol = "BTCUSDT";
+        private string _symbol = "";
 
         [ObservableProperty]
         private string _side = "BUY";
@@ -356,10 +356,22 @@ namespace BinanceFuturesTrader.ViewModels
         [RelayCommand]
         private async Task OneClickBreakEvenAddPositionAsync()
         {
+            // 🔥 添加明显的调试输出，确认按钮点击被响应
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            System.Diagnostics.Debug.WriteLine($"🔥🔥🔥 [{timestamp}] 一键保本加仓按钮被点击！");
+            _logger.LogInformation($"🔥🔥🔥 [{timestamp}] 一键保本加仓按钮被点击！");
+            StatusMessage = $"🔥 [{timestamp}] 一键保本加仓按钮被点击！正在检查条件...";
+            
+            // 输出到控制台确保能看到
+            Console.WriteLine($"🔥🔥🔥 [{timestamp}] 一键保本加仓按钮被点击！");
+            Console.WriteLine($"🔥 当前线程ID: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+            Console.WriteLine($"🔥 IsLoading状态: {IsLoading}");
+            
             try
             {
                 IsLoading = true;
                 _logger.LogInformation("开始执行一键保本加仓操作");
+                Console.WriteLine("🔥 开始执行一键保本加仓操作");
 
                 // 1. 基础条件检查
                 if (SelectedAccount == null)
@@ -485,7 +497,8 @@ namespace BinanceFuturesTrader.ViewModels
                     Side = addPositionSide,
                     Type = "MARKET",
                     Quantity = addQuantity,
-                    TimeInForce = "GTC"
+                    TimeInForce = "GTC",
+                    PositionSide = currentPosition.PositionSideString // 🔧 修复：添加持仓方向参数
                 };
 
                 var addOrderSuccess = await _binanceService.PlaceOrderAsync(addOrderRequest);
@@ -568,7 +581,9 @@ namespace BinanceFuturesTrader.ViewModels
                     Quantity = stopQuantity,
                     StopPrice = newStopPrice,
                     TimeInForce = "GTC",
-                    ReduceOnly = true
+                    ReduceOnly = true,
+                    PositionSide = updatedPosition.PositionSideString, // 🔧 修复：添加持仓方向参数
+                    WorkingType = "CONTRACT_PRICE"                     // 🔧 修复：添加工作类型参数
                 };
 
                 var stopOrderSuccess = await _binanceService.PlaceOrderAsync(stopOrderRequest);
@@ -806,15 +821,8 @@ namespace BinanceFuturesTrader.ViewModels
                 StatusMessage = $"✅ 可用风险金: {result:F0}U (标准{standardRiskCapital:F2} + 浮盈{finalProfitLossStr})";
                 _logger.LogInformation($"计算可用风险金: {result:F0}U，标准风险金{standardRiskCapital:F2} + 盈亏风险金{totalProfitLossRiskCapital:F2}");
                 
-                // ✅ 修复：仅在止损金额为0时才自动设置，避免覆盖用户手动设置的比例
-                if (StopLossAmount <= 0)
-                {
-                    await AutoSetStopLossAmountAndCalculateQuantityAsync(result);
-                }
-                else
-                {
-                    _logger.LogInformation($"止损金额已设置为 {StopLossAmount:F0}U，跳过自动设置");
-                }
+                // 🔧 修复：当可用风险金发生变化时，重新计算止损金额
+                await HandleRiskCapitalChangeAsync(result);
             }
             catch (Exception ex)
             {
@@ -1183,6 +1191,53 @@ namespace BinanceFuturesTrader.ViewModels
             catch (Exception ex)
             {
                 _logger.LogError(ex, "自动设置止损金额和计算数量失败");
+            }
+        }
+
+        /// <summary>
+        /// 处理可用风险金变化，重新计算止损金额
+        /// </summary>
+        private async Task HandleRiskCapitalChangeAsync(decimal newRiskCapital)
+        {
+            try
+            {
+                // 🔧 修复：当可用风险金小于等于0时，清零止损金额和数量，防止超出风险下单
+                if (newRiskCapital <= 0)
+                {
+                    StopLossAmount = 0;
+                    Quantity = 0;
+                    StatusMessage = $"⚠️ 可用风险金为 {newRiskCapital:F0}U，已清零止损金额和数量，防止超出风险下单";
+                    _logger.LogWarning($"可用风险金为负或零({newRiskCapital:F0}U)，清零止损金额和数量");
+                    return;
+                }
+
+                // 如果止损金额为0，自动设置为可用风险金的100%
+                if (StopLossAmount <= 0)
+                {
+                    await AutoSetStopLossAmountAndCalculateQuantityAsync(newRiskCapital);
+                }
+                else
+                {
+                    // 如果止损金额已设置，检查是否超出新的可用风险金
+                    if (StopLossAmount > newRiskCapital)
+                    {
+                        // 超出范围，重新设置为可用风险金的100%
+                        await AutoSetStopLossAmountAndCalculateQuantityAsync(newRiskCapital);
+                        StatusMessage = $"⚠️ 原止损金额超出可用风险金，已重新设置为 {newRiskCapital:F0}U";
+                        _logger.LogWarning($"原止损金额 {StopLossAmount:F0}U 超出可用风险金 {newRiskCapital:F0}U，已重新设置");
+                    }
+                    else
+                    {
+                        // 在范围内，保持原有设置，但重新计算数量
+                        _logger.LogInformation($"止损金额 {StopLossAmount:F0}U 在可用风险金 {newRiskCapital:F0}U 范围内，保持原设置");
+                        await CalculateQuantityFromLossAsync();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理可用风险金变化失败");
+                StatusMessage = $"处理风险金变化失败: {ex.Message}";
             }
         }
         #endregion

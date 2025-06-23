@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+96a10599f5b27f454d3f4d34ee686e59efc9ff6e")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e25235837007c2115964b77566f8b269794ccc00")]
 [assembly: System.Reflection.AssemblyProductAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyTitleAttribute("币安期货交易管理器")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
