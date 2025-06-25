@@ -12,8 +12,9 @@
     <AssemblyCompany>Trading Tools</AssemblyCompany>
     <AssemblyProduct>Binance Futures Trader</AssemblyProduct>
     <AssemblyCopyright>Copyright © 2024</AssemblyCopyright>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>0.31.0.0</AssemblyVersion>
+    <FileVersion>0.31.0.0</FileVersion>
+    <Version>0.31</Version>
   </PropertyGroup>
 
   <ItemGroup>

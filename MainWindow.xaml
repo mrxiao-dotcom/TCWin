@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:converters="clr-namespace:BinanceFuturesTrader.Converters"
-        Title="币安期货交易管理器" 
+        Title="币安期货交易管理器 V0.31" 
         Icon="Icons/app.ico"
         Height="900" Width="1400" 
         MinHeight="700" MinWidth="1200"
@@ -42,9 +42,9 @@
         <Grid Margin="8" MinHeight="650">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-                <RowDefinition Height="3*" MinHeight="220"/>
+            <RowDefinition Height="7*" MinHeight="200"/>
             <RowDefinition Height="Auto"/>
-                <RowDefinition Height="2*" MinHeight="300"/>
+            <RowDefinition Height="3*" MinHeight="300"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -236,7 +236,8 @@
                                ToolTip="为选中的持仓添加保本止损"/>
                     </StackPanel>
                     
-                    <DataGrid ItemsSource="{Binding Positions}"
+                    <DataGrid x:Name="PositionsDataGrid"
+                             ItemsSource="{Binding Positions}"
                              SelectedItem="{Binding SelectedPosition}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
@@ -247,8 +248,24 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
-                                 MinHeight="120">
+                                 MaxHeight="350"
+                                 MinHeight="120"
+                             LoadingRow="PositionsDataGrid_LoadingRow">
                         <DataGrid.Columns>
+                            <!-- 序号列 -->
+                            <DataGridTemplateColumn Header="序号" Width="45" MinWidth="40">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, Path=Header}" 
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  FontWeight="Bold"
+                                                  FontSize="12"
+                                                  Foreground="DarkBlue"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            
                             <!-- 选择框列 -->
                                 <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected}" Width="45" MinWidth="45">
                                 <DataGridCheckBoxColumn.ElementStyle>
@@ -421,6 +438,7 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
+                                 MaxHeight="300"
                                  MinHeight="120">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
@@ -614,9 +632,8 @@
 
             <!-- 下单输入区 -->
             <materialDesign:Card Grid.Column="0" Padding="6" Margin="0,0,3,0">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="350">
-                        <DockPanel MinHeight="300">
-                            <TextBlock Text="下单区" FontWeight="Bold" FontSize="15" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+                <DockPanel>
+                    <TextBlock Text="下单区" FontWeight="Bold" FontSize="15" DockPanel.Dock="Top" Margin="0,0,0,6"/>
                     
                     <!-- 杠杆快捷设置 -->
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
@@ -935,9 +952,8 @@
                                    ToolTip="自动判断条件并进行保本加仓操作：需要浮盈>0.5倍风险金"/>
                         </StackPanel>
                     </Grid>
-                        </DockPanel>
-                    </ScrollViewer>
-                </materialDesign:Card>
+                </DockPanel>
+            </materialDesign:Card>
 
                 <!-- 最近合约区 -->
                 <materialDesign:Card Grid.Column="1" Padding="6" Margin="3,0">

@@ -7,6 +7,7 @@ using BinanceFuturesTrader.Services;
 using BinanceFuturesTrader.Views;
 using Microsoft.Extensions.Logging;
 using CommunityToolkit.Mvvm.Input;
+using System.Collections.Generic;
 
 namespace BinanceFuturesTrader.ViewModels
 {
@@ -331,10 +332,35 @@ namespace BinanceFuturesTrader.ViewModels
                     statusMessage += "   监控服务未初始化\n";
                 }
                 
+                // 🔧 新增：显示历史状态清理信息
+                statusMessage += "\n📋 历史状态管理:\n";
+                if (_autoMonitorService != null)
+                {
+                    var profiles = _autoMonitorService.GetPositionProfiles();
+                    if (profiles.Any())
+                    {
+                        var totalTriggerRecords = profiles.Values.Sum(p => p.TriggerRecords.Count);
+                        statusMessage += $"   • 当前档案数: {profiles.Count}个，触发记录: {totalTriggerRecords}个\n";
+                        
+                        var oldProfiles = profiles.Values.Where(p => !p.IsActive || 
+                            (DateTime.Now - p.LastUpdateTime).TotalHours > 1).ToList();
+                        
+                        if (oldProfiles.Any())
+                        {
+                            statusMessage += $"   • 可能需要清理的旧档案: {oldProfiles.Count}个\n";
+                        }
+                    }
+                    else
+                    {
+                        statusMessage += "   • 当前无持仓档案记录\n";
+                    }
+                }
+                
                 // 重要提示
                 statusMessage += "\n💡 重要说明:\n";
                 statusMessage += "   • 如果显示'未启动'但成交历史中有推仓记录，说明之前会话执行过自动盯盘\n";
                 statusMessage += "   • 程序重启后需要重新配置和启动自动盯盘功能\n";
+                statusMessage += "   • 合约平仓后建议清理历史状态，避免重新开仓时重复触发\n";
                 statusMessage += "   • 查看完整历史记录请到'查询订单历史'功能中查看";
 
                 MessageBox.Show(statusMessage, "监控状态详情", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -403,7 +429,150 @@ namespace BinanceFuturesTrader.ViewModels
             }
         }
 
+        /// <summary>
+        /// 清理指定合约的自动盯盘历史状态
+        /// </summary>
+        [RelayCommand]
+        private async Task ClearContractAutoMonitorHistoryAsync()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(Symbol))
+                {
+                    MessageBox.Show("请先选择要清理的合约", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                var result = MessageBox.Show(
+                    $"确定要清理合约 {Symbol} 的自动盯盘历史状态吗？\n\n" +
+                    "这将清理该合约所有的推仓、保本、止盈触发记录，\n" +
+                    "清理后如果重新开仓该合约，将可以重新触发所有阶梯。\n\n" +
+                    "建议在确认该合约已完全平仓后再执行此操作。",
+                    "确认清理历史状态",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                
+                if (result != MessageBoxResult.Yes) return;
+                
+                if (_autoMonitorService == null)
+                {
+                    MessageBox.Show("自动监控服务未初始化", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                // 获取当前持仓信息，确定要清理的持仓方向
+                var positions = await _binanceService.GetPositionsAsync();
+                var contractPositions = positions?.Where(p => p.Symbol == Symbol && Math.Abs(p.PositionAmt) > 0.0001m).ToList();
+                
+                var contractsToClear = new List<(string symbol, string positionSide)>();
+                var hasActivePositions = contractPositions?.Any() == true;
+                
+                if (hasActivePositions)
+                {
+                    var positionInfo = string.Join(", ", contractPositions!.Select(p => $"{p.PositionSideString}({p.PositionAmt:F4})"));
+                    var confirmResult = MessageBox.Show(
+                        $"检测到合约 {Symbol} 仍有活跃持仓:\n{positionInfo}\n\n" +
+                        "是否仍要清理历史状态？\n" +
+                        "清理后，当前持仓的触发记录也会被重置。",
+                        "检测到活跃持仓",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    
+                    if (confirmResult != MessageBoxResult.Yes) return;
+                    
+                    // 清理所有方向的状态
+                    contractsToClear.AddRange(contractPositions.Select(p => (p.Symbol, p.PositionSideString)));
+                }
+                else
+                {
+                    // 没有活跃持仓，清理所有可能的方向（LONG和SHORT）
+                    contractsToClear.Add((Symbol, "LONG"));
+                    contractsToClear.Add((Symbol, "SHORT"));
+                }
+                
+                // 执行清理
+                var persistenceService = new AutoMonitorPersistenceService();
+                persistenceService.BatchCleanupContractHistory(contractsToClear, "手动清理");
+                
+                _logger.LogInformation($"✅ 用户手动清理合约历史状态: {Symbol}");
+                
+                MessageBox.Show(
+                    $"合约 {Symbol} 的自动盯盘历史状态已清理完成！\n\n" +
+                    "相关说明:\n" +
+                    "• 已清理所有推仓、保本、止盈的触发记录\n" +
+                    "• 已清理相关的执行历史记录\n" +
+                    "• 如果重新开仓该合约，将可以重新触发所有阶梯\n" +
+                    "• 清理操作已记录到系统日志中",
+                    "清理完成",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                    
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"清理合约自动盯盘历史状态时发生错误: {Symbol}");
+                MessageBox.Show($"清理失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
 
+        /// <summary>
+        /// 清理所有合约的自动盯盘历史状态
+        /// </summary>
+        [RelayCommand]
+        private async Task ClearAllAutoMonitorHistoryAsync()
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    "确定要清理所有合约的自动盯盘历史状态吗？\n\n" +
+                    "⚠️ 警告：这是一个高风险操作！\n\n" +
+                    "这将清理所有合约的推仓、保本、止盈触发记录，\n" +
+                    "包括当前有活跃持仓的合约！\n\n" +
+                    "清理后所有合约都将可以重新触发所有阶梯，\n" +
+                    "可能导致重复执行交易操作！\n\n" +
+                    "建议只在确认所有合约都已平仓后执行。",
+                    "⚠️ 确认清理所有历史状态",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                
+                if (result != MessageBoxResult.Yes) return;
+                
+                // 二次确认
+                var confirmResult = MessageBox.Show(
+                    "最后确认：真的要清理所有合约的历史状态吗？\n\n" +
+                    "此操作不可撤销！",
+                    "最后确认",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Stop);
+                
+                if (confirmResult != MessageBoxResult.Yes) return;
+                
+                // 执行全部清理
+                var persistenceService = new AutoMonitorPersistenceService();
+                persistenceService.ClearAllData();
+                
+                _logger.LogWarning("⚠️ 用户手动清理所有自动盯盘历史状态");
+                
+                MessageBox.Show(
+                    "所有合约的自动盯盘历史状态已清理完成！\n\n" +
+                    "相关说明:\n" +
+                    "• 已清理所有合约的触发记录和执行历史\n" +
+                    "• 所有合约重新开仓时都将可以重新触发阶梯\n" +
+                    "• 建议重新启动程序以确保状态同步\n" +
+                    "• 清理操作已记录到系统日志中",
+                    "全部清理完成",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                    
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "清理所有自动盯盘历史状态时发生错误");
+                MessageBox.Show($"清理失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
     }
 }
 

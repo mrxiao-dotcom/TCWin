@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using BinanceFuturesTrader.Models;
+using BinanceFuturesTrader.Services;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 
@@ -37,6 +38,9 @@ namespace BinanceFuturesTrader.ViewModels
                 {
                     StatusMessage = $"持仓 {SelectedPosition.Symbol} 平仓成功";
                     _logger.LogInformation($"持仓平仓成功: {SelectedPosition.Symbol}");
+                    
+                    // 🔧 新增：清理对应合约的自动盯盘历史状态
+                    await CleanupAutoMonitorHistoryForPositionAsync(SelectedPosition.Symbol, SelectedPosition.PositionSideString, "单持仓平仓");
                     
                     // 刷新数据
                     await RefreshDataAsync();
@@ -185,6 +189,9 @@ namespace BinanceFuturesTrader.ViewModels
                         {
                             successCount++;
                             _logger.LogInformation($"持仓平仓成功: {position.Symbol} {position.PositionSideString}");
+                            
+                            // 🔧 新增：清理对应合约的自动盯盘历史状态
+                            await CleanupAutoMonitorHistoryForPositionAsync(position.Symbol, position.PositionSideString, "批量平仓");
                         }
                         else
                         {
@@ -432,6 +439,9 @@ namespace BinanceFuturesTrader.ViewModels
                                 {
                                     successOperations++;
                                     _logger.LogInformation($"✅ 平仓成功: {position.Symbol} {position.PositionSideString} {quantity:F6}");
+                                    
+                                    // 🔧 新增：立即清理该合约的自动盯盘历史状态
+                                    await CleanupAutoMonitorHistoryForPositionAsync(position.Symbol, position.PositionSideString, "一键清仓-单合约");
                                 }
                                 else
                                 {
@@ -510,6 +520,58 @@ namespace BinanceFuturesTrader.ViewModels
                     }
                 }
 
+                // 🔧 新增：第四步 - 清理自动盯盘历史状态
+                if (positionsCleaned)
+                {
+                    StatusMessage = "正在清理自动盯盘历史状态...";
+                    _logger.LogInformation("🧹 第四步：清理自动盯盘历史状态");
+                    
+                    try
+                    {
+                        // 清理所有自动盯盘的历史状态
+                        var persistenceService = new AutoMonitorPersistenceService();
+                        persistenceService.ClearAllData();
+                        
+                        _logger.LogInformation("✅ 自动盯盘历史状态清理完成");
+                        
+                        // 如果自动盯盘服务正在运行，也清理其内存状态
+                        if (_autoMonitorService != null)
+                        {
+                            var profiles = _autoMonitorService.GetPositionProfiles();
+                            var history = _autoMonitorService.GetExecutionHistory();
+                            
+                            if (profiles.Any() || history.Any())
+                            {
+                                _logger.LogInformation($"🔄 清理自动盯盘内存状态: {profiles.Count}个档案, {history.Count}条历史记录");
+                                
+                                // 重启自动盯盘服务以清理内存状态
+                                if (_isAutoMonitorRunning)
+                                {
+                                    _autoMonitorService.StopMonitoring();
+                                    await Task.Delay(500);
+                                    
+                                    if (_currentAutoMonitorConfig != null)
+                                    {
+                                        await _autoMonitorService.StartMonitoringAsync(_currentAutoMonitorConfig);
+                                        _logger.LogInformation("🔄 自动盯盘服务已重启，内存状态已清理");
+                                    }
+                                }
+                            }
+                        }
+                        
+                        _logger.LogInformation("🎉 一键清仓 + 历史状态清理完全成功！");
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        _logger.LogError(cleanupEx, "❌ 清理自动盯盘历史状态时发生异常");
+                        // 不影响主流程，继续执行
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("⚠️ 由于仍有剩余持仓，跳过自动盯盘历史状态清理");
+                }
+
                 // 刷新数据
                 await RefreshDataAsync();
                 
@@ -523,6 +585,50 @@ namespace BinanceFuturesTrader.ViewModels
             finally
             {
                 IsLoading = false;
+            }
+        }
+
+        /// <summary>
+        /// 清理指定持仓的自动盯盘历史状态
+        /// </summary>
+        private async Task CleanupAutoMonitorHistoryForPositionAsync(string symbol, string positionSide, string reason)
+        {
+            try
+            {
+                _logger.LogInformation($"🧹 开始清理合约 {symbol}_{positionSide} 的自动盯盘历史状态 (原因: {reason})");
+                
+                // 清理持久化存储中的状态
+                var persistenceService = new AutoMonitorPersistenceService();
+                persistenceService.CleanupContractHistory(symbol, positionSide, reason);
+                
+                // 如果自动盯盘服务正在运行，也清理其内存状态
+                if (_autoMonitorService != null)
+                {
+                    var profiles = _autoMonitorService.GetPositionProfiles();
+                    var contractKey = $"{symbol}_{positionSide}";
+                    
+                    if (profiles.ContainsKey(contractKey))
+                    {
+                        var triggerCount = profiles[contractKey].TriggerRecords.Count;
+                        _logger.LogInformation($"🔄 发现自动盯盘内存状态需要清理: {contractKey} - {triggerCount}个触发记录");
+                        
+                        // 通过重启自动盯盘服务来清理内存状态
+                        if (_isAutoMonitorRunning && _currentAutoMonitorConfig != null)
+                        {
+                            _autoMonitorService.StopMonitoring();
+                            await Task.Delay(500);
+                            await _autoMonitorService.StartMonitoringAsync(_currentAutoMonitorConfig);
+                            _logger.LogInformation("🔄 已重启自动盯盘服务，内存状态已同步");
+                        }
+                    }
+                }
+                
+                _logger.LogInformation($"✅ 合约 {symbol}_{positionSide} 的自动盯盘历史状态清理完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 清理合约 {symbol}_{positionSide} 的自动盯盘历史状态时发生异常");
+                // 不影响主流程，继续执行
             }
         }
 

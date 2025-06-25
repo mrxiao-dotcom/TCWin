@@ -131,13 +131,30 @@ namespace BinanceFuturesTrader.Services
 
             lock (_lockObject)
             {
-                // 🔧 修改：先加载持久化的状态
+                // 🔧 修复：先获取当前真实的活跃持仓
+                var activePositions = positions.Where(p => 
+                    Math.Abs(p.PositionAmt) > 0.001m &&     // 🔧 提高数量阈值，过滤掉极小持仓
+                    !string.IsNullOrEmpty(p.Symbol) &&      // 合约名称过滤：确保合约名称有效
+                    p.Symbol.EndsWith("USDT") &&            // 🔧 新增：只处理USDT合约
+                    p.MarkPrice > 0 &&                      // 标记价格过滤：确保价格有效
+                    p.EntryPrice > 0 &&                     // 开仓价格过滤：确保开仓价有效
+                    p.UnrealizedProfit != 0                 // 🔧 新增：确保有实际盈亏数据
+                ).ToList();
+
+                _logger.LogInformation($"📊 当前活跃持仓: {activePositions.Count}个");
+                foreach (var pos in activePositions)
+                {
+                    _logger.LogInformation($"   📍 {pos.Symbol} {pos.PositionSideString}: {pos.PositionAmt:F6} (浮盈: {pos.UnrealizedProfit:F2}U)");
+                }
+
+                // 🔧 修复：先加载持久化的状态，但只恢复当前真实存在的持仓档案
                 _positionProfiles.Clear();
                 var persistedProfiles = _persistenceService.LoadPositionProfiles();
                 
-                _logger.LogInformation($"📖 从持久化存储加载了 {persistedProfiles.Count} 个持仓档案");
-                
-                foreach (var position in positions.Where(p => Math.Abs(p.PositionAmt) > 0))
+                _logger.LogInformation($"📖 从持久化存储加载了 {persistedProfiles.Count} 个历史档案");
+
+                // 🔧 关键修复：只为当前真实存在的活跃持仓恢复档案
+                foreach (var position in activePositions)
                 {
                     var key = GetPositionKey(position.Symbol, position.PositionSideString);
                     
@@ -167,16 +184,49 @@ namespace BinanceFuturesTrader.Services
                             LastUpdateTime = DateTime.Now,
                             IsActive = true
                         };
-                        _logger.LogDebug($"📝 新建档案: {key}, 数量: {position.PositionAmt:F6}, 入场价: {position.EntryPrice:F4}");
+                        _logger.LogInformation($"📝 新建档案: {key}, 数量: {position.PositionAmt:F6}, 入场价: {position.EntryPrice:F4}");
+                        
+                        // 🔧 新增：为新持仓清理历史状态，避免重复执行
+                        CleanupHistoryForNewPosition(position.Symbol, position.PositionSideString);
+                    }
+                }
+
+                // 🔧 新增：检查并清理无效的历史档案
+                var invalidProfiles = persistedProfiles.Keys.Except(_positionProfiles.Keys).ToList();
+                if (invalidProfiles.Any())
+                {
+                    _logger.LogWarning($"🗑️ 发现{invalidProfiles.Count}个无效的历史档案（无对应活跃持仓）:");
+                    foreach (var invalidKey in invalidProfiles)
+                    {
+                        var parts = invalidKey.Split('_');
+                        if (parts.Length == 2)
+                        {
+                            var symbol = parts[0];
+                            var positionSide = parts[1];
+                            _logger.LogWarning($"   ❌ {invalidKey} - 该合约当前无活跃持仓，已跳过恢复");
+                            
+                            // 清理无效档案的执行历史
+                            _persistenceService.CleanupContractHistory(symbol, positionSide, "无活跃持仓");
+                        }
                     }
                 }
                 
-                // 🔧 新增：加载执行历史
+                // 🔧 新增：加载执行历史，但只保留当前活跃持仓的记录
                 var persistedHistory = _persistenceService.LoadExecutionHistory();
+                var activeSymbols = activePositions.Select(p => p.Symbol).ToHashSet();
+                var validHistory = persistedHistory.Where(h => activeSymbols.Contains(h.Symbol)).ToList();
+                
                 _executionHistory.Clear();
-                _executionHistory.AddRange(persistedHistory);
+                _executionHistory.AddRange(validHistory);
+                
+                if (persistedHistory.Count != validHistory.Count)
+                {
+                    var removedCount = persistedHistory.Count - validHistory.Count;
+                    _logger.LogInformation($"🗑️ 过滤执行历史: 移除{removedCount}条无效记录，保留{validHistory.Count}条有效记录");
+                }
                 
                 _logger.LogInformation($"📊 初始化完成 - 持仓档案: {_positionProfiles.Count}个, 执行历史: {_executionHistory.Count}条");
+                _logger.LogInformation($"✅ 所有档案均对应当前活跃持仓，无无效档案");
             }
         }
 
@@ -192,15 +242,23 @@ namespace BinanceFuturesTrader.Services
                 var positions = await _binanceService.GetPositionsAsync();
                 if (positions == null) return;
 
-                // 🔧 修复：只处理有实际持仓的合约，过滤掉零持仓和无效数据
+                // 🔧 修复：增强持仓过滤逻辑，确保只处理真正活跃的持仓
                 var activePositions = positions.Where(p => 
-                    Math.Abs(p.PositionAmt) > 0.0001m && // 数量过滤：过滤掉零持仓
-                    !string.IsNullOrEmpty(p.Symbol) &&   // 合约名称过滤：确保合约名称有效
-                    p.MarkPrice > 0 &&                   // 标记价格过滤：确保价格有效
-                    p.EntryPrice > 0                     // 开仓价格过滤：确保开仓价有效
+                    Math.Abs(p.PositionAmt) > 0.001m &&     // 🔧 提高数量阈值，过滤掉极小持仓
+                    !string.IsNullOrEmpty(p.Symbol) &&      // 合约名称过滤：确保合约名称有效
+                    p.Symbol.EndsWith("USDT") &&            // 🔧 新增：只处理USDT合约
+                    p.MarkPrice > 0 &&                      // 标记价格过滤：确保价格有效
+                    p.EntryPrice > 0 &&                     // 开仓价格过滤：确保开仓价有效
+                    p.UnrealizedProfit != 0                 // 🔧 新增：确保有实际盈亏数据
                 ).ToList();
                 
-                _logger.LogDebug($"🔍 扫描持仓: {activePositions.Count}个活跃持仓");
+                _logger.LogDebug($"🔍 扫描持仓: 总持仓{positions.Count()}个，活跃持仓{activePositions.Count}个");
+                
+                // 🔧 新增：记录所有被扫描的合约，便于调试
+                foreach (var position in activePositions)
+                {
+                    _logger.LogDebug($"📊 活跃持仓: {position.Symbol} {position.PositionSideString} 数量:{position.PositionAmt:F6} 盈亏:{position.UnrealizedProfit:F2}U");
+                }
                 
                 foreach (var position in activePositions)
                 {
@@ -220,6 +278,13 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         private async Task ProcessPositionAsync(PositionInfo position)
         {
+            // 🔧 新增：额外的合约验证
+            if (string.IsNullOrEmpty(position.Symbol) || !position.Symbol.EndsWith("USDT"))
+            {
+                _logger.LogWarning($"⚠️ 跳过无效合约: {position.Symbol}");
+                return;
+            }
+            
             var key = GetPositionKey(position.Symbol, position.PositionSideString);
             
             // 确保持仓档案存在
@@ -227,6 +292,9 @@ namespace BinanceFuturesTrader.Services
             {
                 if (!_positionProfiles.ContainsKey(key))
                 {
+                    // 🔧 新增：检测到新持仓时，立即清理该合约的历史状态
+                    CleanupHistoryForNewPosition(position.Symbol, position.PositionSideString);
+                    
                     _positionProfiles[key] = new PositionProfile
                     {
                         Symbol = position.Symbol,
@@ -405,16 +473,9 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 临时设置选中持仓
-                Application.Current.Dispatcher.Invoke(() =>
-                {
-                    var targetPosition = _mainViewModel.Positions.FirstOrDefault(p => 
-                        p.Symbol == position.Symbol && p.PositionSide == position.PositionSide);
-                    if (targetPosition != null)
-                    {
-                        _mainViewModel.SelectedPosition = targetPosition;
-                    }
-                });
+                // 🔧 修复：移除临时设置选中持仓的逻辑，避免干扰用户界面
+                // 自动盯盘应该独立运行，不应修改用户的界面状态
+                _logger.LogInformation($"💰 开始执行自动保本止损: {position.Symbol} {position.PositionSideString}");
 
                 // 🔧 修复：计算真正的保本价格，使用百分比缓冲而不是固定金额缓冲
                 var quantity = Math.Abs(position.PositionAmt);
@@ -427,7 +488,7 @@ namespace BinanceFuturesTrader.Services
                     : entryPrice * (1 - bufferPercentage); // 空头：成本价 - 0.05%
                 stopPrice = Math.Round(stopPrice, 4);
                 
-                _logger.LogInformation($"💰 自动保本止损计算: 成本价={entryPrice:F4}, 缓冲={bufferPercentage * 100:F2}%, 止损价={stopPrice:F4}");
+                _logger.LogInformation($"💰 自动保本止损计算: 合约={position.Symbol}, 成本价={entryPrice:F4}, 缓冲={bufferPercentage * 100:F2}%, 止损价={stopPrice:F4}");
 
                 var side = position.PositionAmt > 0 ? "SELL" : "BUY";
 
@@ -452,6 +513,10 @@ namespace BinanceFuturesTrader.Services
                 if (success)
                 {
                     _logger.LogInformation($"💰 保本止损设置成功: {position.Symbol} @{stopPrice:F4}");
+                }
+                else
+                {
+                    _logger.LogError($"💰 保本止损设置失败: {position.Symbol}");
                 }
                 
                 return success;
@@ -727,6 +792,60 @@ namespace BinanceFuturesTrader.Services
         }
 
         /// <summary>
+        /// 为新持仓清理历史状态（即时清理，解决止损委托触发后的重新开仓问题）
+        /// </summary>
+        private void CleanupHistoryForNewPosition(string symbol, string positionSide)
+        {
+            try
+            {
+                // 检查是否存在该合约的历史执行记录
+                var historicalRecords = _executionHistory
+                    .Where(h => h.Symbol == symbol && h.PositionSide == positionSide && h.ExecutionType != "状态清理")
+                    .ToList();
+                
+                if (historicalRecords.Any())
+                {
+                    _logger.LogInformation($"🔄 检测到新持仓开仓: {symbol}_{positionSide} - 发现{historicalRecords.Count}条历史记录，立即清理");
+                    
+                    // 立即清理该合约的历史执行记录
+                    _executionHistory.RemoveAll(h => h.Symbol == symbol && h.PositionSide == positionSide && h.ExecutionType != "状态清理");
+                    
+                    // 记录清理动作
+                    var immediateCleanupHistory = new ExecutionHistory
+                    {
+                        Symbol = symbol,
+                        PositionSide = positionSide,
+                        ExecutionType = "新持仓即时清理",
+                        ExecutionTime = DateTime.Now,
+                        TriggerPnl = 0,
+                        IsSuccess = true,
+                        Details = $"检测到新持仓，立即清理{historicalRecords.Count}条历史执行记录（解决止损委托触发后重新开仓问题）"
+                    };
+                    _executionHistory.Add(immediateCleanupHistory);
+                    
+                    // 实时保存到持久化存储
+                    try
+                    {
+                        _persistenceService.SaveExecutionHistory(_executionHistory);
+                        _logger.LogInformation($"💾 新持仓即时清理完成并已保存: {symbol}_{positionSide}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"❌ 保存新持仓即时清理结果失败: {symbol}_{positionSide}");
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug($"ℹ️ 新持仓开仓: {symbol}_{positionSide} - 无历史记录需要清理");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 新持仓即时清理失败: {symbol}_{positionSide}");
+            }
+        }
+
+        /// <summary>
         /// 清理已平仓的持仓档案
         /// </summary>
         private void CleanupClosedPositions(List<PositionInfo> activePositions)
@@ -736,10 +855,101 @@ namespace BinanceFuturesTrader.Services
                 var activeKeys = activePositions.Select(p => GetPositionKey(p.Symbol, p.PositionSideString)).ToHashSet();
                 var keysToRemove = _positionProfiles.Keys.Where(k => !activeKeys.Contains(k)).ToList();
                 
+                // 🔧 增强：记录清理的档案信息并检测重新开仓情况
+                var cleanupResults = new List<string>();
+                
                 foreach (var key in keysToRemove)
                 {
-                    _logger.LogDebug($"🗑️ 清理已平仓档案: {key}");
+                    var profile = _positionProfiles[key];
+                    var triggerCount = profile.TriggerRecords.Count;
+                    
+                    if (triggerCount > 0)
+                    {
+                        cleanupResults.Add($"🗑️ 清理已平仓档案: {key} (清理{triggerCount}个触发记录)");
+                        _logger.LogInformation($"🗑️ 清理已平仓档案: {key} - 清理触发记录: {triggerCount}个");
+                        
+                        // 记录清理历史，用于检测重新开仓
+                        var cleanupHistory = new ExecutionHistory
+                        {
+                            Symbol = profile.Symbol,
+                            PositionSide = profile.PositionSide,
+                            ExecutionType = "状态清理",
+                            ExecutionTime = DateTime.Now,
+                            TriggerPnl = 0,
+                            IsSuccess = true,
+                            Details = $"平仓后清理历史状态，共清理{triggerCount}个触发记录"
+                        };
+                        _executionHistory.Add(cleanupHistory);
+                    }
+                    else
+                    {
+                        _logger.LogDebug($"🗑️ 清理已平仓档案: {key} (无触发记录)");
+                    }
+                    
                     _positionProfiles.Remove(key);
+                }
+                
+                // 🔧 新增：检测重新开仓的合约并清理历史状态
+                var newPositionKeys = activeKeys.Where(k => !_positionProfiles.ContainsKey(k)).ToList();
+                foreach (var newKey in newPositionKeys)
+                {
+                    // 检查是否存在该合约的历史执行记录
+                    var keyParts = newKey.Split('_');
+                    if (keyParts.Length == 2)
+                    {
+                        var symbol = keyParts[0];
+                        var positionSide = keyParts[1];
+                        
+                        var historicalRecords = _executionHistory
+                            .Where(h => h.Symbol == symbol && h.PositionSide == positionSide && h.ExecutionType != "状态清理")
+                            .ToList();
+                        
+                        if (historicalRecords.Any())
+                        {
+                            _logger.LogInformation($"🔄 检测到重新开仓: {newKey} - 发现{historicalRecords.Count}条历史记录，准备清理");
+                            
+                            // 清理该合约的历史执行记录
+                            _executionHistory.RemoveAll(h => h.Symbol == symbol && h.PositionSide == positionSide && h.ExecutionType != "状态清理");
+                            
+                            // 记录清理动作
+                            var reopenCleanupHistory = new ExecutionHistory
+                            {
+                                Symbol = symbol,
+                                PositionSide = positionSide,
+                                ExecutionType = "重新开仓清理",
+                                ExecutionTime = DateTime.Now,
+                                TriggerPnl = 0,
+                                IsSuccess = true,
+                                Details = $"检测到重新开仓，清理{historicalRecords.Count}条历史执行记录"
+                            };
+                            _executionHistory.Add(reopenCleanupHistory);
+                            
+                            cleanupResults.Add($"🔄 重新开仓清理: {newKey} (清理{historicalRecords.Count}条历史记录)");
+                        }
+                    }
+                }
+                
+                // 🔧 增强：如果有清理动作，保存到持久化存储
+                if (keysToRemove.Any() || newPositionKeys.Any())
+                {
+                    try
+                    {
+                        _persistenceService.SavePositionProfiles(_positionProfiles);
+                        _persistenceService.SaveExecutionHistory(_executionHistory);
+                        
+                        if (cleanupResults.Any())
+                        {
+                            _logger.LogInformation($"💾 历史状态清理完成，已保存到持久化存储:");
+                            foreach (var result in cleanupResults)
+                            {
+                                _logger.LogInformation($"   {result}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "❌ 保存清理结果到持久化存储失败");
+                    }
                 }
             }
         }

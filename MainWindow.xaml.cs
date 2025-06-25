@@ -140,5 +140,14 @@ namespace BinanceFuturesTrader
             _viewModel.StatusMessage = "🧪 市值计算测试已执行，请查看控制台输出";
         }
 
+        /// <summary>
+        /// 持仓列表行加载事件 - 设置序号
+        /// </summary>
+        private void PositionsDataGrid_LoadingRow(object sender, DataGridRowEventArgs e)
+        {
+            // 设置行号（从1开始）
+            e.Row.Header = (e.Row.GetIndex() + 1).ToString();
+        }
+
     }
 } 

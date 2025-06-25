@@ -344,5 +344,165 @@ namespace BinanceFuturesTrader.Services
                 _logger?.LogError(ex, $"❌ 记录执行状态失败: {symbol}_{positionSide} {triggerType} Stage{stageIndex}");
             }
         }
+        
+        /// <summary>
+        /// 清理特定合约的历史状态
+        /// </summary>
+        public void CleanupContractHistory(string symbol, string positionSide, string reason = "重新开仓")
+        {
+            try
+            {
+                var contractKey = $"{symbol}_{positionSide}";
+                
+                // 清理持仓档案
+                var profiles = LoadPositionProfiles();
+                var profileRemoved = false;
+                
+                if (profiles.ContainsKey(contractKey))
+                {
+                    var triggerCount = profiles[contractKey].TriggerRecords.Count;
+                    profiles.Remove(contractKey);
+                    profileRemoved = true;
+                    
+                    SavePositionProfiles(profiles);
+                    _logger?.LogInformation($"🗑️ 清理合约档案: {contractKey} - 清理{triggerCount}个触发记录 (原因: {reason})");
+                }
+                
+                // 清理执行历史
+                var history = LoadExecutionHistory();
+                var initialCount = history.Count;
+                
+                // 保留状态清理相关的记录，移除交易执行记录
+                var filteredHistory = history.Where(h => !(h.Symbol == symbol && h.PositionSide == positionSide && 
+                    !h.ExecutionType.Contains("清理"))).ToList();
+                
+                if (filteredHistory.Count != initialCount)
+                {
+                    var removedCount = initialCount - filteredHistory.Count;
+                    
+                    // 添加清理记录
+                    filteredHistory.Add(new ExecutionHistory
+                    {
+                        Symbol = symbol,
+                        PositionSide = positionSide,
+                        ExecutionType = $"手动清理-{reason}",
+                        ExecutionTime = DateTime.Now,
+                        TriggerPnl = 0,
+                        IsSuccess = true,
+                        Details = $"手动清理历史状态，移除{removedCount}条执行记录"
+                    });
+                    
+                    SaveExecutionHistory(filteredHistory);
+                    _logger?.LogInformation($"🗑️ 清理执行历史: {contractKey} - 移除{removedCount}条记录 (原因: {reason})");
+                }
+                
+                if (profileRemoved || filteredHistory.Count != initialCount)
+                {
+                    _logger?.LogInformation($"✅ 合约 {contractKey} 历史状态清理完成 (原因: {reason})");
+                }
+                else
+                {
+                    _logger?.LogInformation($"ℹ️ 合约 {contractKey} 无需清理，未发现历史状态");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, $"❌ 清理合约历史状态失败: {symbol}_{positionSide}");
+            }
+        }
+        
+        /// <summary>
+        /// 批量清理多个合约的历史状态
+        /// </summary>
+        public void BatchCleanupContractHistory(List<(string symbol, string positionSide)> contracts, string reason = "批量清理")
+        {
+            try
+            {
+                if (!contracts.Any())
+                {
+                    _logger?.LogInformation("ℹ️ 批量清理: 没有需要清理的合约");
+                    return;
+                }
+                
+                _logger?.LogInformation($"🧹 开始批量清理 {contracts.Count} 个合约的历史状态 (原因: {reason})");
+                
+                var profiles = LoadPositionProfiles();
+                var history = LoadExecutionHistory();
+                
+                var profilesModified = false;
+                var historyModified = false;
+                var cleanupResults = new List<string>();
+                
+                foreach (var (symbol, positionSide) in contracts)
+                {
+                    var contractKey = $"{symbol}_{positionSide}";
+                    
+                    // 清理持仓档案
+                    if (profiles.ContainsKey(contractKey))
+                    {
+                        var triggerCount = profiles[contractKey].TriggerRecords.Count;
+                        profiles.Remove(contractKey);
+                        profilesModified = true;
+                        cleanupResults.Add($"  📝 {contractKey}: 清理{triggerCount}个触发记录");
+                    }
+                    
+                    // 计算需要清理的执行历史数量
+                    var recordsToRemove = history.Count(h => h.Symbol == symbol && h.PositionSide == positionSide && 
+                        !h.ExecutionType.Contains("清理"));
+                    
+                    if (recordsToRemove > 0)
+                    {
+                        cleanupResults.Add($"  📊 {contractKey}: 清理{recordsToRemove}条执行记录");
+                        historyModified = true;
+                    }
+                }
+                
+                // 批量移除执行历史
+                if (historyModified)
+                {
+                    var contractsSet = contracts.ToHashSet();
+                    var filteredHistory = history.Where(h => !contractsSet.Contains((h.Symbol, h.PositionSide)) ||
+                        h.ExecutionType.Contains("清理")).ToList();
+                    
+                    // 添加批量清理记录
+                    filteredHistory.Add(new ExecutionHistory
+                    {
+                        Symbol = "BATCH",
+                        PositionSide = "ALL",
+                        ExecutionType = $"批量清理-{reason}",
+                        ExecutionTime = DateTime.Now,
+                        TriggerPnl = 0,
+                        IsSuccess = true,
+                        Details = $"批量清理{contracts.Count}个合约的历史状态"
+                    });
+                    
+                    SaveExecutionHistory(filteredHistory);
+                }
+                
+                // 保存修改后的档案
+                if (profilesModified)
+                {
+                    SavePositionProfiles(profiles);
+                }
+                
+                // 输出清理结果
+                if (cleanupResults.Any())
+                {
+                    _logger?.LogInformation($"✅ 批量清理完成:");
+                    foreach (var result in cleanupResults)
+                    {
+                        _logger?.LogInformation(result);
+                    }
+                }
+                else
+                {
+                    _logger?.LogInformation("ℹ️ 批量清理: 所有合约都没有历史状态需要清理");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, $"❌ 批量清理合约历史状态失败");
+            }
+        }
     }
 } 
