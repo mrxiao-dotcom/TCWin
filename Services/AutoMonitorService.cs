@@ -23,6 +23,12 @@ namespace BinanceFuturesTrader.Services
         private bool _isRunning;
         private AutoMonitorConfig? _config;
         private readonly object _lockObject = new();
+        
+        // 🔧 新增：执行操作锁，防止并发执行导致的集合访问冲突
+        private readonly object _executionLock = new();
+        
+        // 🔧 新增：持仓数据缓存锁，防止数据读取冲突
+        private readonly object _positionDataLock = new();
 
         // 持仓档案存储
         private readonly Dictionary<string, PositionProfile> _positionProfiles = new();
@@ -231,7 +237,7 @@ namespace BinanceFuturesTrader.Services
         }
 
         /// <summary>
-        /// 定时扫描持仓
+        /// 扫描持仓并执行相应策略
         /// </summary>
         private async Task ScanPositionsAsync()
         {
@@ -239,37 +245,67 @@ namespace BinanceFuturesTrader.Services
 
             try
             {
-                var positions = await _binanceService.GetPositionsAsync();
-                if (positions == null) return;
+                // 🔧 修复：添加执行锁，防止并发扫描导致的集合访问冲突
+                if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(1)))
+                {
+                    _logger.LogWarning("⚠️ 自动盯盘扫描繁忙，跳过本次扫描以避免并发冲突");
+                    return;
+                }
 
-                // 🔧 修复：增强持仓过滤逻辑，确保只处理真正活跃的持仓
-                var activePositions = positions.Where(p => 
-                    Math.Abs(p.PositionAmt) > 0.001m &&     // 🔧 提高数量阈值，过滤掉极小持仓
-                    !string.IsNullOrEmpty(p.Symbol) &&      // 合约名称过滤：确保合约名称有效
-                    p.Symbol.EndsWith("USDT") &&            // 🔧 新增：只处理USDT合约
-                    p.MarkPrice > 0 &&                      // 标记价格过滤：确保价格有效
-                    p.EntryPrice > 0 &&                     // 开仓价格过滤：确保开仓价有效
-                    p.UnrealizedProfit != 0                 // 🔧 新增：确保有实际盈亏数据
-                ).ToList();
-                
-                _logger.LogDebug($"🔍 扫描持仓: 总持仓{positions.Count()}个，活跃持仓{activePositions.Count}个");
-                
-                // 🔧 新增：记录所有被扫描的合约，便于调试
-                foreach (var position in activePositions)
+                try
                 {
-                    _logger.LogDebug($"📊 活跃持仓: {position.Symbol} {position.PositionSideString} 数量:{position.PositionAmt:F6} 盈亏:{position.UnrealizedProfit:F2}U");
+                    _logger.LogInformation("🔄 开始扫描持仓...");
+
+                    // 🔧 修复：获取持仓数据（不能在lock中await）
+                    var positions = await _binanceService.GetPositionsAsync();
+                    if (positions == null || !positions.Any())
+                    {
+                        _logger.LogInformation("📊 当前无持仓，跳过扫描");
+                        return;
+                    }
+
+                    // 🔧 修复：在锁保护下安全过滤持仓数据
+                    List<PositionInfo> validPositions;
+                    lock (_positionDataLock)
+                    {
+                        // 过滤出有效持仓
+                        validPositions = positions.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
+                    }
+
+                    _logger.LogInformation($"📊 找到 {validPositions.Count} 个有效持仓，开始逐个处理");
+
+                    // 🔧 修复：清理已平仓位置的历史记录（在锁保护下）
+                    lock (_lockObject)
+                    {
+                        CleanupClosedPositions(validPositions);
+                    }
+
+                    // 🔧 修复：顺序处理持仓，避免并行处理可能导致的冲突
+                    foreach (var position in validPositions)
+                    {
+                        try
+                        {
+                            await ProcessPositionAsync(position);
+                            
+                            // 🔧 新增：每个持仓处理后短暂延迟，避免API请求过于频繁
+                            await Task.Delay(200);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"❌ 处理持仓 {position.Symbol} 时发生错误");
+                        }
+                    }
+
+                    _logger.LogInformation("✅ 持仓扫描完成");
                 }
-                
-                foreach (var position in activePositions)
+                finally
                 {
-                    await ProcessPositionAsync(position);
+                    Monitor.Exit(_executionLock);
                 }
-                
-                CleanupClosedPositions(activePositions);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "扫描持仓时发生错误");
+                _logger.LogError(ex, "❌ 扫描持仓时发生严重错误");
             }
         }
 
@@ -562,17 +598,72 @@ namespace BinanceFuturesTrader.Services
                 try
                 {
                     var (minQty, maxQty, stepSize, _, _) = await _binanceService.GetSymbolTradingRulesAsync(position.Symbol);
-                    addQuantity = Math.Floor(addQuantity / stepSize) * stepSize;
                     
-                    if (addQuantity < minQty || addQuantity > maxQty)
+                    // 🔧 修复：增强数量精度处理，避免精度超限错误
+                    if (stepSize > 0)
                     {
-                        _logger.LogWarning($"加仓数量不符合交易规则: {addQuantity:F6}, 最小: {minQty:F6}, 最大: {maxQty:F6}");
+                        // 使用stepSize确保数量精度正确
+                        addQuantity = Math.Floor(addQuantity / stepSize) * stepSize;
+                        
+                        // 🔧 新增：对小数量进行特殊处理
+                        if (addQuantity < minQty)
+                        {
+                            // 如果计算出的数量太小，尝试使用最小数量
+                            addQuantity = minQty;
+                            _logger.LogWarning($"⚠️ 计算的加仓数量太小，使用最小交易数量: {minQty:F8}");
+                        }
+                        
+                        // 确保数量不超过最大限制
+                        if (addQuantity > maxQty)
+                        {
+                            addQuantity = maxQty;
+                            _logger.LogWarning($"⚠️ 计算的加仓数量太大，使用最大交易数量: {maxQty:F8}");
+                        }
+                        
+                        // 🔧 新增：最终验证数量是否有效
+                        if (addQuantity <= 0 || addQuantity < minQty || addQuantity > maxQty)
+                        {
+                            _logger.LogWarning($"❌ 加仓数量无效: {addQuantity:F8}, 最小: {minQty:F8}, 最大: {maxQty:F8}，跳过本次加仓");
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        // stepSize无效时的容错处理
+                        addQuantity = Math.Round(addQuantity, 6);
+                        _logger.LogWarning($"⚠️ 无法获取有效的stepSize，使用6位小数精度: {addQuantity:F6}");
+                    }
+                    
+                    _logger.LogInformation($"📊 交易规则验证通过: 数量={addQuantity:F8}, 范围=[{minQty:F8}, {maxQty:F8}], stepSize={stepSize:F8}");
+                }
+                catch (Exception ruleEx)
+                {
+                    _logger.LogWarning(ruleEx, $"⚠️ 获取交易规则失败，使用保守的精度处理: {position.Symbol}");
+                    
+                    // 🔧 修复：交易规则获取失败时的保守处理
+                    if (addQuantity > 0)
+                    {
+                        // 对于小账户，使用更保守的精度
+                        if (addQuantity < 1m)
+                        {
+                            addQuantity = Math.Round(addQuantity, 6);
+                        }
+                        else if (addQuantity < 100m)
+                        {
+                            addQuantity = Math.Round(addQuantity, 3);
+                        }
+                        else
+                        {
+                            addQuantity = Math.Round(addQuantity, 1);
+                        }
+                        
+                        _logger.LogInformation($"📊 使用保守精度处理后的数量: {addQuantity:F8}");
+                    }
+                    else
+                    {
+                        _logger.LogError($"❌ 计算的加仓数量无效: {addQuantity}，跳过本次加仓");
                         return false;
                     }
-                }
-                catch
-                {
-                    addQuantity = Math.Round(addQuantity, 6);
                 }
 
                 // 执行加仓
@@ -747,38 +838,39 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         private void RecordTriggerExecution(PositionProfile profile, PositionInfo position, string triggerKey, string executionType, decimal currentPnl, bool success)
         {
-            profile.TriggerRecords[triggerKey] = new TriggerRecord
+            // 🔧 修复：添加线程安全保护，避免并发修改集合
+            lock (_lockObject)
             {
-                TriggerType = executionType,
-                TriggerTime = DateTime.Now,
-                TriggerPnl = currentPnl,
-                IsExecuted = success,
-                ExecutionResult = success ? "成功" : "失败"
-            };
+                profile.TriggerRecords[triggerKey] = new TriggerRecord
+                {
+                    TriggerType = executionType,
+                    TriggerTime = DateTime.Now,
+                    TriggerPnl = currentPnl,
+                    IsExecuted = success,
+                    ExecutionResult = success ? "成功" : "失败"
+                };
 
-            var executionHistory = new ExecutionHistory
-            {
-                Symbol = position.Symbol,
-                PositionSide = position.PositionSideString,
-                ExecutionType = executionType,
-                ExecutionTime = DateTime.Now,
-                TriggerPnl = currentPnl,
-                IsSuccess = success,
-                Details = $"浮盈{currentPnl:F2}U时触发{executionType}"
-            };
-            
-            _executionHistory.Add(executionHistory);
-
-            // 🔧 新增：实时保存状态到持久化存储
-            try
-            {
-                _persistenceService.SavePositionProfiles(_positionProfiles);
-                _persistenceService.SaveExecutionHistory(_executionHistory);
-                _logger.LogDebug($"💾 已保存执行状态: {position.Symbol}_{position.PositionSideString} {executionType}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"❌ 保存执行状态失败: {position.Symbol}_{position.PositionSideString} {executionType}");
+                var executionHistory = new ExecutionHistory
+                {
+                    Symbol = position.Symbol,
+                    PositionSide = position.PositionSideString,
+                    ExecutionType = executionType,
+                    ExecutionTime = DateTime.Now,
+                    TriggerPnl = currentPnl,
+                    IsSuccess = success,
+                    Details = $"浮盈{currentPnl:F2}U时触发{executionType}"
+                };
+                
+                // 🔧 修复：安全添加到执行历史，避免并发访问冲突
+                try
+                {
+                    _executionHistory.Add(executionHistory);
+                    _logger.LogInformation($"📝 记录执行历史: {executionType} - {(success ? "成功" : "失败")}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 记录执行历史失败: {executionType}");
+                }
             }
 
             OnExecutionCompleted(new ExecutionResultEventArgs

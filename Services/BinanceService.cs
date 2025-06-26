@@ -1217,8 +1217,34 @@ namespace BinanceFuturesTrader.Services
             }
             catch (Exception ex)
             {
-                LogService.LogError($"数量格式化失败: {ex.Message}，使用默认格式");
-                return Math.Round(quantity, 3).ToString("F3");
+                LogService.LogError($"❌ 错误: 数量格式化失败: {ex.Message}，使用默认格式");
+                
+                // 🔧 修复：增强容错处理，根据数量大小选择合适的精度
+                try
+                {
+                    // 对于小数量，使用更保守的精度处理
+                    if (quantity < 1m)
+                    {
+                        // 小于1的数量，使用6位小数但确保不超过合理范围
+                        var result = Math.Round(quantity, 6);
+                        return result.ToString("F6").TrimEnd('0').TrimEnd('.');
+                    }
+                    else if (quantity < 100m)
+                    {
+                        // 1-100之间，使用3位小数
+                        return Math.Round(quantity, 3).ToString("F3");
+                    }
+                    else
+                    {
+                        // 大于100，使用整数或1位小数
+                        return Math.Round(quantity, 1).ToString("F1");
+                    }
+                }
+                catch (Exception fallbackEx)
+                {
+                    LogService.LogError($"❌ 错误: 备用格式化也失败: {fallbackEx.Message}，强制使用F3格式");
+                    return Math.Round(quantity, 3).ToString("F3");
+                }
             }
         }
 
