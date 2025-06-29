@@ -89,10 +89,10 @@ namespace BinanceFuturesTrader.Services
             return new TradingSettings
             {
                 Side = "BUY",
-                Leverage = 3,
+                Leverage = 10,
                 MarginType = "ISOLATED", 
                 OrderType = "MARKET",
-                StopLossRatio = 5.0m,
+                StopLossRatio = 10.0m,
                 Symbol = "",
                 PositionSide = "BOTH"
             };

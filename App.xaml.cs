@@ -16,19 +16,54 @@ namespace BinanceFuturesTrader
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            // 创建和配置主机
-            _host = CreateHostBuilder().Build();
+            try
+            {
+                Console.WriteLine("🚀 开始应用程序启动...");
+                
+                // 创建和配置主机
+                Console.WriteLine("📦 正在创建主机...");
+                _host = CreateHostBuilder().Build();
+                Console.WriteLine("✅ 主机创建成功");
 
-            // 设置全局异常处理
-            SetupGlobalExceptionHandling();
-            
-            Console.WriteLine("🚀 应用程序启动，已启用全局异常处理和依赖注入");
-            
-            // 从依赖注入容器获取主窗口
-            var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-            mainWindow.Show();
+                // 设置全局异常处理
+                Console.WriteLine("🛡️ 设置全局异常处理...");
+                SetupGlobalExceptionHandling();
+                Console.WriteLine("✅ 全局异常处理设置完成");
+                
+                Console.WriteLine("🚀 应用程序启动，已启用全局异常处理和依赖注入");
+                
+                // 从依赖注入容器获取主窗口
+                Console.WriteLine("🏠 正在获取主窗口...");
+                var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+                Console.WriteLine("✅ 主窗口获取成功");
+                
+                Console.WriteLine("📺 正在显示主窗口...");
+                mainWindow.Show();
+                Console.WriteLine("✅ 主窗口显示成功");
 
-            base.OnStartup(e);
+                base.OnStartup(e);
+                Console.WriteLine("✅ 应用程序启动完成");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 应用程序启动失败: {ex.Message}");
+                Console.WriteLine($"❌ 异常类型: {ex.GetType().Name}");
+                Console.WriteLine($"❌ 异常堆栈: {ex.StackTrace}");
+                
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"❌ 内部异常: {ex.InnerException.Message}");
+                    Console.WriteLine($"❌ 内部异常堆栈: {ex.InnerException.StackTrace}");
+                }
+                
+                MessageBox.Show(
+                    $"应用程序启动失败：\n\n{ex.Message}\n\n{ex.StackTrace}",
+                    "启动错误",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                
+                Current.Shutdown();
+            }
         }
 
         protected override void OnExit(ExitEventArgs e)

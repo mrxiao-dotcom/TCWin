@@ -2239,7 +2239,7 @@
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
-    "version": "0.31.0",
+    "version": "0.33.12",
     "restore": {
       "projectUniqueName": "D:\\CSharpProjects\\TCWin\\BinanceFuturesTrader.csproj",
       "projectName": "BinanceFuturesTrader",

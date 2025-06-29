@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using BinanceFuturesTrader.ViewModels;
@@ -18,6 +19,11 @@ namespace BinanceFuturesTrader
             InitializeComponent();
             _viewModel = viewModel;
             DataContext = _viewModel;
+            
+            // 动态设置标题包含版本号
+            var version = Assembly.GetExecutingAssembly().GetName().Version;
+            var versionString = $"{version.Major}.{version.Minor}.{version.Build}";
+            this.Title = $"币安期货交易管理器 V{versionString}";
         }
 
         protected override void OnClosed(EventArgs e)
@@ -138,6 +144,19 @@ namespace BinanceFuturesTrader
         {
             _viewModel.TestMarketValueCalculation();
             _viewModel.StatusMessage = "🧪 市值计算测试已执行，请查看控制台输出";
+        }
+
+        // 🔧 新增：GPSUSDT精度测试按钮点击事件
+        private async void TestGPSUSDTPrecision_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                await _viewModel.TestGPSUSDTPrecisionAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"测试执行失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>

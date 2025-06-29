@@ -1346,7 +1346,7 @@ namespace BinanceFuturesTrader.ViewModels
             if (fixedQuantity > 0)
             {
                 // 计算固定止损价格（相对保守，比如5%）
-                var fixedStopLossRatio = 5.0m; // 5%固定止损
+                var fixedStopLossRatio = 10.0m; // 10%固定止损
                 var fixedStopPrice = isLong 
                     ? position.EntryPrice * (1 - fixedStopLossRatio / 100)
                     : position.EntryPrice * (1 + fixedStopLossRatio / 100);

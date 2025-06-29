@@ -530,7 +530,7 @@ namespace BinanceFuturesTrader.Views
                     }
                 }
             }
-            catch (Exception ex)
+            catch
             {
                 // 静默处理数量调整错误
             }

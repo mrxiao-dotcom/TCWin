@@ -46,7 +46,10 @@ D:\CSharpProjects\TCWin\bin\Debug\net6.0-windows\runtimes\win\lib\net6.0\System.
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\BinanceFuturesTrader.csproj.AssemblyReference.cache
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AccountConfigWindow.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AutoMonitorConfigDialog.baml
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AutoMonitorDashboard.baml
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ClearAllConfirmationDialog.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderConfirmationDialog.baml
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderHistoryWindow.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\PartialProfitDialog.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ProfitProtectionDialog.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\TrailingStopConfigWindow.baml
@@ -54,7 +57,10 @@ D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\App.baml
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\MainWindow.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AccountConfigWindow.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AutoMonitorConfigDialog.g.cs
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\AutoMonitorDashboard.g.cs
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ClearAllConfirmationDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderConfirmationDialog.g.cs
+D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderHistoryWindow.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\PartialProfitDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ProfitProtectionDialog.g.cs
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\TrailingStopConfigWindow.g.cs
@@ -75,7 +81,3 @@ D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\refint\BinanceFuturesTrader.dll
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\BinanceFuturesTrader.pdb
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\BinanceFuturesTrader.genruntimeconfig.cache
 D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\ref\BinanceFuturesTrader.dll
-D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderHistoryWindow.baml
-D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\OrderHistoryWindow.g.cs
-D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ClearAllConfirmationDialog.baml
-D:\CSharpProjects\TCWin\obj\Debug\net6.0-windows\Views\ClearAllConfirmationDialog.g.cs

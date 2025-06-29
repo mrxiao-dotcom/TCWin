@@ -12,6 +12,7 @@ using BinanceFuturesTrader.Views;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using CommunityToolkit.Mvvm.Input;
 
 namespace BinanceFuturesTrader.ViewModels
 {
@@ -114,6 +115,33 @@ namespace BinanceFuturesTrader.ViewModels
         // 每个账户独立的自动盯盘配置
         private readonly Dictionary<string, AutoMonitorConfig> _accountAutoMonitorConfigs = new();
         private AutoMonitorConfig? _currentAutoMonitorConfig;
+
+        // 🔧 添加缺失的绑定属性
+        [ObservableProperty]
+        private string _autoSelectedPosition = "";
+
+        [ObservableProperty]
+        private string _autoCloseOrderInfo = "";
+        #endregion
+
+        #region 监控界面刷新事件
+        public event EventHandler? AutoMonitorDashboardRefreshRequested;
+
+        /// <summary>
+        /// 通知监控界面刷新数据
+        /// </summary>
+        protected void NotifyAutoMonitorDashboardRefresh()
+        {
+            try
+            {
+                AutoMonitorDashboardRefreshRequested?.Invoke(this, EventArgs.Empty);
+                _logger.LogInformation("🔄 已通知监控界面刷新数据");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 通知监控界面刷新时发生错误");
+            }
+        }
         #endregion
 
         #region 构造函数
@@ -264,6 +292,44 @@ namespace BinanceFuturesTrader.ViewModels
             else
             {
                 Console.WriteLine("❌ AccountInfo为空，无法测试");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：测试GPSUSDT精度修复的命令
+        /// </summary>
+        public async Task TestGPSUSDTPrecisionAsync()
+        {
+            try
+            {
+                StatusMessage = "正在测试GPSUSDT精度修复...";
+                IsLoading = true;
+                
+                var testResult = await _binanceService.TestGPSUSDTPrecisionAsync();
+                
+                // 使用MessageBox显示测试结果
+                System.Windows.MessageBox.Show(
+                    testResult,
+                    "GPSUSDT精度修复验证结果",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
+                
+                StatusMessage = "GPSUSDT精度测试完成";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GPSUSDT精度测试失败");
+                StatusMessage = $"精度测试失败: {ex.Message}";
+                
+                System.Windows.MessageBox.Show(
+                    $"测试失败: {ex.Message}",
+                    "错误",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsLoading = false;
             }
         }
         #endregion
@@ -451,6 +517,86 @@ namespace BinanceFuturesTrader.ViewModels
             catch (Exception ex)
             {
                 _logger.LogError(ex, "MainViewModel清理失败");
+            }
+        }
+        #endregion
+
+        #region 缺失的命令
+        /// <summary>
+        /// 打开移动止损配置对话框命令
+        /// </summary>
+        public CommunityToolkit.Mvvm.Input.RelayCommand OpenTrailingStopConfigDialogCommand => new CommunityToolkit.Mvvm.Input.RelayCommand(ExecuteOpenTrailingStopConfigDialog);
+
+        /// <summary>
+        /// 价格转换到目标利润命令
+        /// </summary>
+        public CommunityToolkit.Mvvm.Input.RelayCommand ConvertPriceToTargetProfitCommand => new CommunityToolkit.Mvvm.Input.RelayCommand(ExecuteConvertPriceToTargetProfit);
+
+        /// <summary>
+        /// 执行打开移动止损配置对话框
+        /// </summary>
+        private void ExecuteOpenTrailingStopConfigDialog()
+        {
+            try
+            {
+                _logger.LogInformation("🔧 打开移动止损配置对话框");
+                
+                // 确保配置不为null
+                if (TrailingStopConfig == null)
+                {
+                    TrailingStopConfig = new TrailingStopConfig();
+                }
+
+                var configWindow = new Views.TrailingStopConfigWindow(TrailingStopConfig)
+                {
+                    Owner = System.Windows.Application.Current.MainWindow
+                };
+
+                if (configWindow.ShowDialog() == true)
+                {
+                    TrailingStopConfig = configWindow.Config;
+                    _logger.LogInformation($"✅ 移动止损配置已更新: 回调率 {TrailingStopConfig.CallbackRate:F1}%");
+                    OnPropertyChanged(nameof(TrailingStopConfigInfo));
+                    OnPropertyChanged(nameof(TrailingStopButtonTooltip));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 打开移动止损配置对话框失败");
+                StatusMessage = $"配置失败: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// 执行价格转换到目标利润计算
+        /// </summary>
+        private void ExecuteConvertPriceToTargetProfit()
+        {
+            try
+            {
+                if (SelectedPosition == null)
+                {
+                    StatusMessage = "请先选择持仓";
+                    return;
+                }
+
+                var position = SelectedPosition;
+                var currentPrice = position.MarkPrice;
+                var entryPrice = position.EntryPrice;
+                var quantity = Math.Abs(position.PositionAmt);
+                
+                // 计算当前浮盈
+                var currentProfit = (currentPrice - entryPrice) * quantity * (position.PositionSideString == "LONG" ? 1 : -1);
+                
+                AutoSelectedPosition = $"{position.Symbol} {position.PositionSideString} {quantity:F4} 当前浮盈: {currentProfit:F2}U";
+                
+                _logger.LogInformation($"🔄 价格转换计算: {position.Symbol} 当前价格{currentPrice:F4} 入场价{entryPrice:F4} 浮盈{currentProfit:F2}U");
+                StatusMessage = $"✅ 已计算 {position.Symbol} 当前浮盈: {currentProfit:F2}U";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 价格转换计算失败");
+                StatusMessage = $"计算失败: {ex.Message}";
             }
         }
         #endregion

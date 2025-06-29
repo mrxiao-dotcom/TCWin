@@ -148,6 +148,11 @@ namespace BinanceFuturesTrader.Models
         public int TierIndex { get; set; }
         
         /// <summary>
+        /// 是否启用此阶梯
+        /// </summary>
+        public bool IsEnabled { get; set; } = true;
+        
+        /// <summary>
         /// 触发盈利值（USDT）
         /// </summary>
         public decimal TriggerProfitAmount { get; set; }
@@ -211,6 +216,11 @@ namespace BinanceFuturesTrader.Models
         /// 阶梯序号（1-3）
         /// </summary>
         public int TierIndex { get; set; }
+        
+        /// <summary>
+        /// 是否启用此阶梯
+        /// </summary>
+        public bool IsEnabled { get; set; } = true;
         
         /// <summary>
         /// 触发盈利值（USDT）

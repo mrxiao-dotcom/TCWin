@@ -9,7 +9,7 @@ namespace BinanceFuturesTrader.Models
         public decimal Quantity { get; set; }
         public decimal Price { get; set; }
         public decimal StopPrice { get; set; }
-        public int Leverage { get; set; } = 1;
+        public int Leverage { get; set; } = 10;
         public string MarginType { get; set; } = "CROSSED"; // ISOLATED, CROSSED
         public string TimeInForce { get; set; } = "GTC"; // GTC, IOC, FOK, GTX
         public bool ReduceOnly { get; set; } = false;

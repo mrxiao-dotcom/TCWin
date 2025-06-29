@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:converters="clr-namespace:BinanceFuturesTrader.Converters"
-        Title="币安期货交易管理器 V0.31" 
+        Title="币安期货交易管理器" 
         Icon="Icons/app.ico"
         Height="900" Width="1400" 
         MinHeight="700" MinWidth="1200"
@@ -202,6 +202,11 @@
                             <Button Content="🧪" Click="TestMarketValue_Click" 
                                    Width="24" Height="24" FontSize="10" Margin="4,0,0,0"
                                    ToolTip="测试市值计算逻辑" Background="Orange" BorderThickness="0"/>
+                            
+                            <!-- GPSUSDT精度测试按钮 -->
+                            <Button Content="🔧" Click="TestGPSUSDTPrecision_Click" 
+                                   Width="24" Height="24" FontSize="10" Margin="4,0,0,0"
+                                   ToolTip="测试GPSUSDT精度修复效果" Background="Purple" Foreground="White" BorderThickness="0"/>
                         </StackPanel>
                 </Border>
             </Grid>
@@ -615,6 +620,16 @@
                            Background="#2ECC71" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="11"
                            ToolTip="查看当前账户的自动监控配置信息和执行情况"/>
+                    <Button Content="🔍调试" Command="{Binding DebugAutoMonitorStatusCommand}"
+                           Background="#FF6B35" Foreground="White" FontWeight="Bold"
+                           Width="60" Height="28" FontSize="10" Margin="5,0,0,0"
+                           ToolTip="🔍 诊断自动盯盘问题：检查配置、状态、冷却期、执行记录等详细信息"
+                           Visibility="Collapsed"/>
+                    <Button Content="🧪测试" Command="{Binding TestUserConfigValidationCommand}"
+                           Background="#9B59B6" Foreground="White" FontWeight="Bold"
+                           Width="60" Height="28" FontSize="10" Margin="5,0,0,0"
+                           ToolTip="🧪 测试配置验证：保本4U + 推仓10U的配置是否有效"
+                           Visibility="Collapsed"/>
                 </StackPanel>
                 
                 <!-- 中间填充空间 -->

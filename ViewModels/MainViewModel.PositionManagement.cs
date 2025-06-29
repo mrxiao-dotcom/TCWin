@@ -547,7 +547,7 @@ namespace BinanceFuturesTrader.ViewModels
                                 // 重启自动盯盘服务以清理内存状态
                                 if (_isAutoMonitorRunning)
                                 {
-                                    _autoMonitorService.StopMonitoring();
+                                    await _autoMonitorService.StopMonitoringAsync();
                                     await Task.Delay(500);
                                     
                                     if (_currentAutoMonitorConfig != null)
@@ -560,6 +560,9 @@ namespace BinanceFuturesTrader.ViewModels
                         }
                         
                         _logger.LogInformation("🎉 一键清仓 + 历史状态清理完全成功！");
+                        
+                        // 🔧 新增：通知监控界面刷新数据，确保状态同步
+                        NotifyAutoMonitorDashboardRefresh();
                     }
                     catch (Exception cleanupEx)
                     {
@@ -574,6 +577,9 @@ namespace BinanceFuturesTrader.ViewModels
 
                 // 刷新数据
                 await RefreshDataAsync();
+                
+                // 🔧 新增：通知监控界面刷新数据，确保显示最新状态
+                NotifyAutoMonitorDashboardRefresh();
                 
                 _logger.LogInformation($"🚨 一键清仓操作完成，成功率: {successOperations}/{totalOperations}");
             }
@@ -615,7 +621,7 @@ namespace BinanceFuturesTrader.ViewModels
                         // 通过重启自动盯盘服务来清理内存状态
                         if (_isAutoMonitorRunning && _currentAutoMonitorConfig != null)
                         {
-                            _autoMonitorService.StopMonitoring();
+                            await _autoMonitorService.StopMonitoringAsync();
                             await Task.Delay(500);
                             await _autoMonitorService.StartMonitoringAsync(_currentAutoMonitorConfig);
                             _logger.LogInformation("🔄 已重启自动盯盘服务，内存状态已同步");
@@ -624,6 +630,9 @@ namespace BinanceFuturesTrader.ViewModels
                 }
                 
                 _logger.LogInformation($"✅ 合约 {symbol}_{positionSide} 的自动盯盘历史状态清理完成");
+                
+                // 🔧 新增：通知监控界面刷新数据，确保状态同步
+                NotifyAutoMonitorDashboardRefresh();
             }
             catch (Exception ex)
             {

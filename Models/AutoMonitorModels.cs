@@ -181,8 +181,6 @@ namespace BinanceFuturesTrader.Models
         public string ErrorMessage { get; set; } = string.Empty;
     }
 
-
-
     /// <summary>
     /// 自动盯盘运行状态
     /// </summary>
@@ -294,5 +292,34 @@ namespace BinanceFuturesTrader.Models
         /// 保护金额
         /// </summary>
         public decimal ProtectionAmount { get; set; }
+    }
+
+    /// <summary>
+    /// 合约状态显示模型（供监控面板使用）
+    /// </summary>
+    public class ContractStateDisplay
+    {
+        public string Symbol { get; set; } = "";
+        public string PositionSide { get; set; } = "";
+        public bool BreakEvenExecuted { get; set; }
+        public int AddPositionProgress { get; set; }
+        public int ProfitProtectionProgress { get; set; }
+        public int TotalExecutions { get; set; }
+        public DateTime LastExecutionTime { get; set; }
+    }
+
+    /// <summary>
+    /// 执行历史记录（增强版）
+    /// </summary>
+    public class ExecutionHistoryRecord
+    {
+        public DateTime ExecutionTime { get; set; }
+        public string AccountName { get; set; } = "";
+        public string Symbol { get; set; } = "";
+        public string ExecutionType { get; set; } = "";
+        public bool IsSuccess { get; set; }
+        public decimal TriggerPnl { get; set; }
+        public string ErrorMessage { get; set; } = "";
+        public string Description { get; set; } = "";
     }
 } 

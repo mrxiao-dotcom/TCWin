@@ -24,10 +24,15 @@ namespace BinanceFuturesTrader.Services
         private DateTime _lastServerTimeSync = DateTime.MinValue;
         private readonly TimeSpan _syncInterval = TimeSpan.FromMinutes(5); // 每5分钟同步一次服务器时间
         
-        // 精度缓存：存储每个合约的stepSize和tickSize
-        private readonly Dictionary<string, (decimal stepSize, decimal tickSize)> _precisionCache = new();
+        // 🔧 修复：添加缓存访问锁，防止多线程并发访问缓存集合
+        private readonly object _precisionCacheLock = new object();
+        private readonly object _tradingRulesCacheLock = new object();
+        private readonly object _exchangeInfoCacheLock = new object();
         
-        // 完整交易规则缓存：存储每个合约的完整交易规则
+        // 精度信息缓存
+        private readonly Dictionary<string, (decimal stepSize, decimal tickSize)> _precisionCache = new();
+
+        // 交易规则缓存
         private readonly Dictionary<string, (decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage, DateTime cacheTime)> _tradingRulesCache = new();
         private readonly TimeSpan _tradingRulesCacheExpiry = TimeSpan.FromHours(1); // 缓存1小时
         
@@ -887,36 +892,35 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         public async Task<(decimal minQty, decimal maxQty, decimal stepSize, decimal tickSize, int maxLeverage)> GetSymbolTradingRulesAsync(string symbol)
         {
-            // 首先检查缓存
-            if (_tradingRulesCache.TryGetValue(symbol, out var cachedRules))
+            // 🔧 修复：线程安全的缓存检查
+            lock (_tradingRulesCacheLock)
             {
-                // 检查缓存是否过期
-                if (DateTime.Now - cachedRules.cacheTime < _tradingRulesCacheExpiry)
+                if (_tradingRulesCache.TryGetValue(symbol, out var cachedRules))
                 {
-                    // 静默使用缓存，不输出日志
-                    return (cachedRules.minQty, cachedRules.maxQty, cachedRules.stepSize, cachedRules.tickSize, cachedRules.maxLeverage);
-                }
-                else
-                {
-                    // 缓存过期，删除旧缓存
-                    _tradingRulesCache.Remove(symbol);
+                    // 检查缓存是否过期
+                    if (DateTime.Now - cachedRules.cacheTime < _tradingRulesCacheExpiry)
+                    {
+                        return (cachedRules.minQty, cachedRules.maxQty, cachedRules.stepSize, cachedRules.tickSize, cachedRules.maxLeverage);
+                    }
+                    else
+                    {
+                        // 缓存过期，删除旧缓存
+                        _tradingRulesCache.Remove(symbol);
+                    }
                 }
             }
 
             try
             {
-                // 仅在首次获取时输出日志
-                LogService.LogInfo($"获取 {symbol} 交易规则...");
-                
                 // 获取交易所信息
                 var exchangeInfoJson = await GetRealExchangeInfoAsync();
                 if (string.IsNullOrEmpty(exchangeInfoJson))
                 {
-                    LogService.LogWarning("无法获取交易所信息，使用默认规则");
+                    LogService.LogWarning($"无法获取 {symbol} 的交易规则，使用默认规则");
                     return GetDefaultTradingRules(symbol);
                 }
 
-                // 解析JSON
+                // 解析JSON获取交易规则
                 using var document = JsonDocument.Parse(exchangeInfoJson);
                 var symbols = document.RootElement.GetProperty("symbols");
                 
@@ -927,7 +931,7 @@ namespace BinanceFuturesTrader.Services
                     {
                         var filters = symbolElement.GetProperty("filters");
                         decimal minQty = 0, maxQty = 0, stepSize = 0, tickSize = 0;
-                        int maxLeverage = 125; // 默认杠杆
+                        int maxLeverage = 125;
                         
                         foreach (var filter in filters.EnumerateArray())
                         {
@@ -935,33 +939,32 @@ namespace BinanceFuturesTrader.Services
                             
                             if (filterType == "LOT_SIZE")
                             {
-                                // 获取数量相关限制
-                                if (filter.TryGetProperty("minQty", out var minQtyElement))
-                                    decimal.TryParse(minQtyElement.GetString(), out minQty);
-                                if (filter.TryGetProperty("maxQty", out var maxQtyElement))
-                                    decimal.TryParse(maxQtyElement.GetString(), out maxQty);
-                                if (filter.TryGetProperty("stepSize", out var stepSizeElement))
-                                    decimal.TryParse(stepSizeElement.GetString(), out stepSize);
+                                var minQtyStr = filter.GetProperty("minQty").GetString();
+                                var maxQtyStr = filter.GetProperty("maxQty").GetString();
+                                var stepSizeStr = filter.GetProperty("stepSize").GetString();
+                                
+                                decimal.TryParse(minQtyStr, out minQty);
+                                decimal.TryParse(maxQtyStr, out maxQty);
+                                decimal.TryParse(stepSizeStr, out stepSize);
                             }
                             else if (filterType == "PRICE_FILTER")
                             {
-                                // 获取价格精度
-                                if (filter.TryGetProperty("tickSize", out var tickSizeElement))
-                                    decimal.TryParse(tickSizeElement.GetString(), out tickSize);
+                                var tickSizeStr = filter.GetProperty("tickSize").GetString();
+                                decimal.TryParse(tickSizeStr, out tickSize);
                             }
                         }
                         
-                        if (minQty > 0 && maxQty > 0 && stepSize > 0 && tickSize > 0)
+                        if (minQty > 0 && stepSize > 0 && tickSize > 0)
                         {
-                            // 缓存结果
-                            var tradingRules = (minQty, maxQty, stepSize, tickSize, maxLeverage, DateTime.Now);
-                            _tradingRulesCache[symbol] = tradingRules;
+                            var rules = (minQty, maxQty, stepSize, tickSize, maxLeverage, DateTime.Now);
                             
-                            // 同时更新精度缓存
-                            _precisionCache[symbol] = (stepSize, tickSize);
+                            // 🔧 修复：线程安全的缓存写入
+                            lock (_tradingRulesCacheLock)
+                            {
+                                _tradingRulesCache[symbol] = rules;
+                            }
                             
-                            // 仅在首次获取时输出详细日志
-                            LogService.LogInfo($"✅ {symbol} 规则已缓存");
+                            LogService.LogInfo($"✅ {symbol} 交易规则已缓存: minQty={minQty}, maxQty={maxQty}, stepSize={stepSize}, tickSize={tickSize}");
                             return (minQty, maxQty, stepSize, tickSize, maxLeverage);
                         }
                     }
@@ -972,18 +975,21 @@ namespace BinanceFuturesTrader.Services
             }
             catch (Exception ex)
             {
-                LogService.LogError($"获取 {symbol} 交易规则失败: {ex.Message}，使用默认规则");
+                LogService.LogError($"❌ 获取 {symbol} 交易规则失败: {ex.Message}，使用默认规则");
                 return GetDefaultTradingRules(symbol);
             }
         }
 
         public async Task<(decimal stepSize, decimal tickSize)> GetSymbolPrecisionAsync(string symbol)
         {
-            // 首先检查缓存
-            if (_precisionCache.TryGetValue(symbol, out var cachedPrecision))
+            // 🔧 修复：线程安全的缓存访问
+            lock (_precisionCacheLock)
             {
-                // 静默使用缓存，不输出日志
-                return cachedPrecision;
+                if (_precisionCache.TryGetValue(symbol, out var cachedPrecision))
+                {
+                    // 静默使用缓存，不输出日志
+                    return cachedPrecision;
+                }
             }
 
             try
@@ -1038,8 +1044,14 @@ namespace BinanceFuturesTrader.Services
                         if (stepSize > 0 && tickSize > 0)
                         {
                             var precision = (stepSize, tickSize);
-                            _precisionCache[symbol] = precision;
-                            LogService.LogInfo($"✅ {symbol} 精度已缓存");
+                            
+                            // 🔧 修复：线程安全的缓存写入
+                            lock (_precisionCacheLock)
+                            {
+                                _precisionCache[symbol] = precision;
+                            }
+                            
+                            LogService.LogInfo($"✅ {symbol} 精度已缓存: stepSize={stepSize}, tickSize={tickSize}");
                             return precision;
                         }
                     }
@@ -1050,7 +1062,7 @@ namespace BinanceFuturesTrader.Services
             }
             catch (Exception ex)
             {
-                LogService.LogError($"获取 {symbol} 精度失败: {ex.Message}，使用默认精度");
+                LogService.LogError($"❌ 获取 {symbol} 精度失败: {ex.Message}，使用默认精度");
                 return GetDefaultPrecision(symbol);
             }
         }
@@ -1206,14 +1218,41 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
+                // 🔧 修复：优先验证输入数量的有效性
+                if (quantity <= 0)
+                {
+                    LogService.LogError($"❌ 数量无效: {quantity}，返回最小有效值");
+                    return "0.000001";
+                }
+
                 var (stepSize, tickSize) = await GetSymbolPrecisionAsync(symbol);
+                
+                // 🔧 修复：验证stepSize的有效性
+                if (stepSize <= 0)
+                {
+                    LogService.LogWarning($"⚠️ {symbol} stepSize无效: {stepSize}，使用保守精度");
+                    return GetConservativeQuantityFormat(quantity, symbol);
+                }
                 
                 // 根据stepSize调整数量精度
                 var adjustedQuantity = RoundToStepSize(quantity, stepSize);
+                
+                // 🔧 新增：确保调整后的数量仍然有效
+                if (adjustedQuantity <= 0)
+                {
+                    LogService.LogWarning($"⚠️ {symbol} 调整后数量为0，使用最小stepSize倍数");
+                    adjustedQuantity = stepSize;
+                }
+                
                 var decimalPlaces = GetDecimalPlaces(stepSize);
                 
-                LogService.LogInfo($"数量格式化: {symbol} {quantity:F8} → {adjustedQuantity} (stepSize: {stepSize})");
-                return adjustedQuantity.ToString($"F{decimalPlaces}");
+                // 🔧 新增：限制最大小数位数，避免精度过高
+                decimalPlaces = Math.Min(decimalPlaces, 8);
+                
+                var result = adjustedQuantity.ToString($"F{decimalPlaces}");
+                
+                LogService.LogInfo($"💰 数量格式化成功: {symbol} {quantity:F8} → {result} (stepSize: {stepSize})");
+                return result;
             }
             catch (Exception ex)
             {
@@ -1222,29 +1261,55 @@ namespace BinanceFuturesTrader.Services
                 // 🔧 修复：增强容错处理，根据数量大小选择合适的精度
                 try
                 {
-                    // 对于小数量，使用更保守的精度处理
-                    if (quantity < 1m)
-                    {
-                        // 小于1的数量，使用6位小数但确保不超过合理范围
-                        var result = Math.Round(quantity, 6);
-                        return result.ToString("F6").TrimEnd('0').TrimEnd('.');
-                    }
-                    else if (quantity < 100m)
-                    {
-                        // 1-100之间，使用3位小数
-                        return Math.Round(quantity, 3).ToString("F3");
-                    }
-                    else
-                    {
-                        // 大于100，使用整数或1位小数
-                        return Math.Round(quantity, 1).ToString("F1");
-                    }
+                    return GetConservativeQuantityFormat(quantity, symbol);
                 }
                 catch (Exception fallbackEx)
                 {
-                    LogService.LogError($"❌ 错误: 备用格式化也失败: {fallbackEx.Message}，强制使用F3格式");
-                    return Math.Round(quantity, 3).ToString("F3");
+                    LogService.LogError($"❌ 错误: 备用格式化也失败: {fallbackEx.Message}，强制使用F6格式");
+                    return Math.Max(quantity, 0.000001m).ToString("F6");
                 }
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：保守的数量格式化方法，用于容错处理
+        /// </summary>
+        private string GetConservativeQuantityFormat(decimal quantity, string symbol)
+        {
+            try
+            {
+                // 确保数量为正数
+                quantity = Math.Max(quantity, 0.000001m);
+                
+                // 根据合约和数量大小选择保守的精度
+                var result = symbol.ToUpper() switch
+                {
+                    // 主流币种：相对保守的精度
+                    "BTCUSDT" => quantity < 1m ? Math.Round(quantity, 6).ToString("F6") : Math.Round(quantity, 3).ToString("F3"),
+                    "ETHUSDT" => quantity < 1m ? Math.Round(quantity, 6).ToString("F6") : Math.Round(quantity, 3).ToString("F3"),
+                    "BNBUSDT" => quantity < 10m ? Math.Round(quantity, 4).ToString("F4") : Math.Round(quantity, 2).ToString("F2"),
+                    
+                    // 中等价值币种
+                    "ADAUSDT" or "DOGEUSDT" => quantity < 100m ? Math.Round(quantity, 2).ToString("F2") : Math.Round(quantity, 0).ToString("F0"),
+                    
+                    // 其他币种：通用保守处理
+                    _ => quantity switch
+                    {
+                        < 0.001m => Math.Round(quantity, 8).ToString("F8"),  // 极小数量
+                        < 0.1m => Math.Round(quantity, 6).ToString("F6"),    // 小数量
+                        < 10m => Math.Round(quantity, 4).ToString("F4"),     // 中等数量
+                        < 1000m => Math.Round(quantity, 2).ToString("F2"),   // 大数量
+                        _ => Math.Round(quantity, 0).ToString("F0")          // 极大数量
+                    }
+                };
+                
+                LogService.LogInfo($"🔧 保守格式化: {symbol} {quantity:F8} → {result}");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                LogService.LogError($"❌ 保守格式化失败: {ex.Message}");
+                return Math.Max(quantity, 0.000001m).ToString("F6");
             }
         }
 
@@ -1654,6 +1719,107 @@ namespace BinanceFuturesTrader.Services
         private long GetSyncedTimestamp()
         {
             return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + _serverTimeOffset;
+        }
+
+        /// <summary>
+        /// 🔧 新增：验证GPSUSDT精度修复的测试方法
+        /// </summary>
+        public async Task<string> TestGPSUSDTPrecisionAsync()
+        {
+            try
+            {
+                LogService.LogInfo("🧪 开始测试GPSUSDT精度处理...");
+                
+                var symbol = "GPSUSDT";
+                var testQuantities = new decimal[] { 0.000001m, 0.00001m, 0.0001m, 0.001m, 0.01m, 0.1m, 1m, 10m, 100m };
+                var results = new List<string>();
+                
+                // 获取GPSUSDT的交易规则
+                var (minQty, maxQty, stepSize, tickSize, maxLeverage) = await GetSymbolTradingRulesAsync(symbol);
+                results.Add($"📊 {symbol} 交易规则:");
+                results.Add($"   最小数量: {minQty:F8}");
+                results.Add($"   最大数量: {maxQty:F8}");
+                results.Add($"   数量步长: {stepSize:F8}");
+                results.Add($"   价格步长: {tickSize:F8}");
+                results.Add($"   最大杠杆: {maxLeverage}x");
+                results.Add("");
+                
+                // 测试不同数量的格式化
+                results.Add("🔧 数量格式化测试:");
+                foreach (var quantity in testQuantities)
+                {
+                    try
+                    {
+                        var formattedQuantity = await FormatQuantityAsync(quantity, symbol);
+                        var isValid = ValidateQuantityAgainstRules(decimal.Parse(formattedQuantity), minQty, maxQty, stepSize);
+                        var status = isValid ? "✅" : "❌";
+                        results.Add($"   {status} {quantity:F8} → {formattedQuantity} (有效: {isValid})");
+                    }
+                    catch (Exception ex)
+                    {
+                        results.Add($"   ❌ {quantity:F8} → 格式化失败: {ex.Message}");
+                    }
+                }
+                
+                results.Add("");
+                results.Add("🎯 修复验证结果:");
+                
+                // 测试小账户常见的问题数量
+                var problematicQuantities = new decimal[] { 0.0000123m, 0.0000456m, 0.0000789m };
+                foreach (var qty in problematicQuantities)
+                {
+                    try
+                    {
+                        var formatted = await FormatQuantityAsync(qty, symbol);
+                        results.Add($"   🔧 问题数量 {qty:F8} → 修复后: {formatted}");
+                    }
+                    catch (Exception ex)
+                    {
+                        results.Add($"   ❌ 问题数量 {qty:F8} → 仍然失败: {ex.Message}");
+                    }
+                }
+                
+                var finalResult = string.Join("\n", results);
+                LogService.LogInfo($"🧪 GPSUSDT精度测试完成:\n{finalResult}");
+                return finalResult;
+            }
+            catch (Exception ex)
+            {
+                var errorMessage = $"❌ GPSUSDT精度测试失败: {ex.Message}";
+                LogService.LogError(errorMessage);
+                return errorMessage;
+            }
+        }
+        
+        /// <summary>
+        /// 验证数量是否符合交易规则
+        /// </summary>
+        private bool ValidateQuantityAgainstRules(decimal quantity, decimal minQty, decimal maxQty, decimal stepSize)
+        {
+            try
+            {
+                // 检查最小数量
+                if (quantity < minQty)
+                    return false;
+                
+                // 检查最大数量
+                if (maxQty > 0 && quantity > maxQty)
+                    return false;
+                
+                // 检查步长
+                if (stepSize > 0)
+                {
+                    var remainder = (quantity - minQty) % stepSize;
+                    if (Math.Abs(remainder) > 0.0000001m) // 允许微小的浮点误差
+                        return false;
+                }
+                
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 } 

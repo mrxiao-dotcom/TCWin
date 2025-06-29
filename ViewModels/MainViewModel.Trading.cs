@@ -29,7 +29,7 @@ namespace BinanceFuturesTrader.ViewModels
         private string _positionSide = "BOTH";
 
         [ObservableProperty]
-        private int _leverage = 3;
+        private int _leverage = 10;
 
         [ObservableProperty]
         private decimal _quantity = 0;
@@ -46,7 +46,7 @@ namespace BinanceFuturesTrader.ViewModels
         private string _marginType = "ISOLATED";
 
         [ObservableProperty]
-        private decimal _stopLossRatio = 5;
+        private decimal _stopLossRatio = 10;
 
         [ObservableProperty]
         private decimal _stopLossPrice = 0;

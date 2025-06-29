@@ -29,6 +29,20 @@ namespace BinanceFuturesTrader
             services.AddSingleton<TradingSettingsService>();
             services.AddSingleton<RecentContractsService>();
             services.AddSingleton<LogService>();
+            
+            // 注册新架构服务
+            services.AddSingleton<IEventBus, EventBus>();
+            services.AddSingleton<CooldownManager>();
+            services.AddSingleton<StopOrderManager>();
+            services.AddSingleton<UnifiedStateManager>();
+            services.AddSingleton<IConfigValidationService, ConfigValidationService>();
+            services.AddSingleton<AutoMonitorService>();
+            services.AddSingleton<AutoMonitorPersistenceService>();
+            
+            // 注册事件处理器
+            services.AddSingleton<LoggingEventHandler>();
+            services.AddSingleton<UIUpdateEventHandler>();
+            services.AddSingleton<StatisticsEventHandler>();
 
             // 注册ViewModel（瞬态模式，每次创建新实例）
             services.AddTransient<MainViewModel>();

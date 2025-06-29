@@ -112,5 +112,10 @@ namespace BinanceFuturesTrader.Services
         /// <param name="amount">保证金金额</param>
         /// <param name="type">调整方向 (1:增加保证金, 2:减少保证金)</param>
         Task<bool> AdjustIsolatedMarginAsync(string symbol, string positionSide, decimal amount, int type);
+
+        /// <summary>
+        /// 🔧 新增：测试GPSUSDT精度修复
+        /// </summary>
+        Task<string> TestGPSUSDTPrecisionAsync();
     }
 } 

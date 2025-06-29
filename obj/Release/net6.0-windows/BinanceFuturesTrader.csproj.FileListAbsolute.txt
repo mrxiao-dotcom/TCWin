@@ -79,3 +79,5 @@ D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderHistoryWindow.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\OrderHistoryWindow.g.cs
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ClearAllConfirmationDialog.baml
 D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\ClearAllConfirmationDialog.g.cs
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AutoMonitorDashboard.baml
+D:\CSharpProjects\TCWin\obj\Release\net6.0-windows\Views\AutoMonitorDashboard.g.cs

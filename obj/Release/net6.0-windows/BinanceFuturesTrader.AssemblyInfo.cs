@@ -13,11 +13,11 @@ using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("BinanceFuturesTrader")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("0.31.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.31+bf63d6790ec7f6a25f86d4ff3c77ac4cb0b44caf")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("0.33.12.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.33.12+7a217d3fb979af10685ddff892efcfce5fcd12c2")]
 [assembly: System.Reflection.AssemblyProductAttribute("BinanceFuturesTrader")]
-[assembly: System.Reflection.AssemblyTitleAttribute("币安期货交易管理器")]
-[assembly: System.Reflection.AssemblyVersionAttribute("0.31.0.0")]
+[assembly: System.Reflection.AssemblyTitleAttribute("Binance Futures Trader")]
+[assembly: System.Reflection.AssemblyVersionAttribute("0.33.12.0")]
 [assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
 [assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
 

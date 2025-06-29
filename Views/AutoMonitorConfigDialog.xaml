@@ -29,20 +29,42 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="120"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="配置名称:" VerticalAlignment="Center" Margin="0,5"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="ConfigNameTextBox" Text="默认配置" 
-                                 Width="200" HorizontalAlignment="Left" Margin="5"/>
+                        <!-- 🎯 新增：配置模板选择 -->
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="配置模板:" VerticalAlignment="Center" Margin="0,5" FontWeight="Bold"/>
+                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="5">
+                            <ComboBox x:Name="TemplateComboBox" Width="150" Height="30" FontSize="12"
+                                      SelectionChanged="TemplateComboBox_SelectionChanged">
+                                <ComboBoxItem Content="🛡️ 保守型（新手推荐）" Tag="Conservative"/>
+                                <ComboBoxItem Content="⚖️ 平衡型（推荐）" Tag="Balanced" IsSelected="True"/>
+                                <ComboBoxItem Content="🚀 激进型（高风险）" Tag="Aggressive"/>
+                                <ComboBoxItem Content="🔧 自定义" Tag="Custom"/>
+                            </ComboBox>
+                            <Button x:Name="LoadTemplateButton" Content="🔄 应用模板" Width="100" Height="30" 
+                                    Margin="10,0,0,0" FontSize="11" Background="#2ECC71" Foreground="White"
+                                    Click="LoadTemplateButton_Click" ToolTip="将选择的模板参数应用到当前配置"/>
+                        </StackPanel>
                         
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="扫描间隔:" VerticalAlignment="Center" Margin="0,5"/>
-                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="5">
-                            <TextBox x:Name="ScanIntervalTextBox" Text="5" Width="60"/>
-                            <TextBlock Text="秒" VerticalAlignment="Center" Margin="5,0"/>
+                        <!-- 🔍 模板说明 -->
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="模板说明:" VerticalAlignment="Top" Margin="0,5" FontSize="11" Foreground="Gray"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="TemplateDescriptionText" Margin="5" FontSize="11" Foreground="Gray" TextWrapping="Wrap"
+                                   Text="平衡型配置适合有一定经验的用户，在风险可控的前提下追求合理收益。"/>
+                        
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="配置名称:" VerticalAlignment="Center" Margin="0,10,0,5"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" x:Name="ConfigNameTextBox" Text="平衡型配置" 
+                                 Width="200" HorizontalAlignment="Left" Margin="5,10,0,5"/>
+                        
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="扫描间隔:" VerticalAlignment="Center" Margin="0,5"/>
+                        <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="5">
+                            <TextBox x:Name="ScanIntervalTextBox" Text="30" Width="60"/>
+                            <TextBlock Text="秒 (建议30-60秒)" VerticalAlignment="Center" Margin="5,0" FontSize="11" Foreground="Gray"/>
                         </StackPanel>
                     </Grid>
                 </GroupBox>
