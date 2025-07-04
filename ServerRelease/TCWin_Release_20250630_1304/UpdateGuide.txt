@@ -1,0 +1,17 @@
+Server Update Guide 
+=================== 
+ 
+Update Steps: 
+1. Stop the old program running on server 
+2. Backup important config files if needed 
+3. Delete old program files on server 
+4. Copy all files from this package to server 
+5. Run BinanceFuturesTrader.exe 
+6. Verify new features work properly 
+ 
+Important Notes: 
+- This version fixes duplicate position issue 
+- Use "Clear State" function if problem persists 
+- Cooldown period optimized to 5 seconds 
+- Position states recover properly after restart 
+=================== 

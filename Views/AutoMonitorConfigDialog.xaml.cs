@@ -297,7 +297,7 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 创建保守型配置模板
+        /// 🔧 修复：创建保守型配置模板（金额四舍五入取整）
         /// </summary>
         private AutoMonitorConfig CreateConservativeTemplate(decimal accountEquity, int riskCapitalTimes)
         {
@@ -313,7 +313,7 @@ namespace BinanceFuturesTrader.Views
                 BreakEvenConfig = new AutoBreakEvenConfig
                 {
                     IsEnabled = true,
-                    TriggerProfitAmount = Math.Max(5m, singleRiskCapital * 0.3m) // 30%风险金
+                    TriggerProfitAmount = Math.Round(singleRiskCapital * 0.3m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                 },
                 
                 // 推仓配置：1-3档，每次推仓止盈金额为2倍、3倍、4倍风险金
@@ -326,7 +326,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(10m, singleRiskCapital * 2m), // 2倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 2m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -334,7 +334,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(15m, singleRiskCapital * 3m), // 3倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 3m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -342,7 +342,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(20m, singleRiskCapital * 4m), // 4倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 4m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -360,22 +360,22 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(40m, singleRiskCapital * 8m), // 8倍风险金
-                            ProtectionAmount = Math.Max(36m, singleRiskCapital * 8m * 0.9m) // 90%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 8m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 8m * 0.9m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(80m, singleRiskCapital * 16m), // 16倍风险金
-                            ProtectionAmount = Math.Max(72m, singleRiskCapital * 16m * 0.9m) // 90%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 16m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 16m * 0.9m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(150m, singleRiskCapital * 30m), // 30倍风险金
-                            ProtectionAmount = Math.Max(135m, singleRiskCapital * 30m * 0.9m) // 90%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 30m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 30m * 0.9m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         }
                     }
                 }
@@ -385,7 +385,7 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 创建平衡型配置模板
+        /// 🔧 修复：创建平衡型配置模板（金额四舍五入取整）
         /// </summary>
         private AutoMonitorConfig CreateBalancedTemplate(decimal accountEquity, int riskCapitalTimes)
         {
@@ -401,7 +401,7 @@ namespace BinanceFuturesTrader.Views
                 BreakEvenConfig = new AutoBreakEvenConfig
                 {
                     IsEnabled = true,
-                    TriggerProfitAmount = Math.Max(8m, singleRiskCapital * 0.5m) // 50%风险金
+                    TriggerProfitAmount = Math.Round(singleRiskCapital * 0.5m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                 },
                 
                 // 推仓配置：1-4档，每次推仓止盈金额为1倍到4倍风险金
@@ -414,7 +414,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(10m, singleRiskCapital * 1m), // 1倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 1m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -422,7 +422,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(20m, singleRiskCapital * 2m), // 2倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 2m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -430,7 +430,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(30m, singleRiskCapital * 3m), // 3倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 3m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -438,7 +438,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 4,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(40m, singleRiskCapital * 4m), // 4倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 4m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         }
@@ -455,22 +455,22 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(50m, singleRiskCapital * 10m), // 10倍风险金
-                            ProtectionAmount = Math.Max(40m, singleRiskCapital * 10m * 0.8m) // 80%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 10m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 10m * 0.8m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(100m, singleRiskCapital * 20m), // 20倍风险金
-                            ProtectionAmount = Math.Max(80m, singleRiskCapital * 20m * 0.8m) // 80%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 20m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 20m * 0.8m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(150m, singleRiskCapital * 30m), // 30倍风险金
-                            ProtectionAmount = Math.Max(120m, singleRiskCapital * 30m * 0.8m) // 80%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 30m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 30m * 0.8m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         }
                     }
                 }
@@ -496,7 +496,7 @@ namespace BinanceFuturesTrader.Views
                 BreakEvenConfig = new AutoBreakEvenConfig
                 {
                     IsEnabled = true,
-                    TriggerProfitAmount = Math.Max(12m, singleRiskCapital * 0.8m) // 80%风险金
+                    TriggerProfitAmount = Math.Round(singleRiskCapital * 0.8m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                 },
                 
                 // 推仓配置：1-8档，每次推仓止盈金额为1倍、2倍...8倍风险金
@@ -509,7 +509,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(10m, singleRiskCapital * 1m), // 1倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 1m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -517,7 +517,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(20m, singleRiskCapital * 2m), // 2倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 2m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -525,7 +525,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(30m, singleRiskCapital * 3m), // 3倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 3m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -533,7 +533,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 4,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(40m, singleRiskCapital * 4m), // 4倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 4m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -542,7 +542,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 5,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(50m, singleRiskCapital * 5m), // 5倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 5m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -550,7 +550,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 6,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(60m, singleRiskCapital * 6m), // 6倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 6m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -558,7 +558,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 7,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(70m, singleRiskCapital * 7m), // 7倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 7m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         },
@@ -566,7 +566,7 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 8,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(80m, singleRiskCapital * 8m), // 8倍风险金
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 8m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
                             StopLossRatio = 0.10m // 止损金额为10%
                         }
@@ -583,29 +583,29 @@ namespace BinanceFuturesTrader.Views
                         {
                             TierIndex = 1,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(50m, singleRiskCapital * 10m), // 10倍风险金  
-                            ProtectionAmount = Math.Max(30m, singleRiskCapital * 10m * 0.6m) // 60%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 10m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 10m * 0.6m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 2,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(100m, singleRiskCapital * 20m), // 20倍风险金
-                            ProtectionAmount = Math.Max(60m, singleRiskCapital * 20m * 0.6m) // 60%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 20m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 20m * 0.6m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 3,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(150m, singleRiskCapital * 30m), // 30倍风险金
-                            ProtectionAmount = Math.Max(120m, singleRiskCapital * 30m * 0.8m) // 80%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 30m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 30m * 0.8m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         },
                         new ProfitProtectionTier
                         {
                             TierIndex = 4,
                             IsEnabled = true,
-                            TriggerProfitAmount = Math.Max(200m, singleRiskCapital * 40m), // 40倍风险金
-                            ProtectionAmount = Math.Max(180m, singleRiskCapital * 40m * 0.9m) // 90%回撤保护
+                            TriggerProfitAmount = Math.Round(singleRiskCapital * 40m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
+                            ProtectionAmount = Math.Round(singleRiskCapital * 40m * 0.9m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                         }
                     }
                 }
@@ -701,7 +701,7 @@ namespace BinanceFuturesTrader.Views
             AddPositionStages.Clear();
             AddPositionStages.Add(new AddPositionStageViewModel { 
                 Stage = 1, 
-                TriggerProfitAmount = riskCapitalIncrement, 
+                TriggerProfitAmount = Math.Round(riskCapitalIncrement, 0, MidpointRounding.AwayFromZero), 
                 RiskCapitalMultiplier = 1.0m, 
                 StopLossPercentage = 10, 
                 IsEnabled = true, 
@@ -709,7 +709,7 @@ namespace BinanceFuturesTrader.Views
             });
             AddPositionStages.Add(new AddPositionStageViewModel { 
                 Stage = 2, 
-                TriggerProfitAmount = riskCapitalIncrement * 2, 
+                TriggerProfitAmount = Math.Round(riskCapitalIncrement * 2, 0, MidpointRounding.AwayFromZero), 
                 RiskCapitalMultiplier = 1.0m, 
                 StopLossPercentage = 10, 
                 IsEnabled = true, 
@@ -717,7 +717,7 @@ namespace BinanceFuturesTrader.Views
             });
             AddPositionStages.Add(new AddPositionStageViewModel { 
                 Stage = 3, 
-                TriggerProfitAmount = riskCapitalIncrement * 3, 
+                TriggerProfitAmount = Math.Round(riskCapitalIncrement * 3, 0, MidpointRounding.AwayFromZero), 
                 RiskCapitalMultiplier = 1.0m, 
                 StopLossPercentage = 10, 
                 IsEnabled = true, 
@@ -725,36 +725,36 @@ namespace BinanceFuturesTrader.Views
             });
             AddPositionStages.Add(new AddPositionStageViewModel { 
                 Stage = 4, 
-                TriggerProfitAmount = riskCapitalIncrement * 4, 
+                TriggerProfitAmount = Math.Round(riskCapitalIncrement * 4, 0, MidpointRounding.AwayFromZero), 
                 RiskCapitalMultiplier = 1.0m, 
                 StopLossPercentage = 10, 
                 IsEnabled = false, 
                 Description = $"浮盈{riskCapitalIncrement * 4:F0}U时推仓，风险金1.0倍，止损10%" 
             });
 
-            // 保盈止损阶梯默认配置（基于风险金的10倍作为基础）
+            // 保盈止损阶梯默认配置（基于风险金的10倍作为基础，四舍五入取整）
             var profitProtectionBase = riskCapitalIncrement * 10;
             ProfitProtectionStages.Clear();
             ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
                 Stage = 1, 
-                TriggerProfitAmount = profitProtectionBase, 
-                ProtectionAmount = profitProtectionBase * 0.8m, 
+                TriggerProfitAmount = Math.Round(profitProtectionBase, 0, MidpointRounding.AwayFromZero), 
+                ProtectionAmount = Math.Round(profitProtectionBase * 0.8m, 0, MidpointRounding.AwayFromZero), 
                 IsEnabled = true, 
-                Description = $"浮盈{profitProtectionBase:F0}U时保护{profitProtectionBase * 0.8m:F0}U利润" 
+                Description = $"浮盈{profitProtectionBase:F0}U时保护{Math.Round(profitProtectionBase * 0.8m, 0, MidpointRounding.AwayFromZero):F0}U利润" 
             });
             ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
                 Stage = 2, 
-                TriggerProfitAmount = profitProtectionBase * 2, 
-                ProtectionAmount = profitProtectionBase * 2 * 0.8m, 
+                TriggerProfitAmount = Math.Round(profitProtectionBase * 2, 0, MidpointRounding.AwayFromZero), 
+                ProtectionAmount = Math.Round(profitProtectionBase * 2 * 0.8m, 0, MidpointRounding.AwayFromZero), 
                 IsEnabled = true, 
-                Description = $"浮盈{profitProtectionBase * 2:F0}U时保护{profitProtectionBase * 2 * 0.8m:F0}U利润" 
+                Description = $"浮盈{profitProtectionBase * 2:F0}U时保护{Math.Round(profitProtectionBase * 2 * 0.8m, 0, MidpointRounding.AwayFromZero):F0}U利润" 
             });
             ProfitProtectionStages.Add(new ProfitProtectionStageViewModel { 
                 Stage = 3, 
-                TriggerProfitAmount = profitProtectionBase * 3, 
-                ProtectionAmount = profitProtectionBase * 3 * 0.8m, 
+                TriggerProfitAmount = Math.Round(profitProtectionBase * 3, 0, MidpointRounding.AwayFromZero), 
+                ProtectionAmount = Math.Round(profitProtectionBase * 3 * 0.8m, 0, MidpointRounding.AwayFromZero), 
                 IsEnabled = true, 
-                Description = $"浮盈{profitProtectionBase * 3:F0}U时保护{profitProtectionBase * 3 * 0.8m:F0}U利润" 
+                Description = $"浮盈{profitProtectionBase * 3:F0}U时保护{Math.Round(profitProtectionBase * 3 * 0.8m, 0, MidpointRounding.AwayFromZero):F0}U利润" 
             });
         }
 
@@ -833,10 +833,10 @@ namespace BinanceFuturesTrader.Views
                 var singleRiskCapital = _accountEquity / _riskCapitalTimes; // 计算一份风险金
                 var riskCapitalIncrement = Math.Round(singleRiskCapital, 0); // 四舍五入到整数
                 
-                // 智能计算新阶梯的默认值
+                // 智能计算新阶梯的默认值（四舍五入取整）
                 var newTriggerAmount = lastStage != null 
-                    ? lastStage.TriggerProfitAmount + riskCapitalIncrement 
-                    : riskCapitalIncrement; // 第一个阶梯就是一份风险金
+                    ? Math.Round(lastStage.TriggerProfitAmount + riskCapitalIncrement, 0, MidpointRounding.AwayFromZero)
+                    : Math.Round(riskCapitalIncrement, 0, MidpointRounding.AwayFromZero); // 第一个阶梯就是一份风险金
                     
                 var newRiskMultiplier = lastStage != null ? lastStage.RiskCapitalMultiplier : 1.0m;
                 var newStopLossPercentage = lastStage != null ? lastStage.StopLossPercentage : 10m;

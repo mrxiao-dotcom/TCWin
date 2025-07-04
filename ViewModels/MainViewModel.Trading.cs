@@ -294,35 +294,74 @@ namespace BinanceFuturesTrader.ViewModels
                     _logger.LogInformation($"{orderDescription}下单成功: {Symbol} {Side} {Quantity}");
 
                     // 🚀 关键功能：如果设置了止损比例，立即下止损委托单
-                    if (StopLossRatio > 0 && StopLossPrice > 0)
+                    if (StopLossRatio > 0)
                     {
                         StatusMessage = "正在下止损委托单...";
                         
                         // 对于限价单，使用限价单价格计算止损；对于市价单，使用最新价格
                         var referencePrice = orderType == "LIMIT" ? Price : LatestPrice;
-                        var stopLossPrice = _calculationService.CalculateStopLossPrice(referencePrice, StopLossRatio, Side);
                         
-                        var stopRequest = new OrderRequest
+                        // 🔧 修复：确保有有效的参考价格
+                        if (referencePrice <= 0)
                         {
-                            Symbol = Symbol,
-                            Side = Side == "BUY" ? "SELL" : "BUY", // 止损方向与开仓方向相反
-                            Type = "STOP_MARKET",
-                            Quantity = Quantity, // 止损数量与开仓数量相同
-                            StopPrice = stopLossPrice,
-                            ReduceOnly = true, // 止损单必须是减仓
-                            WorkingType = "CONTRACT_PRICE"
-                        };
+                            _logger.LogWarning($"参考价格无效({referencePrice})，尝试获取最新价格");
+                            referencePrice = await _binanceService.GetLatestPriceAsync(Symbol);
+                        }
                         
-                        var stopSuccess = await _binanceService.PlaceOrderAsync(stopRequest);
-                        if (stopSuccess)
+                        if (referencePrice > 0)
                         {
-                            StatusMessage = $"{orderDescription}成功，已设置止损委托(止损价:{stopLossPrice:F4})";
-                            _logger.LogInformation($"止损委托单设置成功: {Symbol} 止损价格 {stopLossPrice:F4}");
+                            var stopLossPrice = _calculationService.CalculateStopLossPrice(referencePrice, StopLossRatio, Side);
+                            
+                            // 🔧 修复：添加PositionSide参数，确保止损单设置正确
+                            var stopRequest = new OrderRequest
+                            {
+                                Symbol = Symbol,
+                                Side = Side == "BUY" ? "SELL" : "BUY", // 止损方向与开仓方向相反
+                                Type = "STOP_MARKET",
+                                Quantity = Quantity, // 止损数量与开仓数量相同
+                                StopPrice = stopLossPrice,
+                                ReduceOnly = true, // 止损单必须是减仓
+                                PositionSide = "BOTH", // 🔧 修复：设置持仓方向，避免下单失败
+                                WorkingType = "CONTRACT_PRICE"
+                            };
+                            
+                            _logger.LogInformation($"🎯 准备下止损单: {Symbol} {stopRequest.Side} @{stopLossPrice:F4}, 数量: {Quantity:F8}, 参考价: {referencePrice:F4}, 止损比例: {StopLossRatio}%");
+                            
+                            var stopSuccess = await _binanceService.PlaceOrderAsync(stopRequest);
+                            if (stopSuccess)
+                            {
+                                StatusMessage = $"{orderDescription}成功，已设置止损委托(止损价:{stopLossPrice:F4})";
+                                _logger.LogInformation($"✅ 止损委托单设置成功: {Symbol} 止损价格 {stopLossPrice:F4}");
+                                
+                                // 🔧 修复：等待片刻并验证止损单是否创建成功
+                                await Task.Delay(1000);
+                                await RefreshDataAsync();
+                                
+                                var stopOrders = Orders.Where(o => 
+                                    o.Symbol == Symbol && 
+                                    o.Type == "STOP_MARKET" && 
+                                    o.ReduceOnly &&
+                                    Math.Abs(o.StopPrice - stopLossPrice) < 0.01m).ToList();
+                                    
+                                if (stopOrders.Any())
+                                {
+                                    _logger.LogInformation($"✅ 止损单验证成功: 订单ID {stopOrders.First().OrderId}");
+                                }
+                                else
+                                {
+                                    _logger.LogWarning($"⚠️ 止损单提交成功但未在委托列表中找到，可能需要稍等");
+                                }
+                            }
+                            else
+                            {
+                                StatusMessage = $"{orderDescription}成功，止损委托失败";
+                                _logger.LogError($"❌ 止损委托单设置失败: {Symbol}, 参考价: {referencePrice:F4}, 止损比例: {StopLossRatio}%, 止损价: {stopLossPrice:F4}");
+                            }
                         }
                         else
                         {
-                            StatusMessage = $"{orderDescription}成功，止损委托失败";
-                            _logger.LogWarning($"止损委托单设置失败: {Symbol}");
+                            StatusMessage = $"{orderDescription}成功，无法获取价格，止损委托跳过";
+                            _logger.LogError($"❌ 无法获取有效价格进行止损委托: {Symbol}");
                         }
                     }
                     else

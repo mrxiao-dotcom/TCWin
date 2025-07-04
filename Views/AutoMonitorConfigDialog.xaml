@@ -179,7 +179,7 @@
         
         <!-- 底部按钮 -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
-            <Button x:Name="ConfirmButton" Content="确认启动" Width="100" Height="35" 
+            <Button x:Name="ConfirmButton" Content="🔄 更新配置" Width="100" Height="35" 
                     FontSize="14" FontWeight="Bold" Background="#4A90E2" Foreground="White"
                     Click="ConfirmButton_Click" Margin="0,0,10,0"/>
             <Button x:Name="CancelButton" Content="取消" Width="80" Height="35" 

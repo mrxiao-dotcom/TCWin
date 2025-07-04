@@ -25,6 +25,12 @@ namespace BinanceFuturesTrader.Models
         public int ScanIntervalSeconds { get; set; } = 5;
         
         /// <summary>
+        /// 冷却期配置（秒）- 防止短时间内重复扫描触发
+        /// 默认5秒，主要依赖状态管理而不是冷却期来确保不重复执行
+        /// </summary>
+        public int CooldownSeconds { get; set; } = 5;
+        
+        /// <summary>
         /// 自动保本配置
         /// </summary>
         public AutoBreakEvenConfig BreakEvenConfig { get; set; } = new AutoBreakEvenConfig();
@@ -55,6 +61,9 @@ namespace BinanceFuturesTrader.Models
         /// <param name="accountEquity">账户权益（USDT）</param>
         /// <param name="riskCapitalTimes">风险金倍数（默认10）</param>
         /// <returns>配置好的自动盯盘配置</returns>
+        /// <summary>
+        /// 🔧 修复：对盈利目标金额进行四舍五入取整处理
+        /// </summary>
         public static AutoMonitorConfig CreateSmartDefault(decimal accountEquity, int riskCapitalTimes = 10)
         {
             var riskCapital = accountEquity / riskCapitalTimes;
@@ -64,25 +73,25 @@ namespace BinanceFuturesTrader.Models
                 Name = $"智能配置（权益{accountEquity:F0}U）",
                 BreakEvenConfig = new AutoBreakEvenConfig
                 {
-                    TriggerProfitAmount = Math.Max(riskCapital * 0.1m, 10m) // 最少10U
+                    TriggerProfitAmount = Math.Round(riskCapital * 0.1m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
                 },
                 AddPositionConfig = new AutoAddPositionConfig
                 {
                     Tiers = new List<AddPositionTier>
                     {
-                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = riskCapital * 1m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = riskCapital * 2m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = riskCapital * 3m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 4, TriggerProfitAmount = riskCapital * 4m, RiskMultiplier = 1.0m, StopLossRatio = 0.10m }
+                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(riskCapital * 1m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(riskCapital * 2m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = Math.Round(riskCapital * 3m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
+                        new AddPositionTier { TierIndex = 4, TriggerProfitAmount = Math.Round(riskCapital * 4m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m }
                     }
                 },
                 ProfitProtectionConfig = new AutoProfitProtectionConfig
                 {
                     Tiers = new List<ProfitProtectionTier>
                     {
-                        new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = riskCapital * 10m, ProtectionAmount = riskCapital * 10m * 0.8m },
-                        new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = riskCapital * 20m, ProtectionAmount = riskCapital * 20m * 0.8m },
-                        new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = riskCapital * 30m, ProtectionAmount = riskCapital * 30m * 0.8m }
+                        new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(riskCapital * 10m, 0, MidpointRounding.AwayFromZero), ProtectionAmount = Math.Round(riskCapital * 10m * 0.8m, 0, MidpointRounding.AwayFromZero) },
+                        new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(riskCapital * 20m, 0, MidpointRounding.AwayFromZero), ProtectionAmount = Math.Round(riskCapital * 20m * 0.8m, 0, MidpointRounding.AwayFromZero) },
+                        new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = Math.Round(riskCapital * 30m, 0, MidpointRounding.AwayFromZero), ProtectionAmount = Math.Round(riskCapital * 30m * 0.8m, 0, MidpointRounding.AwayFromZero) }
                     }
                 }
             };

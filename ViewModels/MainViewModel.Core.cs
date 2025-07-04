@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Threading;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
@@ -104,7 +105,7 @@ namespace BinanceFuturesTrader.ViewModels
         private bool _isAutoMonitorRunning = false;
 
         [ObservableProperty]
-        private string _autoMonitorButtonText = "自动盯盘";
+        private string _autoMonitorButtonText = "盯盘参数配置";
 
         [ObservableProperty]
         private string _autoMonitorButtonColor = "#4A90E2";
@@ -112,9 +113,23 @@ namespace BinanceFuturesTrader.ViewModels
         [ObservableProperty]
         private string _autoMonitorStatusMessage = "未启动";
 
+        [ObservableProperty]
+        private bool _isAutoMonitorButtonEnabled = true;
+
         // 每个账户独立的自动盯盘配置
         private readonly Dictionary<string, AutoMonitorConfig> _accountAutoMonitorConfigs = new();
         private AutoMonitorConfig? _currentAutoMonitorConfig;
+        
+        /// <summary>
+        /// 获取当前自动监控配置
+        /// </summary>
+        public AutoMonitorConfig? CurrentAutoMonitorConfig => _currentAutoMonitorConfig;
+        
+        /// <summary>
+        /// 获取账户自动监控配置字典
+        /// </summary>
+        public IReadOnlyDictionary<string, AutoMonitorConfig> GetAccountAutoMonitorConfigs() 
+            => _accountAutoMonitorConfigs;
 
         // 🔧 添加缺失的绑定属性
         [ObservableProperty]
@@ -512,11 +527,66 @@ namespace BinanceFuturesTrader.ViewModels
                     order.SelectionChanged -= OnOrderSelectionChanged;
                 }
                 
+                // 🔧 新增：关闭所有相关的子窗口（监控窗口等）
+                CloseAllChildWindows();
+                
             _logger.LogInformation("MainViewModel清理完成");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "MainViewModel清理失败");
+            }
+        }
+
+        /// <summary>
+        /// 关闭所有子窗口
+        /// </summary>
+        private void CloseAllChildWindows()
+        {
+            try
+            {
+                if (Application.Current?.Windows != null)
+                {
+                    var childWindows = new List<Window>();
+                    
+                    // 收集需要关闭的子窗口
+                    foreach (Window window in Application.Current.Windows)
+                    {
+                        // 跳过主窗口
+                        if (window == Application.Current.MainWindow)
+                            continue;
+                            
+                        // 关闭监控窗口和其他子窗口
+                        if (window is Views.AutoMonitorDashboard || 
+                            window.Owner == Application.Current.MainWindow)
+                        {
+                            childWindows.Add(window);
+                        }
+                    }
+                    
+                    // 关闭收集到的子窗口
+                    foreach (var window in childWindows)
+                    {
+                        try
+                        {
+                            _logger.LogInformation($"🔧 正在关闭子窗口: {window.Title}");
+                            window.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, $"⚠️ 关闭子窗口失败: {window.Title}");
+                        }
+                    }
+                    
+                    if (childWindows.Any())
+                    {
+                        _logger.LogInformation($"✅ 已关闭 {childWindows.Count} 个子窗口");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 关闭子窗口时发生错误");
             }
         }
         #endregion

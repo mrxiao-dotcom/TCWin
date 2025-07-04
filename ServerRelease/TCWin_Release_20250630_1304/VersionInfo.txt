@@ -1,0 +1,18 @@
+TCWin Server Release Package 
+============================================= 
+Release Time: 2025-06-30 13:04 
+Version ID: 20250630_1304 
+ 
+Key Fixes in This Version: 
+- Duplicate position problem fixed 
+- Super detailed debug log function 
+- Monitor panel clear state function 
+- 5-second cooldown optimization 
+- State recovery after restart 
+ 
+Feature Verification: 
+1. After starting auto-monitor, look for: 
+   "=== Super Detailed Debug ===" in log 
+2. Check monitor panel for "Clear State" button 
+3. If both exist, version update is successful 
+============================================= 

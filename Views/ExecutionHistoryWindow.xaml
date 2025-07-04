@@ -1,0 +1,195 @@
+<Window x:Class="BinanceFuturesTrader.Views.ExecutionHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="执行历史查看" Height="700" Width="1200"
+        WindowStartupLocation="CenterOwner"
+        Background="#F8F9FA"
+        FontFamily="Microsoft YaHei">
+
+    <Window.Resources>
+        <Style x:Key="HeaderTextBlockStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#2C3E50"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+
+        <Style x:Key="InfoTextBlockStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#7F8C8D"/>
+            <Setter Property="Margin" Value="5,0"/>
+        </Style>
+
+        <Style x:Key="ActionButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#3498DB"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,5"/>
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <Style x:Key="FilterComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="MinWidth" Value="120"/>
+        </Style>
+
+        <Style x:Key="DataGridStyle" TargetType="DataGrid">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#E0E0E0"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#F0F0F0"/>
+            <Setter Property="RowBackground" Value="White"/>
+            <Setter Property="AlternatingRowBackground" Value="#F8F9FA"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+        </Style>
+
+        <Style x:Key="DataGridHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#ECF0F1"/>
+            <Setter Property="Foreground" Value="#2C3E50"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="8"/>
+            <Setter Property="BorderBrush" Value="#BDC3C7"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 标题栏 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,15">
+            <TextBlock x:Name="TitleTextBlock" 
+                       Text="🕒 自动盯盘执行历史" 
+                       Style="{StaticResource HeaderTextBlockStyle}"
+                       FontSize="20"/>
+            <TextBlock x:Name="CountTextBlock" 
+                       Text="共 0 条记录" 
+                       Style="{StaticResource InfoTextBlockStyle}"
+                       VerticalAlignment="Bottom"/>
+        </StackPanel>
+
+        <!-- 过滤条件栏 -->
+        <Border Grid.Row="1" Background="White" BorderBrush="#E0E0E0" BorderThickness="1" 
+                CornerRadius="5" Padding="15" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="筛选条件：" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,10,0"/>
+                
+                <TextBlock Text="合约：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                <ComboBox x:Name="SymbolFilterComboBox" Style="{StaticResource FilterComboBoxStyle}"
+                          SelectionChanged="FilterComboBox_SelectionChanged"/>
+                
+                <TextBlock Text="执行类型：" VerticalAlignment="Center" Margin="10,0,5,0"/>
+                <ComboBox x:Name="ExecutionTypeFilterComboBox" Style="{StaticResource FilterComboBoxStyle}"
+                          SelectionChanged="FilterComboBox_SelectionChanged"/>
+                
+                <TextBlock Text="执行结果：" VerticalAlignment="Center" Margin="10,0,5,0"/>
+                <ComboBox x:Name="ResultFilterComboBox" Style="{StaticResource FilterComboBoxStyle}"
+                          SelectionChanged="FilterComboBox_SelectionChanged"/>
+                
+                <TextBlock Text="时间范围：" VerticalAlignment="Center" Margin="10,0,5,0"/>
+                <ComboBox x:Name="TimeRangeFilterComboBox" Style="{StaticResource FilterComboBoxStyle}"
+                          SelectionChanged="FilterComboBox_SelectionChanged"/>
+                
+                <Button Content="🔄 刷新" Style="{StaticResource ActionButtonStyle}"
+                        Background="#27AE60" Click="RefreshButton_Click" Margin="20,0,0,0"/>
+                
+                <Button Content="🗑️ 清空历史" Style="{StaticResource ActionButtonStyle}"
+                        Background="#E74C3C" Click="ClearHistoryButton_Click"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 统计信息栏 -->
+        <Border Grid.Row="2" Background="#E8F6F3" BorderBrush="#1ABC9C" BorderThickness="1" 
+                CornerRadius="5" Padding="15" Margin="0,0,0,10">
+            <TextBlock x:Name="StatisticsTextBlock" 
+                       Text="统计信息加载中..." 
+                       Style="{StaticResource InfoTextBlockStyle}"
+                       Foreground="#16A085"
+                       FontSize="13"/>
+        </Border>
+
+        <!-- 执行历史数据表格 -->
+        <DataGrid Grid.Row="3" x:Name="ExecutionHistoryDataGrid" 
+                  Style="{StaticResource DataGridStyle}"
+                  ColumnHeaderStyle="{StaticResource DataGridHeaderStyle}"
+                  SelectionChanged="ExecutionHistoryDataGrid_SelectionChanged">
+            <DataGrid.Columns>
+                <!-- 执行时间 -->
+                <DataGridTextColumn Header="📅 执行时间" Binding="{Binding ExecutionTime, StringFormat=MM-dd HH:mm:ss}" 
+                                    Width="130" SortDirection="Descending"/>
+                
+                <!-- 合约名称 -->
+                <DataGridTextColumn Header="📈 合约" Binding="{Binding Symbol}" Width="100"/>
+                
+                <!-- 持仓方向 -->
+                <DataGridTextColumn Header="📊 方向" Binding="{Binding PositionSide}" Width="60"/>
+                
+                <!-- 执行类型 -->
+                <DataGridTextColumn Header="🎯 执行类型" Binding="{Binding ExecutionType}" Width="120"/>
+                
+                <!-- 执行结果 -->
+                <DataGridTextColumn Header="✅ 结果" Width="80">
+                    <DataGridTextColumn.Binding>
+                        <Binding Path="ResultText"/>
+                    </DataGridTextColumn.Binding>
+                </DataGridTextColumn>
+                
+                <!-- 触发浮盈 -->
+                <DataGridTextColumn Header="💰 触发浮盈" Binding="{Binding TriggerPnl, StringFormat=F2}" Width="100"/>
+                
+                <!-- 订单ID -->
+                <DataGridTextColumn Header="🏷️ 订单ID" Binding="{Binding OrderId}" Width="120"/>
+                
+                <!-- 结果消息 -->
+                <DataGridTextColumn Header="📝 结果消息" Binding="{Binding ResultMessage}" Width="200"/>
+                
+                <!-- 详细信息 -->
+                <DataGridTextColumn Header="📋 详细信息" Binding="{Binding Details}" Width="250"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- 详细信息显示区域 -->
+        <Expander Grid.Row="4" Header="📋 选中记录详细信息" IsExpanded="False" Margin="0,10,0,0">
+            <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="5" Padding="15">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="150">
+                    <StackPanel x:Name="DetailInfoPanel">
+                        <TextBlock x:Name="DetailInfoTextBlock" 
+                                   Text="请选择一条执行记录查看详细信息"
+                                   TextWrapping="Wrap"
+                                   FontSize="12"
+                                   Foreground="#7F8C8D"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Expander>
+
+        <!-- 操作按钮栏 -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button Content="📊 导出Excel" Style="{StaticResource ActionButtonStyle}"
+                    Background="#16A085" Click="ExportButton_Click"/>
+            <Button Content="🔍 查看详情" Style="{StaticResource ActionButtonStyle}"
+                    x:Name="ViewDetailsButton" IsEnabled="False" Click="ViewDetailsButton_Click"/>
+            <Button Content="❌ 关闭" Style="{StaticResource ActionButtonStyle}"
+                    Background="#95A5A6" Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window> 

@@ -60,18 +60,65 @@ namespace BinanceFuturesTrader.Models
             switch (executionType)
             {
                 case ExecutionType.BreakEven:
-                    return BreakEvenState.IsExecuted;
+                    return BreakEvenState.IsExecutingOrExecuted;
                     
                 case ExecutionType.AddPosition:
                 case ExecutionType.ProfitProtection:
                     if (tierIndex.HasValue && TierStates.TryGetValue(tierIndex.Value, out var tierState))
                     {
-                        return tierState.GetExecutionRecord(executionType).IsExecuted;
+                        return tierState.GetExecutionRecord(executionType).IsExecutingOrExecuted;
                     }
                     return false;
                     
                 default:
                     return false;
+            }
+        }
+
+        /// <summary>
+        /// 设置执行状态为"执行中"
+        /// </summary>
+        /// <param name="executionType">执行类型</param>
+        /// <param name="tierIndex">阶梯索引（可选）</param>
+        /// <param name="triggerPnl">触发时的浮盈</param>
+        /// <param name="message">执行消息</param>
+        public void MarkAsExecuting(ExecutionType executionType, int? tierIndex, decimal triggerPnl, string message = "")
+        {
+            LastUpdateTime = DateTime.Now;
+            
+            switch (executionType)
+            {
+                case ExecutionType.BreakEven:
+                    BreakEvenState = new ExecutionRecord
+                    {
+                        ExecutionType = executionType,
+                        Status = ExecutionStatus.Executing,
+                        ExecutionTime = DateTime.Now,
+                        TriggerPnl = triggerPnl,
+                        Message = message
+                    };
+                    break;
+                    
+                case ExecutionType.AddPosition:
+                case ExecutionType.ProfitProtection:
+                    if (tierIndex.HasValue)
+                    {
+                        if (!TierStates.ContainsKey(tierIndex.Value))
+                        {
+                            TierStates[tierIndex.Value] = new TierExecutionState { TierIndex = tierIndex.Value };
+                        }
+                        
+                        TierStates[tierIndex.Value].SetExecutionRecord(executionType, new ExecutionRecord
+                        {
+                            ExecutionType = executionType,
+                            TierIndex = tierIndex,
+                            Status = ExecutionStatus.Executing,
+                            ExecutionTime = DateTime.Now,
+                            TriggerPnl = triggerPnl,
+                            Message = message
+                        });
+                    }
+                    break;
             }
         }
 
@@ -93,7 +140,7 @@ namespace BinanceFuturesTrader.Models
                     BreakEvenState = new ExecutionRecord
                     {
                         ExecutionType = executionType,
-                        IsExecuted = true,
+                        Status = ExecutionStatus.Executed,
                         ExecutionTime = DateTime.Now,
                         TriggerPnl = triggerPnl,
                         IsSuccess = isSuccess,
@@ -114,7 +161,7 @@ namespace BinanceFuturesTrader.Models
                         {
                             ExecutionType = executionType,
                             TierIndex = tierIndex,
-                            IsExecuted = true,
+                            Status = ExecutionStatus.Executed,
                             ExecutionTime = DateTime.Now,
                             TriggerPnl = triggerPnl,
                             IsSuccess = isSuccess,
@@ -236,9 +283,23 @@ namespace BinanceFuturesTrader.Models
         public int? TierIndex { get; set; }
         
         /// <summary>
-        /// 是否已执行
+        /// 执行状态
         /// </summary>
-        public bool IsExecuted { get; set; } = false;
+        public ExecutionStatus Status { get; set; } = ExecutionStatus.NotExecuted;
+        
+        /// <summary>
+        /// 是否已执行（为了向后兼容保留）
+        /// </summary>
+        public bool IsExecuted 
+        { 
+            get => Status == ExecutionStatus.Executed;
+            set => Status = value ? ExecutionStatus.Executed : ExecutionStatus.NotExecuted;
+        }
+        
+        /// <summary>
+        /// 是否正在执行或已执行（用于防重复检查）
+        /// </summary>
+        public bool IsExecutingOrExecuted => Status == ExecutionStatus.Executing || Status == ExecutionStatus.Executed;
         
         /// <summary>
         /// 执行时间
@@ -264,6 +325,19 @@ namespace BinanceFuturesTrader.Models
         /// 重试次数
         /// </summary>
         public int RetryCount { get; set; } = 0;
+    }
+
+    /// <summary>
+    /// 执行状态枚举
+    /// </summary>
+    public enum ExecutionStatus
+    {
+        /// <summary>未执行</summary>
+        NotExecuted,
+        /// <summary>执行中</summary>
+        Executing,
+        /// <summary>已执行</summary>
+        Executed
     }
 
     /// <summary>

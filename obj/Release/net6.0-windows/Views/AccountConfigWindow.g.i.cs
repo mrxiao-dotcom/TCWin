@@ -63,7 +63,7 @@ namespace BinanceFuturesTrader.Views {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/BinanceFuturesTrader;V0.33.12.0;component/views/accountconfigwindow.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/BinanceFuturesTrader;V0.33.27.0;component/views/accountconfigwindow.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Views\AccountConfigWindow.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);

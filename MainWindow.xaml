@@ -220,10 +220,10 @@
             </Grid.ColumnDefinitions>
 
             <!-- 持仓区 -->
-            <materialDesign:Card Grid.Column="0" Padding="6" Margin="0,0,3,0">
+            <materialDesign:Card Grid.Column="0" Padding="3" Margin="0,0,2,0">
                 <DockPanel>
                     <!-- 持仓标题和操作按钮 -->
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,3">
                         <TextBlock Text="持仓列表" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
                         <Button Content="全选" Command="{Binding SelectAllPositionsCommand}" 
                                Width="45" Height="26" FontSize="11" Margin="0,0,5,0"/>
@@ -253,7 +253,6 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
-                                 MaxHeight="350"
                                  MinHeight="120"
                              LoadingRow="PositionsDataGrid_LoadingRow">
                         <DataGrid.Columns>
@@ -281,7 +280,7 @@
                                 </DataGridCheckBoxColumn.ElementStyle>
                             </DataGridCheckBoxColumn>
                             
-                                <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="110" MinWidth="105">
+                                <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="140" MinWidth="130">
                                     <DataGridTextColumn.ElementStyle>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -372,7 +371,7 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                                <DataGridTemplateColumn Header="浮盈" Width="130" MinWidth="125">
+                                <DataGridTemplateColumn Header="浮盈" Width="150" MinWidth="140">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                             <TextBlock Text="{Binding UnrealizedProfit, StringFormat=F2, Mode=OneWay}" 
@@ -412,10 +411,10 @@
             </materialDesign:Card>
 
             <!-- 委托订单区 -->
-            <materialDesign:Card Grid.Column="1" Padding="6" Margin="3,0,0,0">
+            <materialDesign:Card Grid.Column="1" Padding="3" Margin="2,0,0,0">
                 <DockPanel>
                     <!-- 减仓型委托单标题和操作按钮 -->
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,3">
                         <TextBlock Text="减仓型委托单" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="DarkOrange"/>
                         <Button Content="🔄" Command="{Binding ForceRefreshOrderDisplayCommand}" 
                                Width="30" Height="26" FontSize="12" Margin="0,0,5,0"
@@ -443,7 +442,6 @@
                                  HeadersVisibility="Column"
                                  HorizontalScrollBarVisibility="Auto"
                                  VerticalScrollBarVisibility="Auto"
-                                 MaxHeight="300"
                                  MinHeight="120">
                         <DataGrid.Columns>
                             <!-- 选择框列 -->
@@ -456,7 +454,7 @@
                                 </DataGridCheckBoxColumn.ElementStyle>
                             </DataGridCheckBoxColumn>
                             
-                                <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="95" MinWidth="90">
+                                <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="120" MinWidth="110">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="VerticalAlignment" Value="Center"/>
@@ -468,7 +466,7 @@
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
                                 
-                                <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="110" MinWidth="105">
+                                <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="100" MinWidth="95">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="VerticalAlignment" Value="Center"/>
@@ -596,30 +594,14 @@
                               Foreground="Gray" Margin="5,0"/>
                     
                     <!-- 第四组：自动监控功能 -->
-                    <Button Content="{Binding AutoMonitorButtonText}" Command="{Binding ToggleAutoMonitorCommand}"
-                           Width="80" Height="28" FontSize="11" FontWeight="Bold"
-                           ToolTip="{Binding AutoMonitorStatusMessage}">
-                        <Button.Style>
-                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
-                                <Setter Property="Background" Value="{Binding AutoMonitorButtonColor}"/>
-                                <Setter Property="Foreground" Value="White"/>
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsAutoMonitorRunning}" Value="True">
-                                        <Setter Property="Background" Value="#E74C3C"/>
-                                        <Setter Property="Foreground" Value="White"/>
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsAutoMonitorRunning}" Value="False">
-                                        <Setter Property="Background" Value="#4A90E2"/>
-                                        <Setter Property="Foreground" Value="White"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
-                    </Button>
-                    <Button Content="查看监控" Command="{Binding ViewMonitorStatusCommand}"
+                    <Button Content="盯盘参数配置" Command="{Binding ConfigureAutoMonitorCommand}"
+                           Width="100" Height="28" FontSize="11" FontWeight="Bold"
+                           Background="#4A90E2" Foreground="White"
+                           ToolTip="配置自动盯盘参数：保本、推仓、止盈等设置"/>
+                    <Button Content="自动盯盘" Command="{Binding ViewMonitorStatusCommand}"
                            Background="#2ECC71" Foreground="White" FontWeight="Bold"
                            Width="80" Height="28" FontSize="11"
-                           ToolTip="查看当前账户的自动监控配置信息和执行情况"/>
+                           ToolTip="打开自动盯盘控制面板，管理触发条件和执行状态"/>
                     <Button Content="🔍调试" Command="{Binding DebugAutoMonitorStatusCommand}"
                            Background="#FF6B35" Foreground="White" FontWeight="Bold"
                            Width="60" Height="28" FontSize="10" Margin="5,0,0,0"

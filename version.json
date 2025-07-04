@@ -1,9 +1,9 @@
 ﻿{
-    "assemblyVersion":  "0.33.12.0",
-    "version":  "0.33.12",
-    "fileVersion":  "0.33.12.0",
+    "assemblyVersion":  "0.33.27.0",
+    "version":  "0.33.27",
+    "fileVersion":  "0.33.27.0",
     "updateMessage":  "- Version update and code optimization",
     "updateType":  "patch",
-    "releaseDate":  "2025-06-29 18:51:58",
-    "previousVersion":  "0.33.11"
+    "releaseDate":  "2025-07-03 23:15:32",
+    "previousVersion":  "0.33.26"
 }

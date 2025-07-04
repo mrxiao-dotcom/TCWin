@@ -1,5 +1,5 @@
 ﻿BinanceFuturesTrader
-0.33.12.0
+0.33.26.0
 
 winexe
 C#
@@ -10,11 +10,11 @@ none
 false
 TRACE;DEBUG;NET;NET6_0;NETCOREAPP
 D:\CSharpProjects\TCWin\App.xaml
-101582386428
+12-459884835
 
-561067735189
+61-1731981364
 228-404541334
-MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\AutoMonitorConfigDialog.xaml;Views\AutoMonitorDashboard.xaml;Views\ClearAllConfirmationDialog.xaml;Views\OrderConfirmationDialog.xaml;Views\OrderHistoryWindow.xaml;Views\PartialProfitDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;
+MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\AutoMonitorConfigDialog.xaml;Views\AutoMonitorDashboard.xaml;Views\ClearAllConfirmationDialog.xaml;Views\ExecutionHistoryWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\OrderHistoryWindow.xaml;Views\PartialProfitDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;Views\TriggerConditionEditDialog.xaml;
 
 False
 

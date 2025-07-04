@@ -18,6 +18,7 @@ namespace BinanceFuturesTrader.Services
         private readonly string _dataPath;
         private readonly string _positionProfilesPath;
         private readonly string _executionHistoryPath;
+        private readonly string _contractConfigsPath;
         private readonly ILogger<AutoMonitorPersistenceService>? _logger;
         
         public AutoMonitorPersistenceService(ILogger<AutoMonitorPersistenceService>? logger = null)
@@ -38,6 +39,7 @@ namespace BinanceFuturesTrader.Services
             _dataPath = appDataPath;
             _positionProfilesPath = Path.Combine(appDataPath, "position_profiles.json");
             _executionHistoryPath = Path.Combine(appDataPath, "execution_history.json");
+            _contractConfigsPath = Path.Combine(appDataPath, "contract_configs.json");
             
             _logger?.LogDebug($"📁 自动盯盘数据目录: {_dataPath}");
         }
@@ -258,6 +260,14 @@ namespace BinanceFuturesTrader.Services
                     File.Delete(_executionHistoryPath);
                     _logger?.LogInformation("🗑️ 已清空执行历史数据");
                 }
+                
+                if (File.Exists(_contractConfigsPath))
+                {
+                    File.Delete(_contractConfigsPath);
+                    _logger?.LogInformation("🗑️ 已清空合约配置数据");
+                }
+                
+                _logger?.LogInformation("✅ 所有持久化数据已清理完成");
             }
             catch (Exception ex)
             {
@@ -503,6 +513,166 @@ namespace BinanceFuturesTrader.Services
             catch (Exception ex)
             {
                 _logger?.LogError(ex, $"❌ 批量清理合约历史状态失败");
+            }
+        }
+
+        /// <summary>
+        /// 保存合约配置到文件
+        /// </summary>
+        public void SaveContractConfigs(List<ContractMonitorModel> contracts)
+        {
+            try
+            {
+                if (contracts == null || !contracts.Any())
+                {
+                    _logger?.LogDebug("💡 没有合约配置需要保存");
+                    return;
+                }
+
+                // 创建序列化友好的数据结构
+                var configData = contracts.Select(contract => new
+                {
+                    contract.Symbol,
+                    contract.PositionSide,
+                    contract.IsEnabled,
+                    contract.IsActive,
+                    contract.CurrentPrice,
+                    contract.PositionSize,
+                    contract.UnrealizedPnl,
+                    TriggerConditions = contract.TriggerConditions.Select(tc => new
+                    {
+                        tc.Id,
+                        tc.Type,
+                        tc.TierIndex,
+                        tc.Description,
+                        tc.TriggerPrice,
+                        tc.KeepValue,
+                        tc.Status,
+                        tc.LastExecutionTime,
+                        tc.StatusNote
+                    }).ToList()
+                }).ToList();
+
+                var json = JsonSerializer.Serialize(configData, new JsonSerializerOptions 
+                { 
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                });
+
+                File.WriteAllText(_contractConfigsPath, json);
+
+                _logger?.LogInformation($"💾 已保存合约配置: {contracts.Count} 个合约");
+                foreach (var contract in contracts)
+                {
+                    _logger?.LogDebug($"   📝 {contract.ContractKey} - {contract.TriggerConditions.Count} 个触发条件");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 保存合约配置失败");
+            }
+        }
+
+        /// <summary>
+        /// 从文件加载合约配置
+        /// </summary>
+        public List<ContractMonitorModel> LoadContractConfigs()
+        {
+            try
+            {
+                if (!File.Exists(_contractConfigsPath))
+                {
+                    _logger?.LogDebug("💡 合约配置文件不存在，返回空列表");
+                    return new List<ContractMonitorModel>();
+                }
+
+                var json = File.ReadAllText(_contractConfigsPath);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    _logger?.LogDebug("💡 合约配置文件为空，返回空列表");
+                    return new List<ContractMonitorModel>();
+                }
+
+                // 反序列化为动态对象
+                var configData = JsonSerializer.Deserialize<JsonElement[]>(json, 
+                    new JsonSerializerOptions 
+                    { 
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase 
+                    });
+
+                var contracts = new List<ContractMonitorModel>();
+
+                foreach (var item in configData)
+                {
+                    var contract = new ContractMonitorModel
+                    {
+                        Symbol = item.GetProperty("symbol").GetString() ?? "",
+                        PositionSide = item.GetProperty("positionSide").GetString() ?? "",
+                        IsEnabled = item.GetProperty("isEnabled").GetBoolean(),
+                        IsActive = item.GetProperty("isActive").GetBoolean(),
+                        CurrentPrice = item.GetProperty("currentPrice").GetDecimal(),
+                        PositionSize = item.GetProperty("positionSize").GetDecimal(),
+                        UnrealizedPnl = item.GetProperty("unrealizedPnl").GetDecimal()
+                    };
+
+                    // 加载触发条件
+                    if (item.TryGetProperty("triggerConditions", out var conditionsElement))
+                    {
+                        foreach (var conditionItem in conditionsElement.EnumerateArray())
+                        {
+                            var condition = new TriggerConditionModel
+                            {
+                                Id = conditionItem.GetProperty("id").GetInt32(),
+                                Type = (TriggerConditionType)conditionItem.GetProperty("type").GetInt32(),
+                                TierIndex = conditionItem.TryGetProperty("tierIndex", out var tierElement) && !tierElement.ValueKind.Equals(JsonValueKind.Null) 
+                                    ? tierElement.GetInt32() : null,
+                                Description = conditionItem.GetProperty("description").GetString() ?? "",
+                                TriggerPrice = conditionItem.GetProperty("triggerPrice").GetDecimal(),
+                                KeepValue = conditionItem.GetProperty("keepValue").GetDecimal(),
+                                Status = (TriggerExecutionStatus)conditionItem.GetProperty("status").GetInt32(),
+                                LastExecutionTime = conditionItem.TryGetProperty("lastExecutionTime", out var timeElement) && !timeElement.ValueKind.Equals(JsonValueKind.Null)
+                                    ? timeElement.GetDateTime() : null,
+                                StatusNote = conditionItem.GetProperty("statusNote").GetString() ?? ""
+                            };
+
+                            contract.TriggerConditions.Add(condition);
+                        }
+                    }
+
+                    contracts.Add(contract);
+                }
+
+                _logger?.LogInformation($"📖 已加载合约配置: {contracts.Count} 个合约");
+                foreach (var contract in contracts)
+                {
+                    _logger?.LogDebug($"   📝 {contract.ContractKey} - {contract.TriggerConditions.Count} 个触发条件");
+                }
+
+                return contracts;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 加载合约配置失败");
+                return new List<ContractMonitorModel>();
+            }
+        }
+
+        /// <summary>
+        /// 清理合约配置文件
+        /// </summary>
+        public void ClearContractConfigs()
+        {
+            try
+            {
+                if (File.Exists(_contractConfigsPath))
+                {
+                    File.Delete(_contractConfigsPath);
+                    _logger?.LogInformation("🗑️ 合约配置文件已清理");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 清理合约配置文件失败");
             }
         }
     }

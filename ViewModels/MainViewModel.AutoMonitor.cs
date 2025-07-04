@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using BinanceFuturesTrader.Models;
@@ -22,52 +23,148 @@ namespace BinanceFuturesTrader.ViewModels
     public partial class MainViewModel
     {
         /// <summary>
+        /// 🔧 新增：操作冷却期管理，防止频繁点击
+        /// </summary>
+        private DateTime _lastOperationTime = DateTime.MinValue;
+        private readonly TimeSpan _operationCooldown = TimeSpan.FromSeconds(3);
+        
+        /// <summary>
+        /// 🔧 新增：操作锁，防止并发操作
+        /// </summary>
+        private readonly SemaphoreSlim _operationLock = new SemaphoreSlim(1, 1);
+        private bool _isOperationInProgress = false;
+        
+        /// <summary>
         /// 切换自动监控命令
         /// </summary>
         [RelayCommand]
         private async Task ToggleAutoMonitorAsync()
         {
+            // 🔧 操作锁：防止并发操作
+            if (_isOperationInProgress)
+            {
+                var concurrentMsg = "⚠️ 检测到并发操作，忽略本次点击";
+                LogService.LogWarning(concurrentMsg);
+                MessageBox.Show("操作正在进行中，请稍候...", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!await _operationLock.WaitAsync(100)) // 100ms超时
+            {
+                var lockTimeoutMsg = "⚠️ 获取操作锁超时，忽略本次点击";
+                LogService.LogWarning(lockTimeoutMsg);
+                MessageBox.Show("系统忙碌，请稍后重试...", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             try
             {
-                _logger.LogInformation($"🔄 自动盯盘按钮被点击，当前状态: {(IsAutoMonitorRunning ? "运行中" : "未运行")}");
+                _isOperationInProgress = true;
+                var operationId = Guid.NewGuid().ToString("N")[..8];
+                var operationStartMsg = $"🔒 开始操作 {operationId} - 时间: {DateTime.Now:HH:mm:ss.fff}";
+                LogService.LogInfo(operationStartMsg);
                 
-                if (IsAutoMonitorRunning)
+                // 🔧 关键修复：捕获操作时的状态，避免异步竞争条件
+                var operationTimestamp = DateTime.Now;
+                var isCurrentlyRunning = IsAutoMonitorRunning;
+                var buttonText = AutoMonitorButtonText;
+                
+                // 🔧 双重日志：记录操作决策状态
+                var statusInfo = $"🔄 自动盯盘按钮被点击 - 时间: {operationTimestamp:HH:mm:ss.fff}";
+                _logger.LogInformation(statusInfo);
+                LogService.LogInfo(statusInfo);
+                
+                var detailInfo = $"📊 操作决策状态快照:\n" +
+                    $"  • IsAutoMonitorRunning (决策依据): {isCurrentlyRunning}\n" +
+                    $"  • AutoMonitorButtonText: {buttonText}\n" +
+                    $"  • IsAutoMonitorButtonEnabled: {IsAutoMonitorButtonEnabled}\n" +
+                    $"  • AutoMonitorStatusMessage: {AutoMonitorStatusMessage}\n" +
+                    $"  • _autoMonitorService == null: {_autoMonitorService == null}";
+                
+                if (_autoMonitorService != null)
+                {
+                    detailInfo += $"\n  • _autoMonitorService.IsRunning: {_autoMonitorService.IsRunning}";
+                    detailInfo += $"\n  • _autoMonitorService.CurrentConfig != null: {_autoMonitorService.CurrentConfig != null}";
+                }
+                
+                _logger.LogInformation(detailInfo);
+                LogService.LogInfo(detailInfo);
+                
+                // 🔧 修复：冷却期检查，防止频繁点击导致并发问题
+                var timeSinceLastOperation = operationTimestamp - _lastOperationTime;
+                if (timeSinceLastOperation < _operationCooldown)
+                {
+                    var remainingCooldown = _operationCooldown - timeSinceLastOperation;
+                    var cooldownMsg = $"⏰ 操作过于频繁，请等待 {remainingCooldown.TotalSeconds:0.1} 秒后再试";
+                    _logger.LogWarning(cooldownMsg);
+                    LogService.LogWarning(cooldownMsg);
+                    MessageBox.Show($"操作过于频繁，请等待 {remainingCooldown.TotalSeconds:0.1} 秒后再试", 
+                        "操作限制", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                _lastOperationTime = operationTimestamp;
+                
+                // 🔧 关键修复：基于快照状态进行操作决策，而非实时状态
+                if (isCurrentlyRunning)
                 {
                     // 停止自动监控
-                    _logger.LogInformation("准备停止自动监控...");
+                    var stopMsg = $"🛑 用户选择停止自动监控（基于快照状态: {isCurrentlyRunning}）...";
+                    _logger.LogInformation(stopMsg);
+                    LogService.LogInfo(stopMsg);
                     await StopAutoMonitorAsync();
                 }
                 else
                 {
                     // 启动自动监控
-                    _logger.LogInformation("准备启动自动监控...");
+                    var startMsg = $"🚀 用户选择启动自动监控（基于快照状态: {isCurrentlyRunning}）...";
+                    _logger.LogInformation(startMsg);
+                    LogService.LogInfo(startMsg);
                     await StartAutoMonitorAsync();
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "切换自动监控状态时发生错误");
-                MessageBox.Show($"操作失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                // 🔧 双重异常日志：确保异常信息被记录
+                var exceptionInfo = $"❌ 切换自动监控状态时发生异常: {ex.GetType().Name}\n消息: {ex.Message}\n堆栈: {ex.StackTrace}";
+                _logger.LogError(ex, "❌ 切换自动监控状态时发生异常");
+                LogService.LogError("切换自动监控状态异常", ex);
+                LogService.LogError(exceptionInfo);
+                
+                // 异常时恢复按钮状态
+                UpdateAutoMonitorUI(false, "操作异常", "盯盘参数配置", "#27AE60", true);
+                MessageBox.Show($"操作失败：{ex.Message}\n\n详细信息已记录到日志文件", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                // 🔧 释放操作锁
+                _isOperationInProgress = false;
+                _operationLock.Release();
+                var operationEndMsg = $"🔓 操作结束 - 时间: {DateTime.Now:HH:mm:ss.fff}";
+                LogService.LogInfo(operationEndMsg);
             }
         }
 
         /// <summary>
-        /// 启动自动监控
+        /// 配置自动盯盘参数命令（只保存配置，不启动）
         /// </summary>
-        private async Task StartAutoMonitorAsync()
+        [RelayCommand]
+        private async Task ConfigureAutoMonitorAsync()
         {
             try
             {
-                _logger.LogInformation("🚀 开始启动自动监控流程...");
-                
-                // 🔧 修复空引用异常：先检查账户是否已选择
+                var operationTimestamp = DateTime.Now;
+                var statusInfo = $"🔧 配置自动盯盘参数按钮被点击 - 时间: {operationTimestamp:HH:mm:ss.fff}";
+                _logger.LogInformation(statusInfo);
+                LogService.LogInfo(statusInfo);
+
                 if (SelectedAccount == null)
                 {
-                    _logger.LogWarning("没有选择账户，无法启动自动盯盘");
+                    _logger.LogWarning("没有选择账户，无法配置自动盯盘");
                     MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
-                
+
                 // 获取账户信息用于生成智能默认配置
                 var accountEquity = AccountInfo?.TotalEquity ?? 1000m;
                 var riskCapitalTimes = SelectedAccount.RiskCapitalTimes;
@@ -82,7 +179,6 @@ namespace BinanceFuturesTrader.ViewModels
                 {
                     _logger.LogInformation($"从账户 {SelectedAccount.Name} 加载现有配置...");
                     configDialog.SetConfig(accountConfig);
-                    _currentAutoMonitorConfig = accountConfig;
                 }
                 else
                 {
@@ -99,27 +195,203 @@ namespace BinanceFuturesTrader.ViewModels
                     return; // 用户取消了配置
                 }
 
-                // 保存配置到当前账户
+                // 🎯 关键修改：只保存配置，不启动服务
                 _currentAutoMonitorConfig = configDialog.ConfigResult;
                 _accountAutoMonitorConfigs[SelectedAccount.Name] = _currentAutoMonitorConfig;
-                _logger.LogInformation($"配置已保存到账户 {SelectedAccount.Name}: {_currentAutoMonitorConfig.Name}");
+                _logger.LogInformation($"✅ 配置已保存到账户 {SelectedAccount.Name}: {_currentAutoMonitorConfig.Name}");
 
-                // 创建自动监控服务
-                if (_autoMonitorService == null)
+                // 显示保存成功的提示
+                var configDetails = $"配置名称：{_currentAutoMonitorConfig.Name}\n" +
+                                   $"扫描间隔：{_currentAutoMonitorConfig.ScanIntervalSeconds}秒\n" +
+                                   $"保本设置：{(_currentAutoMonitorConfig.BreakEvenConfig.IsEnabled ? "已启用" : "已禁用")}\n" +
+                                   $"推仓阶梯：{(_currentAutoMonitorConfig.AddPositionConfig.IsEnabled ? _currentAutoMonitorConfig.AddPositionConfig.Tiers.Count + "个" : "已禁用")}\n" +
+                                   $"止盈阶梯：{(_currentAutoMonitorConfig.ProfitProtectionConfig.IsEnabled ? _currentAutoMonitorConfig.ProfitProtectionConfig.Tiers.Count + "个" : "已禁用")}";
+
+                MessageBox.Show($"✅ 自动盯盘配置已更新！\n\n{configDetails}\n\n📝 说明：\n• 基础参数配置已更新到本地文件\n• 现在可以在【自动盯盘】面板中直接启动监控\n• 如需调整具体合约设置，可在盯盘面板中重新加载配置", 
+                               "配置更新成功", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                // 通知监控面板刷新数据（如果已打开）
+                NotifyAutoMonitorDashboardRefresh();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 配置自动盯盘参数时发生错误");
+                LogService.LogError("配置自动盯盘参数异常", ex);
+                MessageBox.Show($"配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 启动自动监控
+        /// </summary>
+        private async Task StartAutoMonitorAsync()
+        {
+            // 🔧 测试日志：验证日志系统是否正常工作
+            LogService.LogInfo($"📝 测试日志 - StartAutoMonitorAsync开始 - {DateTime.Now:HH:mm:ss.fff}");
+            LogService.LogInfo($"📍 日志文件路径: {LogService.GetLogFilePath()}");
+            
+            try
+            {
+                _logger.LogInformation("🚀 开始启动自动监控流程...");
+                LogService.LogInfo("🚀 开始启动自动监控流程...");
+                
+                // 🔧 修复空引用异常：先检查账户是否已选择
+                if (SelectedAccount == null)
                 {
-                    _logger.LogInformation("创建自动监控服务...");
+                    _logger.LogWarning("没有选择账户，无法启动自动盯盘");
+                    MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                // 🎯 检查是否已有保存的配置
+                if (!_accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var accountConfig))
+                {
+                    _logger.LogWarning($"账户 {SelectedAccount.Name} 没有配置，无法启动");
+                    MessageBox.Show("请先配置自动盯盘参数！\n\n点击【盯盘参数配置】按钮进行设置。", "配置缺失", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                // 使用已保存的配置
+                _currentAutoMonitorConfig = accountConfig;
+                _logger.LogInformation($"✅ 使用账户 {SelectedAccount.Name} 的配置: {_currentAutoMonitorConfig.Name}");
+
+                // 🔧 关键修复：每次启动都重新创建服务实例，避免通道关闭问题
+                if (_autoMonitorService != null)
+                {
+                    _logger.LogInformation("🗑️ 检测到现有服务实例，准备完全重新创建...");
+                    LogService.LogInfo("🗑️ 检测到现有服务实例，准备完全重新创建...");
+                    
+                    _logger.LogInformation($"  • 当前服务运行状态: {_autoMonitorService.IsRunning}");
+                    _logger.LogInformation($"  • 当前配置: {(_autoMonitorService.CurrentConfig?.Name ?? "无")}");
+                    
+                    // 完全清理现有服务实例
+                    try
+                    {
+                        if (_autoMonitorService.IsRunning)
+                        {
+                            _logger.LogWarning("⚠️ 服务仍在运行，先停止...");
+                            await _autoMonitorService.StopMonitoringAsync();
+                            await Task.Delay(500);
+                        }
+                        
+                        _logger.LogInformation("🔗 取消事件订阅...");
+                        _autoMonitorService.MonitorStatusChanged -= OnAutoMonitorStatusChanged;
+                        _autoMonitorService.ExecutionCompleted -= OnAutoMonitorExecutionCompleted;
+                        
+                        _logger.LogInformation("🗑️ 销毁现有服务实例...");
+                        _autoMonitorService.Dispose();
+                        _autoMonitorService = null;
+                        
+                        _logger.LogInformation("✅ 现有服务实例已完全清理");
+                        LogService.LogInfo("✅ 现有服务实例已完全清理");
+                        
+                        // 等待确保所有资源释放
+                        await Task.Delay(1000);
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        _logger.LogError(cleanupEx, "❌ 清理现有服务实例时发生异常");
+                        LogService.LogError("清理现有服务实例异常", cleanupEx);
+                        // 继续创建新实例
+                    }
+                }
+                
+                // 🔧 测试BinanceService连接状态
+                _logger.LogInformation("🔗 测试BinanceService连接状态...");
+                LogService.LogInfo("🔗 测试BinanceService连接状态...");
+                try
+                {
+                    // 通过获取账户信息测试连接
+                    var accountInfo = await _binanceService.GetAccountInfoAsync();
+                    if (accountInfo == null)
+                    {
+                        throw new InvalidOperationException("无法获取账户信息，BinanceService连接异常");
+                    }
+                    _logger.LogInformation("✅ BinanceService连接测试成功");
+                    LogService.LogInfo("✅ BinanceService连接测试成功");
+                }
+                catch (Exception testEx)
+                {
+                    _logger.LogError(testEx, "❌ BinanceService连接测试失败");
+                    LogService.LogError("BinanceService连接测试失败", testEx);
+                    
+                    // 如果是通道关闭错误，尝试重新初始化连接
+                    if (testEx.Message.Contains("channel has been closed", StringComparison.OrdinalIgnoreCase) ||
+                        testEx.Message.Contains("channel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation("🔄 检测到通道关闭错误，尝试重新初始化BinanceService...");
+                        LogService.LogInfo("🔄 检测到通道关闭错误，尝试重新初始化BinanceService...");
+                        
+                        // 等待一段时间让连接完全关闭
+                        await Task.Delay(2000);
+                        
+                        // 再次测试连接
+                        try
+                        {
+                            var retryAccountInfo = await _binanceService.GetAccountInfoAsync();
+                            if (retryAccountInfo == null)
+                            {
+                                throw new InvalidOperationException("重试后仍无法获取账户信息");
+                            }
+                            _logger.LogInformation("✅ BinanceService重新连接成功");
+                            LogService.LogInfo("✅ BinanceService重新连接成功");
+                        }
+                        catch (Exception retryEx)
+                        {
+                            _logger.LogError(retryEx, "❌ BinanceService重新连接失败");
+                            LogService.LogError("BinanceService重新连接失败", retryEx);
+                            throw new InvalidOperationException($"BinanceService连接失败: {retryEx.Message}", retryEx);
+                        }
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"BinanceService连接测试失败: {testEx.Message}", testEx);
+                    }
+                }
+                
+                // 创建全新的服务实例
+                _logger.LogInformation("📦 创建全新的自动监控服务实例...");
+                LogService.LogInfo("📦 创建全新的自动监控服务实例...");
+                try
+                {
                     var serviceLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => 
                         builder.AddConsole()).CreateLogger<AutoMonitorService>();
                     _autoMonitorService = new AutoMonitorService(_binanceService, this, serviceLogger);
+                    _logger.LogInformation("✅ 全新自动监控服务实例创建成功");
+                    LogService.LogInfo("✅ 全新自动监控服务实例创建成功");
+                }
+                catch (Exception createEx)
+                {
+                    _logger.LogError(createEx, "❌ 创建全新自动监控服务实例时发生异常");
+                    LogService.LogError("创建全新自动监控服务实例异常", createEx);
+                    throw; // 重新抛出异常
+                }
+                
+                // 🔧 增强日志：事件订阅过程
+                _logger.LogInformation("🔗 设置事件订阅...");
+                try
+                {
+                    // 先取消已有的订阅（如果存在）
+                    _autoMonitorService.MonitorStatusChanged -= OnAutoMonitorStatusChanged;
+                    _autoMonitorService.ExecutionCompleted -= OnAutoMonitorExecutionCompleted;
+                    _logger.LogInformation("  • 已取消旧的事件订阅");
                     
-                    // 订阅事件
+                    // 重新订阅事件
                     _autoMonitorService.MonitorStatusChanged += OnAutoMonitorStatusChanged;
                     _autoMonitorService.ExecutionCompleted += OnAutoMonitorExecutionCompleted;
-                    _logger.LogInformation("自动监控服务创建完成");
+                    _logger.LogInformation("✅ 事件订阅设置完成");
+                }
+                catch (Exception eventEx)
+                {
+                    _logger.LogError(eventEx, "❌ 设置事件订阅时发生异常");
                 }
 
-                // 启动监控
-                _logger.LogInformation("启动监控服务...");
+                // 🔧 增强日志：UI状态更新
+                _logger.LogInformation("🎛️ 更新UI状态为启动中...");
+                UpdateAutoMonitorUI(false, "正在启动服务...", "正在启动服务", "#F39C12", false);
+                _logger.LogInformation("✅ UI状态更新完成");
                 
                 // 🔍 启动前先验证配置
                 try
@@ -130,6 +402,10 @@ namespace BinanceFuturesTrader.ViewModels
                     {
                         var errorDetails = string.Join("\n", validationResult.Errors.Select(e => $"• {e.Message}"));
                         _logger.LogError($"配置验证失败:\n{errorDetails}");
+                        
+                        // 🔧 修复：配置验证失败时恢复按钮状态
+                        UpdateAutoMonitorUI(false, "配置验证失败", "盯盘参数配置", "#27AE60", true);
+                        
                         MessageBox.Show($"配置验证失败，无法启动自动监控：\n\n{errorDetails}", 
                             "配置错误", MessageBoxButton.OK, MessageBoxImage.Error);
                         return;
@@ -147,79 +423,156 @@ namespace BinanceFuturesTrader.ViewModels
                 catch (Exception validateEx)
                 {
                     _logger.LogError(validateEx, "配置验证时发生异常");
+                    
+                    // 🔧 修复：配置验证异常时恢复按钮状态
+                    UpdateAutoMonitorUI(false, "验证异常", "盯盘参数配置", "#27AE60", true);
+                    
                     MessageBox.Show($"配置验证失败：{validateEx.Message}", 
                         "验证错误", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
                 
-                var success = await _autoMonitorService.StartMonitoringAsync(_currentAutoMonitorConfig);
+                // 🔧 增强日志：服务启动过程
+                _logger.LogInformation("🚀 开始启动自动监控服务...");
+                _logger.LogInformation($"  • 配置名称: {_currentAutoMonitorConfig.Name}");
+                _logger.LogInformation($"  • 扫描间隔: {_currentAutoMonitorConfig.ScanIntervalSeconds}秒");
+                _logger.LogInformation($"  • 保本配置: {(_currentAutoMonitorConfig.BreakEvenConfig.IsEnabled ? "启用" : "禁用")}");
+                _logger.LogInformation($"  • 推仓配置: {(_currentAutoMonitorConfig.AddPositionConfig.IsEnabled ? "启用" : "禁用")}");
+                _logger.LogInformation($"  • 保盈配置: {(_currentAutoMonitorConfig.ProfitProtectionConfig.IsEnabled ? "启用" : "禁用")}");
+                
+                bool success = false;
+                string startupError = "";
+                Exception startupException = null;
+                
+                try
+                {
+                    _logger.LogInformation("📡 调用StartMonitoringAsync方法...");
+                    success = await _autoMonitorService.StartMonitoringAsync(_currentAutoMonitorConfig);
+                    _logger.LogInformation($"📡 StartMonitoringAsync返回结果: {success}");
+                    
+                    // 验证服务状态
+                    if (success)
+                    {
+                        _logger.LogInformation("🔍 验证服务启动后状态...");
+                        _logger.LogInformation($"  • _autoMonitorService.IsRunning: {_autoMonitorService.IsRunning}");
+                        _logger.LogInformation($"  • _autoMonitorService.CurrentConfig != null: {_autoMonitorService.CurrentConfig != null}");
+                        if (_autoMonitorService.CurrentConfig != null)
+                        {
+                            _logger.LogInformation($"  • CurrentConfig.Name: {_autoMonitorService.CurrentConfig.Name}");
+                        }
+                    }
+                }
+                catch (Exception startEx)
+                {
+                    success = false;
+                    startupError = startEx.Message;
+                    startupException = startEx;
+                    
+                    // 🔧 双重异常日志：确保启动异常被记录
+                    _logger.LogError(startEx, "❌ 自动监控服务启动时发生异常");
+                    LogService.LogError("自动监控服务启动异常", startEx);
+                    
+                    var startExceptionInfo = $"❌ 启动异常详情:\n" +
+                        $"异常类型: {startEx.GetType().Name}\n" +
+                        $"异常消息: {startEx.Message}\n" +
+                        $"内部异常: {(startEx.InnerException?.Message ?? "无")}\n" +
+                        $"堆栈跟踪: {startEx.StackTrace}";
+                    
+                    _logger.LogError(startExceptionInfo);
+                    LogService.LogError(startExceptionInfo);
+                }
                 
                 if (success)
                 {
-                    _logger.LogInformation("监控服务启动成功，更新UI状态...");
-                    UpdateAutoMonitorUI(true, "自动盯盘运行中", "停止盯盘", "#E74C3C");
-                    _logger.LogInformation("自动监控已启动");
-                    _logger.LogInformation($"🎯 自动盯盘启动成功 - 配置: {_currentAutoMonitorConfig.Name}");
-                    MessageBox.Show($"自动盯盘已启动！\n配置: {_currentAutoMonitorConfig.Name}", "启动成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    _logger.LogInformation("✅ 监控服务启动成功！");
+                    _logger.LogInformation("🎛️ 更新UI状态为运行中...");
+                    UpdateAutoMonitorUI(true, "自动盯盘运行中", "停止盯盘", "#E74C3C", true);
+                    _logger.LogInformation($"🎯 自动盯盘启动完成 - 配置: {_currentAutoMonitorConfig.Name}");
                     
-                    // 🔧 新增：通知监控界面刷新数据
-                    NotifyAutoMonitorDashboardRefresh();
+                    // 通知监控界面刷新数据
+                    try
+                    {
+                        NotifyAutoMonitorDashboardRefresh();
+                        _logger.LogInformation("✅ 已通知监控界面刷新");
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        _logger.LogWarning(notifyEx, "⚠️ 通知监控界面刷新时发生异常");
+                    }
+                    
+                    MessageBox.Show($"自动盯盘已启动！\n配置: {_currentAutoMonitorConfig.Name}", "启动成功", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 else
                 {
-                    _logger.LogError("监控服务启动失败，查看详细日志获取错误信息");
+                    _logger.LogError($"❌ 监控服务启动失败");
+                    _logger.LogError($"❌ 失败原因: {startupError}");
                     
-                    // 🔍 获取详细的失败原因
-                    var detailedError = "未知错误";
+                    // 🔧 启动失败时清理服务实例，避免状态污染
+                    _logger.LogInformation("🗑️ 启动失败，清理服务实例...");
+                    LogService.LogInfo("🗑️ 启动失败，清理服务实例...");
                     try
                     {
-                                                 // 检查服务状态
-                         if (_autoMonitorService.CurrentConfig == null)
-                         {
-                             detailedError = "配置对象为空";
-                         }
-                         else if (SelectedAccount == null)
-                         {
-                             detailedError = "未选择交易账户";
-                         }
-                         else
-                         {
-                             // 尝试检查API连接状态
-                             try
-                             {
-                                 var accountInfo = await _binanceService.GetAccountInfoAsync();
-                                 if (accountInfo == null)
-                                 {
-                                     detailedError = "币安API连接失败，无法获取账户信息，请检查网络和API密钥";
-                                 }
-                                 else
-                                 {
-                                     detailedError = "服务启动内部错误，请查看日志文件获取详细信息";
-                                 }
-                             }
-                             catch (Exception apiEx)
-                             {
-                                 detailedError = $"币安API连接错误：{apiEx.Message}";
-                             }
-                         }
+                        if (_autoMonitorService != null)
+                        {
+                            _autoMonitorService.MonitorStatusChanged -= OnAutoMonitorStatusChanged;
+                            _autoMonitorService.ExecutionCompleted -= OnAutoMonitorExecutionCompleted;
+                            _autoMonitorService.Dispose();
+                            _autoMonitorService = null;
+                            _logger.LogInformation("✅ 启动失败后服务实例已清理");
+                            LogService.LogInfo("✅ 启动失败后服务实例已清理");
+                        }
                     }
-                    catch (Exception diagEx)
+                    catch (Exception cleanupEx)
                     {
-                        detailedError = $"诊断错误：{diagEx.Message}";
+                        _logger.LogError(cleanupEx, "❌ 清理失败服务实例时发生异常");
+                        LogService.LogError("清理失败服务实例异常", cleanupEx);
                     }
                     
-                    MessageBox.Show($"自动监控启动失败\n\n可能原因：{detailedError}\n\n建议：\n" +
-                        "1. 检查网络连接和API密钥\n" +
-                        "2. 确认已选择正确的交易账户\n" +
-                        "3. 重新配置自动盯盘参数\n" +
-                        "4. 查看程序日志获取详细错误信息", 
-                        "启动失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    // 启动失败后恢复按钮正常状态
+                    _logger.LogInformation("🎛️ 恢复UI状态为未运行...");
+                    UpdateAutoMonitorUI(false, "自动盯盘启动失败", "盯盘参数配置", "#27AE60", true);
+                    
+                    // 构建错误消息
+                    var errorMessage = "自动监控启动失败\n\n建议操作：\n• 检查网络连接和API密钥\n• 确认已选择正确的交易账户\n• 重新配置自动盯盘参数";
+                    
+                    if (!string.IsNullOrEmpty(startupError))
+                    {
+                        errorMessage += $"\n\n错误详情：{startupError}";
+                    }
+                    
+                    if (startupException != null && startupException.GetType().Name.Contains("InvalidOperation"))
+                    {
+                        errorMessage += "\n\n💡 提示：可能是服务状态冲突，请稍等片刻后重试";
+                    }
+                    
+                    // 🔧 特殊处理通道关闭错误
+                    if (startupError.Contains("channel has been closed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        errorMessage += "\n\n🔧 检测到连接通道问题，建议：\n• 等待10-15秒后重试\n• 确保网络连接稳定\n• 检查API访问权限";
+                    }
+                    
+                    MessageBox.Show(errorMessage, "启动失败", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "启动自动监控时发生错误");
-                MessageBox.Show($"启动失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                // 🔧 双重异常日志：确保顶层异常被记录
+                var topExceptionInfo = $"❌ 启动自动监控时发生顶层异常:\n" +
+                    $"异常类型: {ex.GetType().Name}\n" +
+                    $"异常消息: {ex.Message}\n" +
+                    $"内部异常: {(ex.InnerException?.Message ?? "无")}\n" +
+                    $"堆栈跟踪: {ex.StackTrace}";
+                
+                _logger.LogError(ex, "❌ 启动自动监控时发生顶层异常");
+                LogService.LogError("启动自动监控顶层异常", ex);
+                LogService.LogError(topExceptionInfo);
+                
+                // 启动异常时恢复按钮状态
+                _logger.LogInformation("🎛️ 顶层异常处理：恢复UI状态...");
+                LogService.LogInfo("顶层异常处理：恢复UI状态");
+                UpdateAutoMonitorUI(false, "启动异常", "盯盘参数配置", "#27AE60", true);
+                
+                MessageBox.Show($"启动失败：{ex.Message}\n\n详细信息已记录到日志文件:\n{LogService.GetLogFilePath()}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -229,48 +582,180 @@ namespace BinanceFuturesTrader.ViewModels
         /// <param name="clearConfig">是否清空当前配置（账户切换时为true，用户手动停止时为false）</param>
         private async Task StopAutoMonitorAsync(bool clearConfig = false)
         {
+            // 🔧 增强日志：停止过程开始
+            _logger.LogInformation($"🛑 开始停止自动监控流程 - 时间: {DateTime.Now:HH:mm:ss.fff}");
+            _logger.LogInformation($"📊 停止前状态检查:");
+            _logger.LogInformation($"  • clearConfig: {clearConfig}");
+            _logger.LogInformation($"  • IsAutoMonitorRunning: {IsAutoMonitorRunning}");
+            _logger.LogInformation($"  • _autoMonitorService == null: {_autoMonitorService == null}");
+            if (_autoMonitorService != null)
+            {
+                _logger.LogInformation($"  • _autoMonitorService.IsRunning: {_autoMonitorService.IsRunning}");
+                _logger.LogInformation($"  • _autoMonitorService.CurrentConfig != null: {_autoMonitorService.CurrentConfig != null}");
+            }
+            
+            // 立即更新按钮状态为停止中，防止用户重复点击
+            _logger.LogInformation("🎛️ 更新UI状态为停止中...");
+            UpdateAutoMonitorUI(IsAutoMonitorRunning, "正在停止服务...", "正在停止服务", "#F39C12", false);
+            _logger.LogInformation("✅ UI状态更新完成");
+            
             try
             {
                 if (_autoMonitorService != null)
                 {
-                    await _autoMonitorService.StopMonitoringAsync();
-                }
-
-                // 如果是账户切换导致的停止，清空当前配置
-                if (clearConfig)
-                {
-                    _currentAutoMonitorConfig = null;
-                    _logger.LogInformation("自动监控已停止，配置已清空（账户切换）");
+                    _logger.LogInformation("📡 调用监控服务停止方法...");
+                    try
+                    {
+                        await _autoMonitorService.StopMonitoringAsync();
+                        _logger.LogInformation("✅ StopMonitoringAsync调用完成");
+                    }
+                    catch (Exception stopEx)
+                    {
+                        _logger.LogError(stopEx, "❌ 调用StopMonitoringAsync时发生异常");
+                        throw;
+                    }
+                    
+                    // 验证停止后的状态
+                    _logger.LogInformation("🔍 验证服务停止后状态...");
+                    _logger.LogInformation($"  • _autoMonitorService.IsRunning: {_autoMonitorService.IsRunning}");
+                    
+                    // 等待服务完全停止，确保内部状态清理完成
+                    _logger.LogInformation("⏱️ 等待服务完全停止（500ms）...");
+                    await Task.Delay(500);
+                    _logger.LogInformation("✅ 服务停止等待完成");
+                    
+                    // 取消事件订阅，避免后续重复订阅问题
+                    _logger.LogInformation("🔗 取消事件订阅...");
+                    try
+                    {
+                        _autoMonitorService.MonitorStatusChanged -= OnAutoMonitorStatusChanged;
+                        _autoMonitorService.ExecutionCompleted -= OnAutoMonitorExecutionCompleted;
+                        _logger.LogInformation("✅ 事件订阅取消完成");
+                    }
+                    catch (Exception eventEx)
+                    {
+                        _logger.LogWarning(eventEx, "⚠️ 取消事件订阅时发生异常");
+                    }
+                    
+                    // 再次等待确保事件处理完成
+                    _logger.LogInformation("⏱️ 等待事件处理完成（200ms）...");
+                    await Task.Delay(200);
+                    _logger.LogInformation("✅ 事件处理等待完成");
                 }
                 else
                 {
-                    _logger.LogInformation("自动监控已停止（用户手动停止）");
+                    _logger.LogInformation("ℹ️ 自动监控服务实例为空，无需停止");
                 }
 
-                UpdateAutoMonitorUI(false, "自动盯盘已停止", "启动盯盘", "#27AE60");
-                _logger.LogInformation("自动监控已停止");
-                
-                // 🔧 新增：通知监控界面刷新数据
-                NotifyAutoMonitorDashboardRefresh();
+                // 处理配置清理
+                if (clearConfig)
+                {
+                    _logger.LogInformation("🗑️ 清理配置和服务实例（账户切换）...");
+                    _currentAutoMonitorConfig = null;
+                    
+                    if (_autoMonitorService != null)
+                    {
+                        try
+                        {
+                            _autoMonitorService.Dispose();
+                            _autoMonitorService = null;
+                            _logger.LogInformation("✅ 服务实例已清理");
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            _logger.LogWarning(disposeEx, "⚠️ 清理服务实例时发生异常");
+                        }
+                    }
+                    
+                    _logger.LogInformation("✅ 配置清理完成（账户切换）");
+                }
+                else
+                {
+                    _logger.LogInformation("ℹ️ 保留配置和服务实例（用户手动停止）");
+                }
 
-                await Task.CompletedTask; // 保持异步签名
+                // 最终等待确保所有异步操作完成
+                _logger.LogInformation("⏱️ 最终等待UI更新完成（100ms）...");
+                await Task.Delay(100);
+                
+                // 🔧 最终状态验证
+                var finalStatusCheck = $"🔍 停止完成后最终状态检查:\n" +
+                    $"  • _autoMonitorService?.IsRunning: {(_autoMonitorService?.IsRunning.ToString() ?? "N/A")}\n" +
+                    $"  • 当前UI IsAutoMonitorRunning: {IsAutoMonitorRunning}";
+                _logger.LogInformation(finalStatusCheck);
+                LogService.LogInfo(finalStatusCheck);
+                
+                // 只有在确认停止完成后才更新按钮状态
+                _logger.LogInformation("🎛️ 更新UI状态为已停止...");
+                LogService.LogInfo("🎛️ 更新UI状态为已停止...");
+                UpdateAutoMonitorUI(false, "自动盯盘已停止", "盯盘参数配置", "#27AE60", true);
+                _logger.LogInformation("✅ UI状态恢复完成");
+                LogService.LogInfo("✅ UI状态恢复完成");
+                
+                // 通知监控界面刷新数据
+                try
+                {
+                    NotifyAutoMonitorDashboardRefresh();
+                    _logger.LogInformation("✅ 已通知监控界面刷新");
+                }
+                catch (Exception notifyEx)
+                {
+                    _logger.LogWarning(notifyEx, "⚠️ 通知监控界面刷新时发生异常");
+                }
+                
+                _logger.LogInformation("🎉 自动监控完全停止，流程结束");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "停止自动监控时发生错误");
-                MessageBox.Show($"停止失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                // 🔧 双重异常日志：确保停止异常被记录
+                var stopExceptionInfo = $"❌ 停止自动监控时发生异常:\n" +
+                    $"异常类型: {ex.GetType().Name}\n" +
+                    $"异常消息: {ex.Message}\n" +
+                    $"内部异常: {(ex.InnerException?.Message ?? "无")}\n" +
+                    $"堆栈跟踪: {ex.StackTrace}";
+                
+                _logger.LogError(ex, "❌ 停止自动监控时发生异常");
+                LogService.LogError("停止自动监控异常", ex);
+                LogService.LogError(stopExceptionInfo);
+                
+                // 基础异常处理：恢复按钮状态
+                _logger.LogInformation("🎛️ 异常处理：恢复UI状态...");
+                LogService.LogInfo("停止异常处理：恢复UI状态");
+                UpdateAutoMonitorUI(false, "停止异常", "盯盘参数配置", "#27AE60", true);
+                MessageBox.Show($"停止失败：{ex.Message}\n\n详细信息已记录到日志文件", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         /// <summary>
         /// 更新自动监控UI状态
         /// </summary>
-        private void UpdateAutoMonitorUI(bool isRunning, string statusMessage, string buttonText, string buttonColor)
+        private void UpdateAutoMonitorUI(bool isRunning, string statusMessage, string buttonText, string buttonColor, bool? buttonEnabled = null)
         {
+            // 🔧 增强日志：记录UI状态更新
+            var beforeUpdate = $"🎛️ UI状态更新前:\n" +
+                $"  • IsAutoMonitorRunning: {IsAutoMonitorRunning} → {isRunning}\n" +
+                $"  • AutoMonitorStatusMessage: {AutoMonitorStatusMessage} → {statusMessage}\n" +
+                $"  • AutoMonitorButtonText: {AutoMonitorButtonText} → {buttonText}\n" +
+                $"  • AutoMonitorButtonColor: {AutoMonitorButtonColor} → {buttonColor}\n" +
+                $"  • IsAutoMonitorButtonEnabled: {IsAutoMonitorButtonEnabled} → {(buttonEnabled?.ToString() ?? "不变")}";
+            
+            _logger.LogInformation(beforeUpdate);
+            LogService.LogInfo(beforeUpdate);
+            
             IsAutoMonitorRunning = isRunning;
             AutoMonitorStatusMessage = statusMessage;
             AutoMonitorButtonText = buttonText;
             AutoMonitorButtonColor = buttonColor;
+            
+            // 如果提供了buttonEnabled参数，则更新按钮启用状态
+            if (buttonEnabled.HasValue)
+            {
+                IsAutoMonitorButtonEnabled = buttonEnabled.Value;
+            }
+            
+            var afterUpdate = $"✅ UI状态更新完成 - 时间: {DateTime.Now:HH:mm:ss.fff}";
+            _logger.LogInformation(afterUpdate);
+            LogService.LogInfo(afterUpdate);
         }
 
         /// <summary>
@@ -280,12 +765,39 @@ namespace BinanceFuturesTrader.ViewModels
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
+                // 🔧 增强日志：记录状态变化事件
+                var eventMsg = $"📡 收到状态变化事件 - IsRunning: {e.IsRunning}, Message: {e.Message}";
+                _logger.LogInformation(eventMsg);
+                LogService.LogInfo(eventMsg);
+                
+                var beforeChangeInfo = $"📊 状态变化前UI状态:\n" +
+                    $"  • IsAutoMonitorRunning: {IsAutoMonitorRunning}\n" +
+                    $"  • AutoMonitorStatusMessage: {AutoMonitorStatusMessage}\n" +
+                    $"  • AutoMonitorButtonText: {AutoMonitorButtonText}";
+                
+                _logger.LogInformation(beforeChangeInfo);
+                LogService.LogInfo(beforeChangeInfo);
+                
                 AutoMonitorStatusMessage = e.Message;
                 
                 if (!e.IsRunning && IsAutoMonitorRunning)
                 {
-                    // 监控意外停止
-                    UpdateAutoMonitorUI(false, "已停止", "自动盯盘", "#4A90E2");
+                    // 监控意外停止，确保按钮启用状态正确
+                    var unexpectedStopMsg = "⚠️ 检测到监控意外停止，更新UI状态";
+                    _logger.LogWarning(unexpectedStopMsg);
+                    LogService.LogWarning(unexpectedStopMsg);
+                    
+                    UpdateAutoMonitorUI(false, "已停止", "盯盘参数配置", "#27AE60", true);
+                    
+                    var afterChangeMsg = "✅ 意外停止后UI状态已更新";
+                    _logger.LogInformation(afterChangeMsg);
+                    LogService.LogInfo(afterChangeMsg);
+                }
+                else
+                {
+                    var normalUpdateMsg = $"ℹ️ 正常状态消息更新: {e.Message}";
+                    _logger.LogInformation(normalUpdateMsg);
+                    LogService.LogInfo(normalUpdateMsg);
                 }
             });
         }
@@ -328,33 +840,35 @@ namespace BinanceFuturesTrader.ViewModels
                     return;
                 }
 
-                // 检查监控服务是否已初始化
+                // 🔧 修复：统一服务实例获取逻辑，与启动逻辑保持一致
                 if (_autoMonitorService == null)
                 {
-                    _logger.LogInformation("💡 监控服务未初始化，正在从依赖注入容器获取服务...");
-                    
-                    // 🔧 从依赖注入容器获取服务实例，而不是创建新的
-                    try
-                    {
-                        _autoMonitorService = _serviceProvider.GetRequiredService<AutoMonitorService>();
-                        _logger.LogInformation("✅ 成功从依赖注入容器获取AutoMonitorService");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "⚠️ 无法从依赖注入容器获取AutoMonitorService，创建临时实例");
-                        var serviceLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => 
-                            builder.AddConsole()).CreateLogger<AutoMonitorService>();
-                        _autoMonitorService = new AutoMonitorService(_binanceService, this, serviceLogger);
-                    }
+                    _logger.LogInformation("💡 监控服务未初始化，创建新实例用于监控面板...");
+                    var serviceLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => 
+                        builder.AddConsole()).CreateLogger<AutoMonitorService>();
+                    _autoMonitorService = new AutoMonitorService(_binanceService, this, serviceLogger);
+                    _logger.LogInformation("✅ 监控服务实例创建完成");
                 }
 
                 // 🔗 使用正在运行的服务中的状态管理器，确保数据一致性
                 _logger.LogInformation("🔗 使用正在运行的服务中的状态管理器");
 
-                // 创建并显示监控面板（使用简化的构造函数）
+                // 创建并显示监控面板（传入MainViewModel引用以获取配置）
                 var monitorDashboard = new AutoMonitorDashboard(
                     _autoMonitorService, 
-                    _logger);
+                    _logger,
+                    this);
+
+                // 🔧 修复：设置主窗口为监控窗口的Owner，确保主窗口关闭时监控窗口也会关闭
+                if (Application.Current?.MainWindow != null)
+                {
+                    monitorDashboard.Owner = Application.Current.MainWindow;
+                    _logger.LogInformation("✅ 监控窗口已设置主窗口为Owner");
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ 无法获取主窗口引用，监控窗口可能不会跟随主窗口关闭");
+                }
 
                 _logger.LogInformation("🖥️ 监控面板创建成功，使用简化模式");
                 monitorDashboard.Show();
@@ -541,23 +1055,26 @@ namespace BinanceFuturesTrader.ViewModels
         }
 
         /// <summary>
-        /// 清理自动监控资源
+        /// 简化的自动监控资源清理
         /// </summary>
         private void CleanupAutoMonitor()
         {
-            try
+            if (_autoMonitorService != null)
             {
-                if (_autoMonitorService != null)
+                try 
                 {
                     _autoMonitorService.MonitorStatusChanged -= OnAutoMonitorStatusChanged;
                     _autoMonitorService.ExecutionCompleted -= OnAutoMonitorExecutionCompleted;
-                    _autoMonitorService.Dispose();
-                    _autoMonitorService = null;
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "清理自动监控资源时发生错误");
+                catch { /* 忽略事件取消订阅异常 */ }
+                
+                try
+                {
+                    _autoMonitorService.Dispose();
+                }
+                catch { /* 忽略销毁异常 */ }
+                
+                _autoMonitorService = null;
             }
         }
 

@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v6.0": {
-      "BinanceFuturesTrader/0.33.12": {
+      "BinanceFuturesTrader/0.33.27": {
         "dependencies": {
           "CommunityToolkit.Mvvm": "8.2.2",
           "MaterialDesignColors": "2.1.4",
@@ -524,7 +524,7 @@
     }
   },
   "libraries": {
-    "BinanceFuturesTrader/0.33.12": {
+    "BinanceFuturesTrader/0.33.27": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

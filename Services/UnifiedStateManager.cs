@@ -127,6 +127,49 @@ namespace BinanceFuturesTrader.Services
         }
 
         /// <summary>
+        /// 设置执行状态为"执行中"，防止重复触发
+        /// </summary>
+        /// <param name="symbol">合约名称</param>
+        /// <param name="positionSide">持仓方向</param>
+        /// <param name="executionType">执行类型</param>
+        /// <param name="tierIndex">阶梯索引（可选）</param>
+        /// <param name="triggerPnl">触发时浮盈</param>
+        /// <param name="message">执行消息</param>
+        public void MarkAsExecuting(string symbol, string positionSide, ExecutionType executionType, 
+            int? tierIndex, decimal triggerPnl, string message = "")
+        {
+            lock (_lock)
+            {
+                try
+                {
+                    var contractKey = GetContractKey(symbol, positionSide);
+                    
+                    // 1. 获取或创建合约状态
+                    if (!_contractStates.TryGetValue(contractKey, out var state))
+                    {
+                        state = new ContractExecutionState
+                        {
+                            ContractKey = contractKey,
+                            Symbol = symbol,
+                            PositionSide = positionSide
+                        };
+                        _contractStates[contractKey] = state;
+                    }
+                    
+                    // 2. 设置状态为"执行中"
+                    state.MarkAsExecuting(executionType, tierIndex, triggerPnl, message);
+                    
+                    var tierText = tierIndex.HasValue ? $"阶梯{tierIndex}" : "";
+                    _logger.LogInformation($"🔒 设置执行中状态: {contractKey} {executionType}{tierText}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 设置执行中状态失败: {symbol}_{positionSide} {executionType}");
+                }
+            }
+        }
+
+        /// <summary>
         /// 记录操作执行状态
         /// </summary>
         /// <param name="symbol">合约名称</param>
@@ -248,14 +291,22 @@ namespace BinanceFuturesTrader.Services
                 try
                 {
                     var keysToRemove = new List<string>();
-                    var pattern = positionSide != null ? $"{symbol}_{positionSide}" : $"{symbol}_";
                     
                     // 1. 找出需要清理的合约键
-                    foreach (var key in _contractStates.Keys)
+                    if (string.IsNullOrEmpty(symbol))
                     {
-                        if (key.StartsWith(pattern, StringComparison.OrdinalIgnoreCase))
+                        // 🔧 清理所有合约状态
+                        keysToRemove.AddRange(_contractStates.Keys);
+                    }
+                    else
+                    {
+                        var pattern = positionSide != null ? $"{symbol}_{positionSide}" : $"{symbol}_";
+                        foreach (var key in _contractStates.Keys)
                         {
-                            keysToRemove.Add(key);
+                            if (key.StartsWith(pattern, StringComparison.OrdinalIgnoreCase))
+                            {
+                                keysToRemove.Add(key);
+                            }
                         }
                     }
                     
@@ -274,9 +325,20 @@ namespace BinanceFuturesTrader.Services
                     }
                     
                     // 3. 清理执行历史
-                    var historicalRecords = positionSide != null 
-                        ? _executionHistory.Where(h => h.Symbol == symbol && h.PositionSide == positionSide).ToList()
-                        : _executionHistory.Where(h => h.Symbol == symbol).ToList();
+                    List<ExecutionHistory> historicalRecords;
+                    if (string.IsNullOrEmpty(symbol))
+                    {
+                        // 🔧 清理所有执行历史
+                        historicalRecords = _executionHistory.ToList();
+                    }
+                    else if (positionSide != null)
+                    {
+                        historicalRecords = _executionHistory.Where(h => h.Symbol == symbol && h.PositionSide == positionSide).ToList();
+                    }
+                    else
+                    {
+                        historicalRecords = _executionHistory.Where(h => h.Symbol == symbol).ToList();
+                    }
                     
                     foreach (var record in historicalRecords)
                     {
@@ -286,21 +348,22 @@ namespace BinanceFuturesTrader.Services
                     // 4. 记录清理历史
                     var cleanupHistory = new ExecutionHistory
                     {
-                        Symbol = symbol,
-                        PositionSide = positionSide ?? "ALL",
-                        ExecutionType = "状态清理",
+                        Symbol = string.IsNullOrEmpty(symbol) ? "ALL" : symbol,
+                        PositionSide = string.IsNullOrEmpty(symbol) ? "ALL" : (positionSide ?? "ALL"),
+                        ExecutionType = "🧹 状态清理",
                         ExecutionTime = DateTime.Now,
                         TriggerPnl = 0,
                         IsSuccess = true,
-                        Details = $"清理原因: {reason}, 清理{totalCleared}个执行记录, {historicalRecords.Count}条历史记录"
+                        Details = $"清理原因: {reason}, 清理 {keysToRemove.Count} 个合约状态, {totalCleared} 个执行记录, {historicalRecords.Count} 条历史记录"
                     };
                     _executionHistory.Add(cleanupHistory);
                     
                     // 5. 同步到持久化存储
                     SaveToPersistence();
                     
-                    var targetText = positionSide != null ? $"{symbol}_{positionSide}" : $"{symbol}_*";
-                    _logger.LogInformation($"🧹 状态清理完成: {targetText} - 清理{keysToRemove.Count}个合约状态, {historicalRecords.Count}条历史");
+                    var targetText = string.IsNullOrEmpty(symbol) ? "所有合约" : 
+                        (positionSide != null ? $"{symbol}_{positionSide}" : $"{symbol}_*");
+                    _logger.LogInformation($"🧹 状态清理完成: {targetText} - 清理 {keysToRemove.Count} 个合约状态, {historicalRecords.Count} 条历史");
                 }
                 catch (Exception ex)
                 {

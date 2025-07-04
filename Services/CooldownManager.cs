@@ -18,14 +18,14 @@ namespace BinanceFuturesTrader.Services
         // 🔒 线程安全锁
         private readonly object _lock = new();
         
-        // ⏰ 预定义的冷却期配置
+        // ⏰ 预定义的冷却期配置 - 缩短冷却期，主要依赖状态管理防重复
         private readonly Dictionary<CooldownOperationType, TimeSpan> _cooldownPeriods = new()
         {
-            { CooldownOperationType.BreakEven, TimeSpan.FromSeconds(30) },      // 保本止损：30秒
-            { CooldownOperationType.AddPosition, TimeSpan.FromSeconds(60) },    // 推仓操作：60秒
-            { CooldownOperationType.ProfitProtection, TimeSpan.FromSeconds(45) }, // 保盈止损：45秒
+            { CooldownOperationType.BreakEven, TimeSpan.FromSeconds(5) },       // 🔧 修改：保本止损5秒
+            { CooldownOperationType.AddPosition, TimeSpan.FromSeconds(5) },     // 🔧 修改：推仓操作5秒
+            { CooldownOperationType.ProfitProtection, TimeSpan.FromSeconds(5) }, // 🔧 修改：保盈止损5秒
             { CooldownOperationType.ManualOrder, TimeSpan.FromSeconds(10) },    // 手动下单：10秒
-            { CooldownOperationType.StopLoss, TimeSpan.FromSeconds(20) }        // 止损单创建：20秒
+            { CooldownOperationType.StopLoss, TimeSpan.FromSeconds(10) }        // 🔧 修改：止损单创建10秒
         };
         
         // 📊 统计信息

@@ -3,6 +3,201 @@
 杩欎釜鏂囦欢璁板綍浜?**甯佸畨鏈熻揣浜ゆ槗绠＄悊鍣?* 鐨勬墍鏈夌増鏈洿鏂板巻鍙层€?
 
 ---
+## Version 0.33.27
+**Release Date:** 2025-07-03 23:15:32  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.27.0
+- FileVersion: 0.33.27.0
+- BuildTime: 2025-07-03 23:15:32
+
+---
+## Version 0.33.26
+**Release Date:** 2025-07-02 22:57:18  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.26.0
+- FileVersion: 0.33.26.0
+- BuildTime: 2025-07-02 22:57:18
+
+---
+## Version 0.33.25
+**Release Date:** 2025-06-30 14:40:27  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.25.0
+- FileVersion: 0.33.25.0
+- BuildTime: 2025-06-30 14:40:27
+
+---
+## Version 0.33.24
+**Release Date:** 2025-06-30 11:22:37  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.24.0
+- FileVersion: 0.33.24.0
+- BuildTime: 2025-06-30 11:22:37
+
+---
+## Version 0.33.23
+**Release Date:** 2025-06-30 11:14:17  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.23.0
+- FileVersion: 0.33.23.0
+- BuildTime: 2025-06-30 11:14:17
+
+---
+## Version 0.33.22
+**Release Date:** 2025-06-30 09:24:52  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.22.0
+- FileVersion: 0.33.22.0
+- BuildTime: 2025-06-30 09:24:52
+
+---
+## Version 0.33.21
+**Release Date:** 2025-06-30 06:53:25  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.21.0
+- FileVersion: 0.33.21.0
+- BuildTime: 2025-06-30 06:53:25
+
+---
+## Version 0.33.20
+**Release Date:** 2025-06-30 00:01:01  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.20.0
+- FileVersion: 0.33.20.0
+- BuildTime: 2025-06-30 00:01:01
+
+---
+## Version 0.33.19
+**Release Date:** 2025-06-29 23:13:02  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.19.0
+- FileVersion: 0.33.19.0
+- BuildTime: 2025-06-29 23:13:02
+
+---
+## Version 0.33.18
+**Release Date:** 2025-06-29 22:37:25  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.18.0
+- FileVersion: 0.33.18.0
+- BuildTime: 2025-06-29 22:37:25
+
+---
+## Version 0.33.17
+**Release Date:** 2025-06-29 22:01:11  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.17.0
+- FileVersion: 0.33.17.0
+- BuildTime: 2025-06-29 22:01:11
+
+---
+## Version 0.33.16
+**Release Date:** 2025-06-29 21:28:49  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.16.0
+- FileVersion: 0.33.16.0
+- BuildTime: 2025-06-29 21:28:49
+
+---
+## Version 0.33.15
+**Release Date:** 2025-06-29 21:11:31  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.15.0
+- FileVersion: 0.33.15.0
+- BuildTime: 2025-06-29 21:11:31
+
+---
+## Version 0.33.14
+**Release Date:** 2025-06-29 21:06:32  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.14.0
+- FileVersion: 0.33.14.0
+- BuildTime: 2025-06-29 21:06:32
+
+---
+## Version 0.33.13
+**Release Date:** 2025-06-29 20:58:32  
+**Update Type:** PATCH
+
+### 馃殌 Update Content
+- Version update and code optimization
+
+### 馃搳 Technical Info
+- AssemblyVersion: 0.33.13.0
+- FileVersion: 0.33.13.0
+- BuildTime: 2025-06-29 20:58:32
+
+---
 ## Version 0.33.12
 **Release Date:** 2025-06-29 18:51:58  
 **Update Type:** PATCH
@@ -240,6 +435,21 @@ Based on commit analysis:
 - 淇渚濊禆娉ㄥ叆鏈嶅姟鑾峰彇闂
 
 --- 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

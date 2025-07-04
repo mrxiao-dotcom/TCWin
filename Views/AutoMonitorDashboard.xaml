@@ -2,10 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
-        Title="🔍 自动盯盘监控面板" 
+        Title="自动盯盘控制面板" 
         Icon="../Icons/app.ico"
-        Height="900" Width="1400" 
-        MinHeight="800" MinWidth="1200"
+        Height="900" Width="1600" 
+        MinHeight="700" MinWidth="1200"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource MaterialDesignPaper}">
 
@@ -14,423 +14,323 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- 标题栏和刷新按钮 -->
+        <!-- 标题栏和控制按钮 -->
         <materialDesign:Card Grid.Row="0" Padding="12" Margin="0,0,0,8" Background="LightBlue">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
-                    <materialDesign:PackIcon Kind="MonitorDashboard" Width="24" Height="24" 
-                                           VerticalAlignment="Center" Margin="0,0,8,0" Foreground="DarkBlue"/>
-                    <TextBlock Text="自动盯盘监控面板" FontSize="18" FontWeight="Bold" 
+                    <TextBlock Text="自动盯盘控制面板" FontSize="18" FontWeight="Bold" 
                               VerticalAlignment="Center" Foreground="DarkBlue"/>
-                    <TextBlock Text="{Binding LastUpdateTime, StringFormat=最后更新: {0:HH:mm:ss}}" 
-                              FontSize="12" Foreground="Gray" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                    <TextBlock Text="{Binding StatusText}" 
+                              FontSize="12" Foreground="DarkGreen" VerticalAlignment="Center" Margin="16,0,0,0"/>
                 </StackPanel>
                 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button x:Name="RefreshButton" Content="🔄 刷新" Width="80" Height="32" Margin="0,0,8,0"
-                           Background="Green" Foreground="White" FontWeight="Bold"
-                           ToolTip="手动刷新监控数据" Click="RefreshButton_Click"/>
-                    <Button x:Name="CloseButton" Content="❌ 关闭" Width="80" Height="32"
-                           Background="Red" Foreground="White" FontWeight="Bold" Click="CloseButton_Click"/>
+                    <Button x:Name="ToggleMonitorButton" Content="{Binding ToggleButtonText}" Width="120" Height="32" Margin="0,0,8,0"
+                           Background="{Binding ToggleButtonBackground}" Foreground="White" FontWeight="Bold"
+                           ToolTip="{Binding ToggleButtonTooltip}" Click="ToggleMonitorButton_Click"
+                           IsEnabled="{Binding ToggleButtonEnabled}"/>
+                    <Button x:Name="RefreshButton" Content="刷新数据" Width="100" Height="32" Margin="0,0,8,0"
+                           Background="SteelBlue" Foreground="White" FontWeight="Bold"
+                           ToolTip="刷新监控数据" Click="RefreshButton_Click"/>
+                    <Button x:Name="CloseButton" Content="关闭面板" Width="100" Height="32"
+                           Background="Gray" Foreground="White" FontWeight="Bold" Click="CloseButton_Click"/>
                 </StackPanel>
             </DockPanel>
         </materialDesign:Card>
 
-        <!-- 监控状态概览区域 -->
-        <StackPanel Grid.Row="1" Margin="0,0,0,8">
-            <!-- 状态统计卡片 -->
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <!-- 运行状态卡片 -->
-                <materialDesign:Card Grid.Column="0" Margin="0,0,4,0">
-                    <Border Background="{Binding StatusCardBackground}">
-                        <StackPanel Margin="8">
-                            <TextBlock Text="运行状态" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
-                            <TextBlock Text="{Binding MonitorStatus}" FontSize="14" FontWeight="Bold" 
-                                      HorizontalAlignment="Center" Foreground="{Binding StatusTextColor}"/>
-                        </StackPanel>
-                    </Border>
-                </materialDesign:Card>
-
-                <!-- 活跃合约卡片 -->
-                <materialDesign:Card Grid.Column="1" Margin="2,0">
-                    <Border Background="LightGreen">
-                        <StackPanel Margin="8">
-                            <TextBlock Text="活跃合约" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
-                            <TextBlock Text="{Binding ActiveContractCount}" FontSize="16" FontWeight="Bold" 
-                                      HorizontalAlignment="Center" Foreground="DarkGreen"/>
-                        </StackPanel>
-                    </Border>
-                </materialDesign:Card>
-
-                <!-- 执行统计卡片 -->
-                <materialDesign:Card Grid.Column="2" Margin="2,0">
-                    <Border Background="LightCoral">
-                        <StackPanel Margin="8">
-                            <TextBlock Text="执行统计" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
-                            <TextBlock Text="{Binding TotalExecutions}" FontSize="16" FontWeight="Bold" 
-                                      HorizontalAlignment="Center" Foreground="DarkRed"/>
-                        </StackPanel>
-                    </Border>
-                </materialDesign:Card>
-
-                <!-- 止损单状态卡片 -->
-                <materialDesign:Card Grid.Column="3" Margin="2,0,0,0">
-                    <Border Background="LightSteelBlue">
-                        <StackPanel Margin="8">
-                            <TextBlock Text="止损单管理" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
-                            <TextBlock Text="{Binding ActiveStopOrderCount}" FontSize="16" FontWeight="Bold" 
-                                      HorizontalAlignment="Center" Foreground="SteelBlue"/>
-                        </StackPanel>
-                    </Border>
-                </materialDesign:Card>
-            </Grid>
-            
-            <!-- 🔧 详细的盯盘配置信息区域 -->
-            <materialDesign:Card Padding="16" Background="#e8f4f8">
-                <StackPanel>
-                    <Grid Margin="0,0,0,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        
-                        <TextBlock Grid.Column="0" Text="⚙️ 当前盯盘配置详情" FontSize="16" FontWeight="Bold" 
-                                  Foreground="DarkBlue" VerticalAlignment="Center"/>
-                        
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock Text="配置名称: " FontSize="12" Foreground="Gray" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding ConfigName}" FontSize="12" FontWeight="Bold" 
-                                      Foreground="DarkBlue" VerticalAlignment="Center" Margin="4,0,16,0"/>
-                            <TextBlock Text="扫描间隔: " FontSize="12" Foreground="Gray" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding ScanIntervalDisplay}" FontSize="12" FontWeight="Bold" 
-                                      Foreground="DarkSlateGray" VerticalAlignment="Center" Margin="4,0,0,0"/>
-                        </StackPanel>
-                    </Grid>
-                    
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="200"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        
-                        <!-- 保本配置 -->
-                        <materialDesign:Card Grid.Column="0" Padding="12" Margin="0,0,8,0" Background="LightGreen">
-                            <StackPanel>
-                                <TextBlock Text="🛡️ 保本配置" FontSize="13" FontWeight="Bold" 
-                                          Foreground="DarkGreen" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                                <TextBlock Text="{Binding BreakEvenConfigDisplay}" FontSize="12" FontWeight="Bold" 
-                                          Foreground="DarkGreen" HorizontalAlignment="Center" TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </materialDesign:Card>
-                        
-                        <!-- 推仓配置详情 -->
-                        <materialDesign:Card Grid.Column="1" Padding="12" Margin="8,0" Background="#f8f9fa">
-                            <StackPanel>
-                                <TextBlock Text="⚡ 推仓配置详情" FontSize="13" FontWeight="Bold" 
-                                          Foreground="#495057" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                                <DataGrid ItemsSource="{Binding AddPositionTiers}"
-                                         AutoGenerateColumns="False"
-                                         CanUserAddRows="False"
-                                         IsReadOnly="True"
-                                         GridLinesVisibility="Horizontal"
-                                         Background="Transparent"
-                                         BorderThickness="0"
-                                         FontSize="11"
-                                         RowHeight="32"
-                                         HeadersVisibility="Column"
-                                         AlternatingRowBackground="#f1f3f4">
-                                    <DataGrid.Columns>
-                                        <DataGridTextColumn Header="档位" Binding="{Binding TierIndex}" Width="0.8*">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#495057"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="触发浮盈" Width="1.3*">
-                                            <DataGridTextColumn.Binding>
-                                                <Binding Path="TriggerProfitAmount" StringFormat="{}{0:F0}U"/>
-                                            </DataGridTextColumn.Binding>
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Right"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#28a745"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="风险倍数" Width="1.2*">
-                                            <DataGridTextColumn.Binding>
-                                                <Binding Path="RiskMultiplier" StringFormat="{}{0:F1}倍"/>
-                                            </DataGridTextColumn.Binding>
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#007bff"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="止损比例" Width="1.2*">
-                                            <DataGridTextColumn.Binding>
-                                                <Binding Path="StopLossRatio" StringFormat="{}{0:P1}"/>
-                                            </DataGridTextColumn.Binding>
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#dc3545"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                            </StackPanel>
-                        </materialDesign:Card>
-                        
-                        <!-- 保盈配置详情 -->
-                        <materialDesign:Card Grid.Column="2" Padding="12" Margin="8,0,0,0" Background="#f8f9fa">
-                            <StackPanel>
-                                <TextBlock Text="💰 保盈配置详情" FontSize="13" FontWeight="Bold" 
-                                          Foreground="#495057" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                                <DataGrid ItemsSource="{Binding ProfitProtectionTiers}"
-                                         AutoGenerateColumns="False"
-                                         CanUserAddRows="False"
-                                         IsReadOnly="True"
-                                         GridLinesVisibility="Horizontal"
-                                         Background="Transparent"
-                                         BorderThickness="0"
-                                         FontSize="11"
-                                         RowHeight="32"
-                                         HeadersVisibility="Column"
-                                         AlternatingRowBackground="#f1f3f4">
-                                    <DataGrid.Columns>
-                                        <DataGridTextColumn Header="档位" Binding="{Binding TierIndex}" Width="0.8*">
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Center"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#495057"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="触发浮盈" Width="1.5*">
-                                            <DataGridTextColumn.Binding>
-                                                <Binding Path="TriggerProfitAmount" StringFormat="{}{0:F0}U"/>
-                                            </DataGridTextColumn.Binding>
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Right"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#28a745"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                        <DataGridTextColumn Header="保护金额" Width="1.5*">
-                                            <DataGridTextColumn.Binding>
-                                                <Binding Path="ProtectionAmount" StringFormat="{}{0:F0}U"/>
-                                            </DataGridTextColumn.Binding>
-                                            <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="HorizontalAlignment" Value="Right"/>
-                                                    <Setter Property="VerticalAlignment" Value="Center"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                    <Setter Property="Foreground" Value="#6f42c1"/>
-                                                    <Setter Property="Padding" Value="4,2"/>
-                                                </Style>
-                                            </DataGridTextColumn.ElementStyle>
-                                        </DataGridTextColumn>
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                            </StackPanel>
-                        </materialDesign:Card>
-                    </Grid>
-                </StackPanel>
-            </materialDesign:Card>
-        </StackPanel>
-
-        <!-- 主要内容区域 -->
-        <Grid Grid.Row="2">
+        <!-- 状态概览 -->
+        <Grid Grid.Row="1" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="3*"/>
-                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- 🔧 改进的合约状态表格 -->
-            <materialDesign:Card Grid.Column="0" Padding="8" Margin="0,0,4,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="📊 合约执行状态详情" FontWeight="Bold" FontSize="14" 
-                              Foreground="DarkBlue" Margin="0,0,0,8"/>
-                    
-                    <DataGrid ItemsSource="{Binding ContractStates}"
-                             AutoGenerateColumns="False"
-                             CanUserAddRows="False"
-                             IsReadOnly="True"
-                             GridLinesVisibility="Horizontal"
-                             AlternatingRowBackground="#f9f9f9"
-                             FontSize="13"
-                             RowHeight="38">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="110" FontWeight="Bold"/>
-                            <DataGridTemplateColumn Header="保本状态" Width="100">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{Binding BreakEvenStatusColor}" CornerRadius="4" Padding="6,2">
-                                            <TextBlock Text="{Binding BreakEvenStatus}" 
-                                                      Foreground="White" FontWeight="Bold" 
-                                                      HorizontalAlignment="Center" FontSize="12"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="推仓进度" Width="80">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="AddPositionProgressDisplay"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                        <Setter Property="Foreground" Value="DarkOrange"/>
-                                        <Setter Property="VerticalAlignment" Value="Center"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="保盈进度" Width="80">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="ProfitProtectionProgressDisplay"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                        <Setter Property="Foreground" Value="DarkMagenta"/>
-                                        <Setter Property="VerticalAlignment" Value="Center"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="总执行次数" Width="80">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="TotalExecutions"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                        <Setter Property="Foreground" Value="DarkGreen"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="最后执行" Width="90">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="LastExecutionTime" StringFormat="{}{0:MM-dd HH:mm}"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontSize" Value="11"/>
-                                        <Setter Property="Foreground" Value="Gray"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </DockPanel>
+            <!-- 运行状态卡片 -->
+            <materialDesign:Card Grid.Column="0" Margin="0,0,2,0">
+                <Border Background="{Binding StatusCardBackground}">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="运行状态" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="White"/>
+                        <TextBlock Text="{Binding MonitorStatusText}" FontSize="14" FontWeight="Bold" 
+                                  HorizontalAlignment="Center" Foreground="White"/>
+                    </StackPanel>
+                </Border>
             </materialDesign:Card>
 
-            <!-- 🔧 改进的执行历史 -->
-            <materialDesign:Card Grid.Column="1" Padding="8" Margin="4,0,0,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="📈 最近执行历史" FontWeight="Bold" FontSize="14" 
-                              Foreground="DarkGreen" Margin="0,0,0,8"/>
-                    
-                    <DataGrid ItemsSource="{Binding ExecutionHistory}"
-                             AutoGenerateColumns="False"
-                             CanUserAddRows="False"
-                             IsReadOnly="True"
-                             GridLinesVisibility="Horizontal"
-                             AlternatingRowBackground="#f0f8f0"
-                             FontSize="12"
-                             RowHeight="35">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="时间" Width="65">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="ExecutionTime" StringFormat="{}{0:HH:mm:ss}"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontSize" Value="11"/>
-                                        <Setter Property="Foreground" Value="Gray"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="70" FontWeight="Bold"/>
-                            <DataGridTextColumn Header="类型" Width="65">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="ExecutionType"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Center"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                        <Setter Property="FontSize" Value="11"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                            <DataGridTemplateColumn Header="结果" Width="55">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{Binding ResultColor}" CornerRadius="3" Padding="4,1">
-                                            <TextBlock Text="{Binding ResultText}" 
-                                                      Foreground="White" FontWeight="Bold" 
-                                                      HorizontalAlignment="Center" FontSize="10"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="浮盈" Width="50">
-                                <DataGridTextColumn.Binding>
-                                    <Binding Path="TriggerPnl" StringFormat="{}{0:F1}U"/>
-                                </DataGridTextColumn.Binding>
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="HorizontalAlignment" Value="Right"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                        <Setter Property="FontSize" Value="11"/>
-                                        <Setter Property="Foreground" Value="DarkBlue"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </DockPanel>
+            <!-- 合约数量 -->
+            <materialDesign:Card Grid.Column="1" Margin="2,0">
+                <Border Background="Green">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="监控合约" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="White"/>
+                        <TextBlock Text="{Binding ContractCount}" FontSize="16" FontWeight="Bold" 
+                                  HorizontalAlignment="Center" Foreground="White"/>
+                    </StackPanel>
+                </Border>
             </materialDesign:Card>
+
+            <!-- 条件统计 -->
+            <materialDesign:Card Grid.Column="2" Margin="2,0">
+                <Border Background="Orange">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="触发条件" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="White"/>
+                        <TextBlock Text="{Binding TotalConditionsText}" FontSize="14" FontWeight="Bold" 
+                                  HorizontalAlignment="Center" Foreground="White"/>
+                    </StackPanel>
+                </Border>
+            </materialDesign:Card>
+
+            <!-- 执行中条件 -->
+            <materialDesign:Card Grid.Column="3" Margin="2,0">
+                <Border Background="Blue">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="执行中" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="White"/>
+                        <TextBlock Text="{Binding ExecutingCount}" FontSize="16" FontWeight="Bold" 
+                                  HorizontalAlignment="Center" Foreground="White"/>
+                    </StackPanel>
+                </Border>
+            </materialDesign:Card>
+
+            <!-- 已执行条件 -->
+            <materialDesign:Card Grid.Column="4" Margin="2,0,0,0">
+                <Border Background="Purple">
+                    <StackPanel Margin="8">
+                        <TextBlock Text="已执行" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="White"/>
+                        <TextBlock Text="{Binding ExecutedCount}" FontSize="16" FontWeight="Bold" 
+                                  HorizontalAlignment="Center" Foreground="White"/>
+                    </StackPanel>
+                </Border>
+            </materialDesign:Card>
+        </Grid>
+
+        <!-- 合约监控管理表格 -->
+        <materialDesign:Card Grid.Row="2" Padding="8">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="合约触发条件管理" FontSize="16" FontWeight="Bold" 
+                          Foreground="DarkBlue" Margin="0,0,0,8"/>
+                
+                <DataGrid x:Name="ContractMonitorDataGrid" 
+                         ItemsSource="{Binding ContractMonitors}"
+                         AutoGenerateColumns="False"
+                         CanUserAddRows="False"
+                         IsReadOnly="{Binding IsDataGridReadOnly}"
+                         SelectionMode="Single"
+                         GridLinesVisibility="All"
+                         BorderThickness="1"
+                         BorderBrush="DarkBlue"
+                         FontSize="11"
+                         RowHeight="35"
+                         HeadersVisibility="All"
+                         AlternatingRowBackground="Wheat"
+                         Background="White"
+                         MouseDoubleClick="ContractMonitorDataGrid_MouseDoubleClick">
+                    
+                    <DataGrid.ColumnHeaderStyle>
+                        <Style TargetType="DataGridColumnHeader">
+                            <Setter Property="Background" Value="DarkBlue"/>
+                            <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                            <Setter Property="Padding" Value="8,6"/>
+                        </Style>
+                    </DataGrid.ColumnHeaderStyle>
+
+                    <DataGrid.Columns>
+                        <!-- 启用/禁用 -->
+                        <DataGridCheckBoxColumn Header="启用" Binding="{Binding IsEnabled}" Width="50">
+                            <DataGridCheckBoxColumn.ElementStyle>
+                                <Style TargetType="CheckBox">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                            </DataGridCheckBoxColumn.ElementStyle>
+                        </DataGridCheckBoxColumn>
+
+                        <!-- 合约信息 -->
+                        <DataGridTextColumn Header="合约" Binding="{Binding Symbol}" Width="100" IsReadOnly="True">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Foreground" Value="DarkBlue"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="方向" Binding="{Binding PositionSide}" Width="60" IsReadOnly="True">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Foreground" Value="DarkBlue"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <!-- 状态列已移除 - 使用图形化状态显示 -->
+
+                        <!-- 价格信息 -->
+                        <DataGridTextColumn Header="当前价" Binding="{Binding CurrentPriceText}" Width="90" IsReadOnly="True">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                    <Setter Property="Foreground" Value="DarkGreen"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="持仓量" Binding="{Binding PositionSizeText}" Width="90" IsReadOnly="True">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                    <Setter Property="Foreground" Value="DarkGreen"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="浮盈" Binding="{Binding PnlText}" Width="80" IsReadOnly="True">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Setter Property="Foreground" Value="{Binding PnlColor}"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <!-- 保本状态 - 改为图标显示 -->
+                        <DataGridTemplateColumn Header="保本状态" Width="80">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding BreakEvenProgressColor}" 
+                                           CornerRadius="3" Padding="5,2" Margin="2">
+                                        <TextBlock Text="{Binding TriggerConditions[0].StatusIcon}" 
+                                                  HorizontalAlignment="Center" 
+                                                  VerticalAlignment="Center"
+                                                  FontFamily="Consolas" 
+                                                  FontSize="12"
+                                                  Foreground="White"/>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!-- 推仓进度 - 改为图标显示 -->
+                        <DataGridTemplateColumn Header="推仓进度" Width="80">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding AddPositionProgressColor}" 
+                                           CornerRadius="3" Padding="5,2" Margin="2">
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                            <!-- 显示推仓状态图标 -->
+                                            <TextBlock Text="{Binding AddPositionProgressIcon}" 
+                                                      HorizontalAlignment="Center" 
+                                                      VerticalAlignment="Center"
+                                                      FontFamily="Consolas" 
+                                                      FontSize="10"
+                                                      Foreground="White"
+                                                      Margin="0,0,3,0"/>
+                                            <!-- 显示进度数字 -->
+                                            <TextBlock Text="{Binding AddPositionProgressText}" 
+                                                      HorizontalAlignment="Center" 
+                                                      VerticalAlignment="Center"
+                                                      FontFamily="Consolas" 
+                                                      FontSize="9"
+                                                      Foreground="White"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!-- 止盈进度 - 改为图标显示 -->
+                        <DataGridTemplateColumn Header="止盈进度" Width="80">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding ProfitProgressColor}" 
+                                           CornerRadius="3" Padding="5,2" Margin="2">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                            <!-- 显示止盈状态图标 -->
+                                            <TextBlock Text="{Binding ProfitProgressIcon}" 
+                                                      HorizontalAlignment="Center" 
+                                                      VerticalAlignment="Center"
+                                                      FontFamily="Consolas" 
+                                                      FontSize="10"
+                                                      Foreground="White"
+                                                      Margin="0,0,3,0"/>
+                                            <!-- 显示进度数字 -->
+                                            <TextBlock Text="{Binding ProfitProgressText}" 
+                                                      HorizontalAlignment="Center" 
+                                                      VerticalAlignment="Center"
+                                                      FontFamily="Consolas" 
+                                                      FontSize="9"
+                                                      Foreground="White"/>
+                                    </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+
+                    </DataGrid.Columns>
+
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEnabled}" Value="False">
+                                    <Setter Property="Opacity" Value="0.7"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                </DataGrid>
+            </DockPanel>
+        </materialDesign:Card>
+
+        <!-- 底部操作区域 -->
+        <Grid Grid.Row="3" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 快速操作按钮 -->
+            <WrapPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                <Button Content="加载配置" Width="120" Height="36" Margin="0,0,8,0"
+                       Background="Purple" Foreground="White" FontWeight="Bold" FontSize="12"
+                       IsEnabled="{Binding EditButtonEnabled}"
+                       ToolTip="从自动盯盘配置文件加载合约和条件" Click="LoadFromConfigButton_Click"/>
+                <Button Content="更新配置" Width="120" Height="36" Margin="0,0,8,0"
+                       Background="Green" Foreground="White" FontWeight="Bold" FontSize="12"
+                       ToolTip="更新当前条件和状态到本地配置文件" Click="SaveConfigButton_Click"/>
+                <Button Content="全部重置" Width="120" Height="36" Margin="0,0,8,0"
+                       Background="Red" Foreground="White" FontWeight="Bold" FontSize="12"
+                       IsEnabled="{Binding EditButtonEnabled}"
+                       ToolTip="重置所有合约的所有状态" Click="ResetAllButton_Click"/>
+                <Button Content="执行历史" Width="120" Height="36" Margin="0,0,8,0"
+                       Background="SteelBlue" Foreground="White" FontWeight="Bold" FontSize="12"
+                       ToolTip="查看执行历史记录" Click="ViewHistoryButton_Click"/>
+            </WrapPanel>
+
+            <!-- 状态信息 -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="最后更新: " FontSize="12" Foreground="DarkBlue" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding LastUpdateTime, StringFormat={}{0:HH:mm:ss}}" 
+                          FontSize="12" Foreground="DarkBlue" FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,16,0"/>
+                <TextBlock Text="扫描间隔: " FontSize="12" Foreground="DarkBlue" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding ScanIntervalText}" 
+                          FontSize="12" Foreground="DarkBlue" FontWeight="Bold" VerticalAlignment="Center"/>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window> 
