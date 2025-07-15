@@ -266,6 +266,13 @@ namespace BinanceFuturesTrader.Models
         /// 止损比例
         /// </summary>
         public decimal StopLossPercentage { get; set; }
+        
+        /// <summary>
+        /// 保盈金额（USDT）
+        /// 设置范围：负数（最小负一倍风险金）到正数（最大为当前推仓阶梯触发值）
+        /// 0表示保本止损，负数表示允许亏损，正数表示保护盈利
+        /// </summary>
+        public decimal ProfitProtectionAmount { get; set; } = 0m;
     }
 
     /// <summary>

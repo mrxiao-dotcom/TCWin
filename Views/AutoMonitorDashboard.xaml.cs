@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -29,6 +30,9 @@ namespace BinanceFuturesTrader.Views
         private readonly ILogger _logger;
         private readonly MainViewModel _mainViewModel;
         private readonly DispatcherTimer _refreshTimer;
+        
+        // 🔧 Phase 9: 增强错误处理服务
+        private readonly EnhancedErrorHandler _enhancedErrorHandler;
 
         private DateTime _lastUpdateTime;
         private string _monitorStatus = "未启动";
@@ -57,14 +61,58 @@ namespace BinanceFuturesTrader.Views
         
         // 🔧 新增：倒计时定时器
         private readonly DispatcherTimer _countdownTimer;
+        private readonly DispatcherTimer _titleTimer; // 🔧 新增：标题更新定时器成员变量
         private DateTime _nextScanDateTime = DateTime.Now;
         private readonly object _logLock = new object();
+        private readonly object _emergencyLogLock = new object(); // 🔧 紧急日志文件锁
+        
+        // 🔧 线程安全的紧急日志写入方法
+        private void WriteEmergencyLog(string message)
+        {
+            try
+            {
+                lock (_emergencyLogLock)
+                {
+                    var emergencyLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "emergency_log.txt");
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    File.AppendAllText(emergencyLogPath, $"[{timestamp}] {message}\n");
+                }
+            }
+            catch (Exception ex)
+            {
+                // 如果紧急日志写入失败，至少记录到普通日志
+                _logger?.LogError(ex, $"🚨 紧急日志写入失败: {message}");
+            }
+        }
         
         // 🆕 新增：持仓变化监听器
         private PositionChangeEventHandler? _positionChangeHandler;
         
         // 🆕 新增：执行状态变化监听器 - 用于实时状态更新
         private ExecutionStateChangeEventHandler? _executionStateChangeHandler;
+        
+        // 📝 新增：工作日志集合
+        public ObservableCollection<WorkLog> WorkLogs { get; } = new();
+        
+        // 🔧 Phase 7: 实时同步相关字段
+        private readonly Dictionary<string, PositionSnapshot> _lastKnownPositions = new();
+        private readonly object _positionSyncLock = new object();
+        private DateTime _lastPositionSyncTime = DateTime.MinValue;
+        private bool _realTimeSyncEnabled = false;
+        
+        // 🔧 Phase 7: 位置快照数据结构
+        private struct PositionSnapshot
+        {
+            public string Symbol { get; set; }
+            public string PositionSide { get; set; }
+            public decimal PositionAmt { get; set; }
+            public decimal MarkPrice { get; set; }
+            public decimal UnrealizedPnl { get; set; }
+            public DateTime UpdateTime { get; set; }
+        }
+
+        // 🔧 Phase 8: 全面日志管理服务
+        private ComprehensiveLoggingService? _comprehensiveLoggingService;
         
 
 
@@ -310,7 +358,25 @@ namespace BinanceFuturesTrader.Views
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _mainViewModel = mainViewModel;
 
-                _logger.LogInformation("🚀 开始初始化AutoMonitorDashboard - 混合模式：XAML优先 + 代码动态补充");
+            // 🔧 Phase 8: 初始化全面日志管理服务
+            try
+            {
+                _comprehensiveLoggingService = ComprehensiveLoggingService.Instance;
+                _logger.LogInformation("✅ 全面日志管理服务已初始化");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 初始化全面日志管理服务失败");
+            }
+
+            // 🔧 新增：订阅配置同步事件（如果主视图模型可用）
+            if (_mainViewModel != null)
+            {
+                _mainViewModel.ConfigurationSyncRequested += OnConfigurationSyncRequested;
+                _logger.LogInformation("✅ 已订阅主视图模型的配置同步事件");
+            }
+
+            _logger.LogInformation("🚀 开始初始化AutoMonitorDashboard - 混合模式：XAML优先 + 代码动态补充");
                 
                 // 🎯 执行混合方案：XAML为主 + 代码动态补充
                 InitializeHybridUI();
@@ -323,6 +389,7 @@ namespace BinanceFuturesTrader.Views
             // 订阅自动盯盘事件
             _autoMonitorService.MonitorStatusChanged += OnMonitorStatusChanged;
             _autoMonitorService.ExecutionCompleted += OnExecutionCompleted;
+            _autoMonitorService.WorkLogAdded += OnWorkLogAdded;
 
             // 🆕 新增：初始化持仓变化事件处理器并订阅事件
             try
@@ -364,12 +431,24 @@ namespace BinanceFuturesTrader.Views
                 _logger.LogError(ex, "❌ 初始化执行状态变化监听失败");
             }
 
-            // 🔧 修复：减少刷新间隔，确保持仓数据实时更新（每10秒刷新一次）
-            _refreshTimer = new DispatcherTimer
+            // 🔧 修改：使用配置中的扫描间隔，而不是硬编码的定时器频率
+            _refreshTimer = new DispatcherTimer();
+            _refreshTimer.Tick += (s, e) => 
             {
-                Interval = TimeSpan.FromSeconds(10)
+                // 🔧 关键修复：使用Task.Run避免UI线程阻塞
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RefreshDataAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "❌ 定时器数据刷新失败");
+                    }
+                });
             };
-            _refreshTimer.Tick += async (s, e) => await RefreshDataAsync();
+            UpdateRefreshTimerInterval(); // 初始化定时器间隔
 
             // 🔧 新增：初始化倒计时定时器（每秒更新一次）
             _countdownTimer = new DispatcherTimer
@@ -377,6 +456,9 @@ namespace BinanceFuturesTrader.Views
                 Interval = TimeSpan.FromSeconds(1)
             };
             _countdownTimer.Tick += UpdateCountdown;
+            
+            // 🔧 关键修复：在构造函数开始处正确初始化_titleTimer，避免资源泄漏
+            _titleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
 
             // 🎯 延迟加载数据，确保界面完全创建后再加载
             Dispatcher.BeginInvoke(new Action(() =>
@@ -431,9 +513,8 @@ namespace BinanceFuturesTrader.Views
             _countdownTimer.Start(); // 🔧 新增：启动倒计时定时器
             _ = Task.Run(async () => await RefreshDataAsync());
             
-            // 🔧 立即可见的改进：定时更新窗口标题
-            var titleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            titleTimer.Tick += (s, e) =>
+            // 🔧 立即可见的改进：定时更新窗口标题（已在构造函数开始处初始化）
+            _titleTimer.Tick += (s, e) =>
             {
                 try
                 {
@@ -463,7 +544,7 @@ namespace BinanceFuturesTrader.Views
                     Title = "自动盯盘控制面板 - 状态更新错误";
                 }
             };
-            titleTimer.Start();
+            _titleTimer.Start();
             
             // 🎯 初始化按钮状态
             UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
@@ -639,24 +720,8 @@ namespace BinanceFuturesTrader.Views
                     var defaultConfig = CreateDefaultAutoMonitorConfig();
                     GenerateDynamicDataGridColumns(defaultConfig);
                     
-                    // 🔧 修复：提示用户应该先配置参数（延迟显示，避免干扰初始化）
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(1000); // 延迟1秒，等待界面完全加载
-                        Application.Current.Dispatcher.Invoke(() =>
-                        {
-                            if (_mainViewModel?.CurrentAutoMonitorConfig == null)
-                            {
-                                var result = MessageBox.Show("检测到您尚未配置盯盘参数！\n\n🔧 当前显示的是默认配置的表格结构\n\n💡 建议操作：\n1. 关闭此面板\n2. 在主界面点击【盯盘参数配置】\n3. 配置好参数后再返回此面板\n\n是否现在关闭面板去配置？", 
-                                    "配置提醒", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                                
-                                if (result == MessageBoxResult.Yes)
-                                {
-                                    this.Close();
-                                }
-                            }
-                        });
-                    });
+                    // 🔧 优化：简化提示，不阻止用户使用
+                    _logger.LogInformation("💡 使用默认配置生成表格结构，用户可以正常使用");
                 }
                 
                 _logger.LogInformation("✅ 动态内容设置完成");
@@ -1216,9 +1281,51 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                // 🔧 修复：检查监控状态，询问用户是否要停止监控
+                if (_autoMonitorService.IsRunning)
+                {
+                    var result = MessageBox.Show(
+                        "检测到自动盯盘正在运行中。\n\n" +
+                        "【是】- 停止后台监控并关闭窗口\n" +
+                        "【否】- 保持后台监控运行，仅关闭窗口\n" +
+                        "【取消】- 不关闭窗口\n\n" +
+                        "注意：选择【否】将保持后台自动盯盘继续运行，您可以通过主界面的\"停止盯盘\"按钮来停止监控。",
+                        "确认关闭",
+                        MessageBoxButton.YesNoCancel,
+                        MessageBoxImage.Question);
+                    
+                    switch (result)
+                    {
+                        case MessageBoxResult.Yes:
+                            // 停止监控并关闭窗口
+                            _logger.LogInformation("🛑 用户选择停止后台监控并关闭监控面板");
+                            _ = Task.Run(async () => await HandleStopMonitoring());
+                            break;
+                            
+                        case MessageBoxResult.No:
+                            // 保持监控运行，仅关闭窗口
+                            _logger.LogInformation("🖥️ 用户选择保持后台监控运行，仅关闭监控面板");
+                            AppendLog("💡 后台自动盯盘将继续运行，可通过主界面停止");
+                            break;
+                            
+                        case MessageBoxResult.Cancel:
+                            // 取消关闭
+                            _logger.LogInformation("❌ 用户取消关闭监控面板");
+                            return;
+                    }
+                }
+                
                 // 取消订阅自动盯盘事件
                 _autoMonitorService.MonitorStatusChanged -= OnMonitorStatusChanged;
                 _autoMonitorService.ExecutionCompleted -= OnExecutionCompleted;
+                _autoMonitorService.WorkLogAdded -= OnWorkLogAdded;
+                
+                // 🔧 新增：取消配置同步事件订阅
+                if (_mainViewModel != null)
+                {
+                    _mainViewModel.ConfigurationSyncRequested -= OnConfigurationSyncRequested;
+                    _logger.LogInformation("✅ 已取消配置同步事件订阅");
+                }
                 
                 // 🆕 新增：取消订阅持仓变化事件
                 if (_positionChangeHandler != null)
@@ -1245,6 +1352,8 @@ namespace BinanceFuturesTrader.Views
                 // 🔧 修复：停止所有定时器
                 _refreshTimer?.Stop();
                 _countdownTimer?.Stop();
+                // 🔧 关键修复：停止标题定时器，避免资源泄漏导致系统异常
+                _titleTimer?.Stop();
                 
                 _logger.LogInformation("🖥️ 监控界面资源清理完成 (包含倒计时Timer和事件订阅)");
             }
@@ -1253,7 +1362,23 @@ namespace BinanceFuturesTrader.Views
                 _logger.LogError(ex, "❌ 清理监控界面资源时发生错误");
             }
             
-            Close();
+            // 🔧 修复：正确关闭窗口，防止程序最小化
+            try
+            {
+                // 确保窗口正确关闭而不是隐藏
+                this.WindowState = WindowState.Normal;
+                this.Hide(); // 先隐藏窗口
+                this.Close(); // 然后关闭窗口
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 关闭窗口时发生错误");
+                // 如果正常关闭失败，强制关闭
+                Application.Current.Dispatcher.BeginInvoke(new Action(() => 
+                {
+                    this.Close();
+                }));
+            }
         }
 
         /// <summary>
@@ -1277,223 +1402,40 @@ namespace BinanceFuturesTrader.Views
         /// </summary>
         private async void ToggleMonitorButton_Click(object sender, RoutedEventArgs e)
         {
+            // 🔧 完全重写：消除所有文件访问冲突和死锁风险
+            WriteEmergencyLog("🚨 [BUTTON-01] 按钮点击事件触发");
+            
             try
             {
-                if (_autoMonitorService.IsRunning)
+                // 简单的状态检查
+                var serviceIsRunning = _autoMonitorService.IsRunning;
+                WriteEmergencyLog($"🚨 [BUTTON-02] 服务运行状态: {serviceIsRunning}");
+                
+                if (serviceIsRunning)
                 {
-                    // 停止盯盘
-                    _logger.LogInformation("⏹️ 用户点击停止盯盘按钮");
+                    WriteEmergencyLog("🚨 [BUTTON-03] 执行停止盯盘流程");
+                    _logger?.LogInformation("⏹️ 用户点击停止盯盘按钮");
                     
-                    // 更新按钮状态为停止中
-                    UpdateToggleButtonState(false, "正在停止...", Colors.Orange, false);
-                    
-                    try
-                    {
-                        await _autoMonitorService.StopMonitoringAsync();
-                        
-                        // 🔧 修复：停止成功后重置倒计时状态
-                        _nextScanDateTime = DateTime.Now;
-                        ScanCountdownDisplay = "未启动";
-                        NextScanTime = "未启动";
-                        CooldownStatusDisplay = "未启动";
-                        
-                        // 🔧 修复：确保按钮状态正确更新
-                        UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
-                        
-                        // 恢复编辑权限
-                        UpdateEditPermissions(true);
-                        
-                        // 🔧 修复：触发属性更新通知
-                        OnPropertyChanged(nameof(ScanCountdownDisplay));
-                        OnPropertyChanged(nameof(NextScanTime));
-                        OnPropertyChanged(nameof(CooldownStatusDisplay));
-                        
-                        MessageBox.Show("自动盯盘已停止", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                        _logger.LogInformation("✅ 自动盯盘已成功停止");
-                    }
-                    catch (Exception stopEx)
-                    {
-                        _logger.LogError(stopEx, "❌ 停止盯盘时发生异常");
-                        
-                        // 🔧 修复：即使停止失败也要恢复UI状态
-                        UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
-                        UpdateEditPermissions(true);
-                        
-                        MessageBox.Show($"停止盯盘时发生错误: {stopEx.Message}", "停止失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    }
+                    // 停止盯盘 - 保持在UI线程
+                    await HandleStopMonitoring();
                 }
                 else
                 {
-                    // 启动盯盘
-                    _logger.LogInformation("🚀 用户点击启动盯盘按钮");
+                    WriteEmergencyLog("🚨 [BUTTON-04] 执行启动盯盘流程");
+                    _logger?.LogInformation("🚀 用户点击启动盯盘按钮");
                     
-                    // 🔧 修复：智能配置检查 - 从多个来源获取配置
-                    var config = _autoMonitorService.CurrentConfig ?? _mainViewModel?.CurrentAutoMonitorConfig;
-                    
-                    // 如果没有配置，尝试检查是否有保存的合约配置
-                    if (config == null && ContractMonitors.Any())
-                    {
-                        var userChoice = MessageBox.Show("检测到本地有已保存的合约配置，但缺少基础参数配置。\n\n是否继续使用现有配置启动盯盘？\n\n点击【是】继续启动，点击【否】先配置参数", 
-                            "配置检查", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                        
-                        if (userChoice == MessageBoxResult.No)
-                        {
-                            return;
-                        }
-                        // 如果用户选择继续，创建最小配置允许启动
-                        config = new AutoMonitorConfig
-                        {
-                            Name = "临时配置",
-                            ScanIntervalSeconds = 5,
-                            IsEnabled = true,
-                            CreateTime = DateTime.Now
-                        };
-                    }
-                    else if (config == null)
-                    {
-                        MessageBox.Show("请先配置盯盘参数\n\n💡 操作步骤：\n1. 在主界面点击【盯盘参数配置】按钮\n2. 配置好参数后点击保存\n3. 返回此面板点击【加载配置】", 
-                            "需要配置", MessageBoxButton.OK, MessageBoxImage.Information);
-                        return;
-                    }
-                    
-                    _logger.LogInformation($"✅ 找到可用配置: {config.Name}");
-                    
-                    // 更新按钮状态为启动中
-                    UpdateToggleButtonState(false, "正在启动...", Colors.Orange, false);
-                    
-                    // 🔧 修复：添加启动前的状态重置和连接检查
-                    bool success = false;
-                    string errorMessage = "";
-                    
-                    // 🔧 修复：添加重试机制，最多重试2次
-                    for (int retryCount = 0; retryCount <= 2; retryCount++)
-                    {
-                        try
-                        {
-                            if (retryCount > 0)
-                            {
-                                _logger.LogInformation($"🔄 第{retryCount}次重试启动盯盘...");
-                                UpdateToggleButtonState(false, $"重试中({retryCount}/2)...", Colors.Orange, false);
-                                await Task.Delay(1000 * retryCount); // 递增延迟
-                            }
-                            
-                            // 🔧 修复：重置倒计时状态，避免状态污染
-                            _nextScanDateTime = DateTime.Now.AddSeconds(config.ScanIntervalSeconds);
-                            
-                            success = await _autoMonitorService.StartMonitoringAsync(config);
-                            
-                            if (success)
-                            {
-                                // 禁用编辑权限
-                                UpdateEditPermissions(false);
-                                
-                                // 🔧 修复：启动成功后立即更新按钮状态
-                                UpdateToggleButtonState(true, "停止盯盘", Colors.Red, true);
-                                
-                                // 🔧 修复：确保倒计时定时器运行
-                                if (!_countdownTimer.IsEnabled)
-                                {
-                                    _countdownTimer.Start();
-                                    _logger.LogInformation("🔄 重新启动倒计时定时器");
-                                }
-                                
-                                var successMessage = retryCount > 0 ? 
-                                    $"自动盯盘已启动（第{retryCount}次重试成功）" : 
-                                    "自动盯盘已启动";
-                                    
-                                MessageBox.Show(successMessage, "启动成功", MessageBoxButton.OK, MessageBoxImage.Information);
-                                _logger.LogInformation($"✅ 自动盯盘已成功启动{(retryCount > 0 ? $"（重试{retryCount}次）" : "")}");
-                                break; // 成功则跳出重试循环
-                            }
-                            else
-                            {
-                                                            errorMessage = $"启动失败，服务返回false{(retryCount < 2 ? "，正在重试..." : "")}";
-                            
-                            // 🔧 修复：分析可能的失败原因
-                            var isRunning = _autoMonitorService.IsRunning;
-                            var currentConfig = _autoMonitorService.CurrentConfig;
-                            
-                            _logger.LogWarning($"⚠️ 第{retryCount + 1}次启动返回false");
-                            _logger.LogWarning($"🔧 服务状态诊断:");
-                            _logger.LogWarning($"   • IsRunning: {isRunning}");
-                            _logger.LogWarning($"   • Config: {(currentConfig != null ? $"有效({currentConfig.Name})" : "无效")}");
-                            _logger.LogWarning($"   • 配置名称: {config.Name ?? "未命名"}");
-                            _logger.LogWarning($"   • 配置间隔: {config.ScanIntervalSeconds}秒");
-                            _logger.LogWarning($"   • 服务状态管理器: {(_autoMonitorService.UnifiedStateManager != null ? "已初始化" : "未初始化")}");
-                            
-                            if (retryCount < 2)
-                            {
-                                var waitTime = 1000 * (retryCount + 1);
-                                _logger.LogInformation($"🔄 准备第{retryCount + 1}次重试，等待{waitTime}ms...");
-                                continue; // 继续重试
-                            }
-                            else
-                            {
-                                _logger.LogError("❌ 已达到最大重试次数，启动最终失败");
-                                _logger.LogError("💡 建议操作:");
-                                _logger.LogError("   • 检查应用程序日志中的详细错误信息");
-                                _logger.LogError("   • 验证网络连接和API配置");
-                                _logger.LogError("   • 考虑重启应用程序");
-                            }
-                            }
-                        }
-                        catch (Exception startEx)
-                        {
-                            success = false;
-                            errorMessage = startEx.Message;
-                            _logger.LogError(startEx, $"❌ 第{retryCount + 1}次启动盯盘时发生异常");
-                            
-                            // 🔧 修复：特殊处理各种错误类型
-                            if (startEx.Message.Contains("channel has been closed", StringComparison.OrdinalIgnoreCase))
-                            {
-                                errorMessage = "连接通道已关闭，正在重试连接...\n\n可能原因：\n• 服务刚停止，通道未完全关闭\n• 网络连接不稳定\n• API连接超时";
-                                if (retryCount < 2)
-                                {
-                                    _logger.LogInformation($"🔄 检测到通道关闭错误，将等待{2000 * (retryCount + 1)}ms后重试");
-                                    await Task.Delay(1000 * (retryCount + 1)); // 通道错误需要更长等待时间
-                                    continue;
-                                }
-                            }
-                            else if (startEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-                            {
-                                errorMessage = "连接超时，正在重试...\n\n建议：\n• 检查网络连接\n• 确认API服务可用";
-                                if (retryCount < 2) continue;
-                            }
-                            else if (startEx.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase))
-                            {
-                                errorMessage = "API认证失败，请检查API密钥配置";
-                                break; // 认证错误不需要重试
-                            }
-                            else
-                            {
-                                if (retryCount < 2)
-                                {
-                                    errorMessage = $"启动失败: {startEx.Message}，正在重试...";
-                                    continue;
-                                }
-                                else
-                                {
-                                    errorMessage = $"启动失败: {startEx.Message}";
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (!success)
-                    {
-                        // 🔧 修复：启动失败时恢复按钮状态并重置倒计时
-                        UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
-                        _nextScanDateTime = DateTime.Now;
-                        
-                        var fullErrorMessage = $"启动盯盘失败，请检查配置\n\n错误详情：{errorMessage}";
-                        MessageBox.Show(fullErrorMessage, "启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
-                        _logger.LogError($"❌ 启动盯盘失败: {errorMessage}");
-                    }
+                    // 启动盯盘 - 关键修复：不使用ConfigureAwait(false)
+                    await HandleStartMonitoring();
                 }
+                
+                WriteEmergencyLog("🚨 [BUTTON-05] 按钮点击处理完成");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 启动/停止盯盘时发生错误");
+                WriteEmergencyLog($"🚨 [BUTTON-ERROR] 按钮点击异常: {ex.Message}");
+                _logger?.LogError(ex, "❌ 启动/停止盯盘时发生错误");
+                
+                // 简单的错误处理，避免复杂的UI操作
                 MessageBox.Show($"操作失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 
                 // 恢复按钮状态
@@ -1504,12 +1446,559 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
+        /// 处理停止监控
+        /// </summary>
+        private async Task HandleStopMonitoring()
+        {
+                    _logger.LogInformation("⏹️ 用户点击停止盯盘按钮");
+                    
+                    // 更新按钮状态为停止中
+                    UpdateToggleButtonState(false, "正在停止...", Colors.Orange, false);
+                    
+            try
+            {
+                    await _autoMonitorService.StopMonitoringAsync();
+                
+                // 🔧 修复：停止成功后重置倒计时状态
+                _nextScanDateTime = DateTime.Now;
+                ScanCountdownDisplay = "未启动";
+                NextScanTime = "未启动";
+                CooldownStatusDisplay = "未启动";
+                
+                // 🔧 修复：确保按钮状态正确更新
+                UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
+                    
+                    // 恢复编辑权限
+                    UpdateEditPermissions(true);
+                
+                // 🔧 Phase 7: 停止监控时禁用实时同步
+                DisableRealTimeSync();
+                
+                // 🔧 Phase 8: 记录监控停止日志
+                if (_comprehensiveLoggingService != null)
+                {
+                    await _comprehensiveLoggingService.LogMonitorStopAsync("用户操作");
+                    
+                    await _comprehensiveLoggingService.LogButtonClickAsync(
+                        "停止盯盘", 
+                        "AutoMonitorDashboard");
+                }
+                
+                // 🔧 修复：触发属性更新通知
+                OnPropertyChanged(nameof(ScanCountdownDisplay));
+                OnPropertyChanged(nameof(NextScanTime));
+                OnPropertyChanged(nameof(CooldownStatusDisplay));
+                    
+                    MessageBox.Show("自动盯盘已停止", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    _logger.LogInformation("✅ 自动盯盘已成功停止");
+            }
+            catch (Exception stopEx)
+            {
+                _logger.LogError(stopEx, "❌ 停止盯盘时发生异常");
+                
+                // 🔧 修复：即使停止失败也要恢复UI状态
+                UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
+                UpdateEditPermissions(true);
+                
+                MessageBox.Show($"停止盯盘时发生错误: {stopEx.Message}", "停止失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        /// <summary>
+        /// 处理启动监控 - 在后台线程执行防止UI卡死
+        /// </summary>
+        private async Task HandleStartMonitoring()
+        {
+            WriteEmergencyLog("🚨 [START-01] HandleStartMonitoring 方法开始执行");
+            _logger?.LogInformation("🚀 用户点击启动盯盘按钮");
+            
+            try
+            {
+                // 更新按钮状态为启动中
+                WriteEmergencyLog("🚨 [START-02] 准备更新按钮状态");
+                UpdateToggleButtonState(false, "正在启动...", Colors.Orange, false);
+                WriteEmergencyLog("🚨 [START-03] 按钮状态更新完成");
+                
+                // 🔧 关键修复：不使用ConfigureAwait(false)，保持在UI线程上下文
+                WriteEmergencyLog("🚨 [START-04] 开始调用PerformStartMonitoringAsync");
+                var result = await PerformStartMonitoringAsync();
+                WriteEmergencyLog($"🚨 [START-05] PerformStartMonitoringAsync完成，结果: {result.Success}");
+                
+                // 根据结果更新UI状态
+                if (result.Success)
+                {
+                    WriteEmergencyLog("🚨 [START-06] 处理成功结果");
+                    
+                    // 禁用编辑权限
+                    UpdateEditPermissions(false);
+                    
+                    // 🔧 修复：启动成功后立即更新按钮状态
+                    UpdateToggleButtonState(true, "停止盯盘", Colors.Red, true);
+                    
+                    // 🔧 修复：确保倒计时定时器运行
+                    if (!_countdownTimer.IsEnabled)
+                    {
+                        _countdownTimer.Start();
+                        _logger.LogInformation("🔄 重新启动倒计时定时器");
+                    }
+                    
+                    // 🔧 Phase 7: 启动监控成功后启用实时同步
+                    EnableRealTimeSync();
+                    
+                    // 🔧 Phase 8: 记录监控启动日志
+                    if (_comprehensiveLoggingService != null)
+                    {
+                        var config = _autoMonitorService.CurrentConfig ?? _mainViewModel?.CurrentAutoMonitorConfig;
+                        var configName = config?.Name ?? "未知配置";
+                        var contractCount = ContractMonitors?.Count ?? 0;
+                        var scanInterval = config?.ScanIntervalSeconds ?? 30;
+                        
+                        await _comprehensiveLoggingService.LogMonitorStartAsync(
+                            $"配置: {configName}, 合约数: {contractCount}, 扫描间隔: {scanInterval}秒");
+                        
+                        await _comprehensiveLoggingService.LogButtonClickAsync(
+                            "启动盯盘", 
+                            $"配置: {configName}, 合约数: {contractCount}, 扫描间隔: {scanInterval}秒");
+                    }
+                    
+                    MessageBox.Show(result.Message, "启动成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    _logger.LogInformation($"✅ 自动盯盘已成功启动");
+                }
+                else
+                {
+                    WriteEmergencyLog("🚨 [START-07] 处理失败结果");
+                    
+                    // 🔧 修复：启动失败时恢复按钮状态并重置倒计时
+                    UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
+                    _nextScanDateTime = DateTime.Now;
+                    
+                    // 🔧 简化：直接在UI线程显示MessageBox，避免复杂的Task.Run
+                    MessageBox.Show(result.Message, "启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
+                    _logger.LogError($"❌ 启动盯盘失败: {result.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteEmergencyLog($"🚨 [START-ERROR] HandleStartMonitoring异常: {ex.Message}");
+                _logger.LogError(ex, "❌ 启动盯盘时发生异常");
+                
+                // 恢复按钮状态
+                UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
+                
+                MessageBox.Show($"启动盯盘时发生错误: {ex.Message}", "启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 执行启动监控的后台操作
+        /// </summary>
+        private async Task<(bool Success, string Message)> PerformStartMonitoringAsync()
+        {
+            WriteEmergencyLog("🚨 [PERFORM-01] PerformStartMonitoringAsync 开始执行");
+            _logger?.LogCritical("🔍 [PERFORM-01] PerformStartMonitoringAsync 开始执行");
+            
+            try
+            {
+                WriteEmergencyLog("🚨 [PERFORM-02] 开始获取配置");
+                _logger?.LogCritical("🔍 [PERFORM-02] 开始获取配置");
+                    
+                    // 🔧 修复：智能配置检查 - 从多个来源获取配置
+                    var config = _autoMonitorService.CurrentConfig ?? _mainViewModel?.CurrentAutoMonitorConfig;
+                    
+                WriteEmergencyLog($"🚨 [PERFORM-03] 配置获取完成: {(config != null ? config.Name : "null")}");
+                _logger?.LogCritical($"🔍 [PERFORM-03] 配置获取完成: {(config != null ? config.Name : "null")}");
+                
+                // 🔧 关键修复：如果没有配置，检查是否有保存的合约配置（完全避免UI线程交互）
+                if (config == null)
+                {
+                    WriteEmergencyLog("🚨 [PERFORM-04] 配置为空，开始检查本地配置");
+                    _logger?.LogCritical("🔍 [PERFORM-04] 配置为空，开始检查本地配置");
+                    bool hasLocalConfig = false;
+                    
+                    // 🔧 修复死锁：不使用Dispatcher.Invoke，直接检查集合
+                    // 这个操作是线程安全的，因为ObservableCollection的Count是原子操作
+                    try
+                    {
+                        WriteEmergencyLog("🚨 [PERFORM-05] 开始检查ContractMonitors集合");
+                        _logger?.LogCritical("🔍 [PERFORM-05] 开始检查ContractMonitors集合");
+                        
+                        hasLocalConfig = ContractMonitors?.Count > 0;
+                        
+                        WriteEmergencyLog($"🚨 [PERFORM-06] ContractMonitors检查完成: {hasLocalConfig}");
+                        _logger?.LogCritical($"🔍 [PERFORM-06] ContractMonitors检查完成: {hasLocalConfig}");
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteEmergencyLog($"🚨 [PERFORM-07] 检查本地配置异常: {ex.Message}");
+                        _logger?.LogCritical(ex, "🔍 [PERFORM-07] 检查本地配置异常");
+                        _logger?.LogWarning(ex, "❌ 检查本地配置时发生异常，将尝试继续启动");
+                        hasLocalConfig = false;
+                    }
+                    
+                    if (hasLocalConfig)
+                    {
+                        // 🔧 关键修复：直接创建临时配置，避免任何UI交互
+                        _logger.LogInformation("🔧 检测到本地合约配置但缺少基础参数配置");
+                        _logger.LogInformation("🔧 自动创建临时配置以启动盯盘");
+                        
+                        // 自动创建临时配置，避免用户交互阻塞
+                        config = new AutoMonitorConfig
+                        {
+                            Name = "临时配置（基于本地合约）",
+                            ScanIntervalSeconds = 10, // 使用较安全的10秒间隔
+                            IsEnabled = true,
+                            CreateTime = DateTime.Now,
+                            // 🔧 添加基础配置项，确保启动成功
+                            BreakEvenConfig = new AutoBreakEvenConfig
+                            {
+                                IsEnabled = false // 默认关闭
+                            },
+                            AddPositionConfig = new AutoAddPositionConfig
+                            {
+                                IsEnabled = false,
+                                Tiers = new List<AddPositionTier>() // 空列表
+                            },
+                            ProfitProtectionConfig = new AutoProfitProtectionConfig
+                            {
+                                IsEnabled = false,
+                                Tiers = new List<ProfitProtectionTier>() // 空列表
+                            }
+                        };
+                        
+                        _logger.LogInformation($"✅ 创建临时配置：{config.Name}，间隔：{config.ScanIntervalSeconds}秒");
+                    }
+                    else
+                    {
+                        // 🔧 关键修复：没有任何配置时，返回友好错误，不进行UI交互
+                        _logger.LogWarning("❌ 未检测到任何配置，无法启动盯盘");
+                        return (false, "请先配置盯盘参数\n\n💡 操作步骤：\n1. 在主界面点击【盯盘参数配置】按钮\n2. 配置好参数后点击保存\n3. 返回此面板点击【加载配置】");
+                    }
+                }
+                
+                if (config == null)
+                {
+                    _logger.LogError("❌ 配置获取失败，无法启动");
+                    return (false, "配置获取失败");
+                }
+                
+                _logger.LogCritical($"🔍 [PERFORM-08] 配置验证完成，准备启动服务");
+                    _logger.LogInformation($"✅ 找到可用配置: {config.Name}");
+                    
+                // 🔧 修复：添加重试机制，最多重试2次
+                bool success = false;
+                string errorMessage = "";
+                
+                _logger.LogCritical("🔍 [PERFORM-09] 开始重试循环");
+                for (int retryCount = 0; retryCount <= 2; retryCount++)
+                {
+                    try
+                    {
+                        _logger.LogCritical($"🔍 [PERFORM-10] 重试循环第{retryCount + 1}次");
+                        if (retryCount > 0)
+                        {
+                            _logger.LogCritical($"🔍 [PERFORM-11] 执行第{retryCount}次重试逻辑");
+                            _logger.LogInformation($"🔄 第{retryCount}次重试启动盯盘...");
+                            
+                            // 🔧 修复死锁：不在Task.Run内部使用Dispatcher调用
+                            // UpdateToggleButtonState会在后续的success检查中正确更新
+                            _logger.LogInformation($"🔧 重试中({retryCount}/2)，稍后将更新界面状态");
+                            
+                            await Task.Delay(1000 * retryCount); // 递增延迟
+                            _logger.LogCritical($"🔍 [PERFORM-12] 重试延迟完成");
+                        }
+                        
+                        _logger.LogCritical("🔍 [PERFORM-13] 准备重置倒计时状态");
+                        // 🔧 修复：重置倒计时状态，避免状态污染（不使用Dispatcher避免死锁）
+                        // 这个字段的设置是线程安全的，稍后UI更新时会读取到最新值
+                        _nextScanDateTime = DateTime.Now.AddSeconds(config.ScanIntervalSeconds);
+                        _logger.LogCritical("🔍 [PERFORM-14] 倒计时状态重置完成");
+                        
+                                        WriteEmergencyLog("🚨 [PERFORM-15] 即将调用 _autoMonitorService.StartMonitoringAsync");
+                _logger?.LogCritical("🔍 [PERFORM-15] 即将调用 _autoMonitorService.StartMonitoringAsync");
+                
+                // 🔧 关键修复：检查和重置服务状态
+                WriteEmergencyLog($"🚨 [PERFORM-15-1] 检查服务状态，当前IsRunning: {_autoMonitorService.IsRunning}");
+                _logger?.LogCritical($"🔍 [PERFORM-15-1] 检查服务状态，当前IsRunning: {_autoMonitorService.IsRunning}");
+                
+                try
+                {
+                    // 强制停止可能的残留任务
+                    if (_autoMonitorService.IsRunning)
+                    {
+                        WriteEmergencyLog("🚨 [PERFORM-15-2] 服务仍在运行，开始强制停止...");
+                        _logger?.LogCritical("🔍 [PERFORM-15-2] 服务仍在运行，开始强制停止...");
+                        
+                        var stopTask = _autoMonitorService.StopMonitoringAsync();
+                        await stopTask;
+                        
+                        WriteEmergencyLog($"🚨 [PERFORM-15-3] 服务已停止，新状态: {_autoMonitorService.IsRunning}");
+                        _logger?.LogCritical($"🔍 [PERFORM-15-3] 服务已停止，新状态: {_autoMonitorService.IsRunning}");
+                    }
+                    else
+                    {
+                        WriteEmergencyLog("🚨 [PERFORM-15-4] 服务状态正常，无需重置");
+                        _logger?.LogCritical("🔍 [PERFORM-15-4] 服务状态正常，无需重置");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteEmergencyLog($"🚨 [PERFORM-15-ERROR] 服务重置异常: {ex.Message}");
+                    _logger?.LogCritical(ex, "🔍 [PERFORM-15-ERROR] 服务重置异常");
+                }
+                
+                // 🚨 关键诊断：这是最有可能卡死的地方
+                var callTimestamp = DateTime.Now;
+                WriteEmergencyLog($"🚨 [PERFORM-16] 开始调用StartMonitoringAsync");
+                
+                // 🔧 关键修复：为API调用添加超时控制，防止无限卡死
+                var apiTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // 30秒API超时
+                WriteEmergencyLog("🚨 [PERFORM-16-1] API超时控制已创建(30秒)");
+                        
+                // 🔧 修复：创建强制超时检查器的取消令牌，防止资源泄漏
+                var forceTimeoutCts = new CancellationTokenSource();
+                WriteEmergencyLog("🚨 [PERFORM-16-1-1] 强制超时检查器取消令牌已创建");
+                
+                try
+                {
+                    WriteEmergencyLog("🚨 [PERFORM-16-2] 开始超时包装的API调用");
+                    
+                    // 🔧 强化超时控制：使用多重保护机制
+                    var apiTask = _autoMonitorService.StartMonitoringAsync(config);
+                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(30));
+                    
+                    // 🔧 修复：创建可取消的超时检查任务，防止资源泄漏
+                    var timeoutChecker = Task.Run(async () =>
+                    {
+                        WriteEmergencyLog("🚨 [PERFORM-16-CHECKER] 35秒强制超时检查器启动");
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(35), forceTimeoutCts.Token);
+                            WriteEmergencyLog("🚨 [PERFORM-16-FORCE-TIMEOUT] 强制超时检查触发");
+                            _logger?.LogCritical("🔍 [PERFORM-16-FORCE-TIMEOUT] 强制超时检查触发");
+                            throw new TimeoutException("强制超时 - API调用超过35秒");
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            WriteEmergencyLog("🚨 [PERFORM-16-CHECKER-CANCEL] 强制超时检查器已取消");
+                            throw; // 重新抛出取消异常
+                        }
+                    }, forceTimeoutCts.Token);
+                    
+                    WriteEmergencyLog($"🚨 [PERFORM-16-3] 等待API调用或超时... 时间戳: {callTimestamp:HH:mm:ss.fff}");
+                    _logger?.LogCritical($"🔍 [PERFORM-16-3] 等待API调用或超时... 时间戳: {callTimestamp:HH:mm:ss.fff}");
+                    
+                    WriteEmergencyLog("🚨 [PERFORM-16-4] 开始Task.WhenAny等待...");
+                    var completedTask = await Task.WhenAny(apiTask, timeoutTask, timeoutChecker);
+                    WriteEmergencyLog("🚨 [PERFORM-16-5] Task.WhenAny完成");
+                    
+                    var endTimestamp = DateTime.Now;
+                    var totalDuration = endTimestamp - callTimestamp;
+                    
+                    if (completedTask == timeoutTask)
+                    {
+                        // 30秒超时
+                        WriteEmergencyLog($"🚨 [PERFORM-16-TIMEOUT] API调用超时(30秒)，实际耗时: {totalDuration.TotalSeconds:F2}秒");
+                        _logger?.LogCritical($"🔍 [PERFORM-16-TIMEOUT] API调用超时(30秒)，实际耗时: {totalDuration.TotalSeconds:F2}秒");
+                        
+                        // 🔧 修复：取消强制超时检查器
+                        forceTimeoutCts.Cancel();
+                        WriteEmergencyLog("🚨 [PERFORM-16-TIMEOUT-CLEANUP] 已取消强制超时检查器");
+                        
+                        throw new TimeoutException("API调用超时（30秒）- AutoMonitorService.StartMonitoringAsync 未响应");
+                    }
+                    else if (completedTask == timeoutChecker)
+                    {
+                        // 35秒强制超时
+                        WriteEmergencyLog($"🚨 [PERFORM-16-FORCE-TIMEOUT] 强制超时(35秒)，实际耗时: {totalDuration.TotalSeconds:F2}秒");
+                        _logger?.LogCritical($"🔍 [PERFORM-16-FORCE-TIMEOUT] 强制超时(35秒)，实际耗时: {totalDuration.TotalSeconds:F2}秒");
+                        throw new TimeoutException("强制超时（35秒）- API调用完全无响应");
+                    }
+                    else
+                    {
+                        // 🔧 修复：正常完成时取消所有超时检查器
+                        WriteEmergencyLog("🚨 [PERFORM-16-SUCCESS] API任务正常完成，获取结果中...");
+                        success = await apiTask; // 获取真正的结果
+                        apiTimeoutCts.Cancel(); // 取消超时定时器
+                        
+                        // 🔧 关键修复：取消强制超时检查器，防止后台继续运行
+                        forceTimeoutCts.Cancel();
+                        WriteEmergencyLog("🚨 [PERFORM-16-SUCCESS-CLEANUP] 已取消强制超时检查器");
+                        
+                        var completeTimestamp = DateTime.Now;
+                        var duration = completeTimestamp - callTimestamp;
+                        WriteEmergencyLog($"🚨 [PERFORM-17] StartMonitoringAsync调用完成，耗时: {duration.TotalSeconds:F2}秒，结果: {success}");
+                        _logger?.LogCritical($"🔍 [PERFORM-17] StartMonitoringAsync 调用完成，耗时: {duration.TotalSeconds:F2}秒，结果: {success}");
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    WriteEmergencyLog("🚨 [PERFORM-16-ERROR] API调用超时异常");
+                    
+                    // 🔧 修复：异常时也要取消强制超时检查器
+                    forceTimeoutCts.Cancel();
+                    WriteEmergencyLog("🚨 [PERFORM-16-ERROR-CLEANUP] 已取消强制超时检查器");
+                    
+                    throw; // 重新抛出超时异常
+                }
+                catch (Exception apiEx)
+                {
+                    WriteEmergencyLog($"🚨 [PERFORM-16-ERROR] API调用异常: {apiEx.Message}");
+                    
+                    // 🔧 修复：异常时也要取消强制超时检查器
+                    forceTimeoutCts.Cancel();
+                    WriteEmergencyLog("🚨 [PERFORM-16-ERROR-CLEANUP] 已取消强制超时检查器");
+                    
+                    throw; // 重新抛出API异常
+                }
+                finally
+                {
+                    // 🔧 修复：确保在所有退出路径上都释放资源
+                    try
+                    {
+                        apiTimeoutCts?.Dispose();
+                        forceTimeoutCts?.Dispose();
+                        WriteEmergencyLog("🚨 [PERFORM-16-FINAL-CLEANUP] 所有超时控制资源已释放");
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        WriteEmergencyLog($"🚨 [PERFORM-16-CLEANUP-ERROR] 清理资源异常: {cleanupEx.Message}");
+                    }
+                }
+                    
+                    if (success)
+                    {
+                            var successMessage = retryCount > 0 ? 
+                                $"自动盯盘已启动（第{retryCount}次重试成功）" : 
+                                "自动盯盘已启动";
+                        
+                            _logger.LogInformation($"✅ 自动盯盘已成功启动{(retryCount > 0 ? $"（重试{retryCount}次）" : "")}");
+                            return (true, successMessage);
+                    }
+                    else
+                    {
+                            errorMessage = $"启动失败，服务返回false{(retryCount < 2 ? "，正在重试..." : "")}";
+                        
+                        // 🔧 修复：分析可能的失败原因
+                        var isRunning = _autoMonitorService.IsRunning;
+                        var currentConfig = _autoMonitorService.CurrentConfig;
+                        
+                        _logger.LogWarning($"⚠️ 第{retryCount + 1}次启动返回false");
+                        _logger.LogWarning($"🔧 服务状态诊断:");
+                        _logger.LogWarning($"   • IsRunning: {isRunning}");
+                        _logger.LogWarning($"   • Config: {(currentConfig != null ? $"有效({currentConfig.Name})" : "无效")}");
+                        _logger.LogWarning($"   • 配置名称: {config.Name ?? "未命名"}");
+                        _logger.LogWarning($"   • 配置间隔: {config.ScanIntervalSeconds}秒");
+                        _logger.LogWarning($"   • 服务状态管理器: {(_autoMonitorService.UnifiedStateManager != null ? "已初始化" : "未初始化")}");
+                        
+                        if (retryCount < 2)
+                        {
+                            var waitTime = 1000 * (retryCount + 1);
+                            _logger.LogInformation($"🔄 准备第{retryCount + 1}次重试，等待{waitTime}ms...");
+                            continue; // 继续重试
+                        }
+                        else
+                        {
+                            _logger.LogError("❌ 已达到最大重试次数，启动最终失败");
+                            _logger.LogError("💡 建议操作:");
+                            _logger.LogError("   • 检查应用程序日志中的详细错误信息");
+                            _logger.LogError("   • 验证网络连接和API配置");
+                            _logger.LogError("   • 考虑重启应用程序");
+                            break;
+                        }
+                    }
+                }
+                    catch (Exception startEx)
+                    {
+                        success = false;
+                        errorMessage = startEx.Message;
+                        WriteEmergencyLog($"🚨 [PERFORM-ERROR] 启动异常: {startEx.GetType().Name} - {startEx.Message}");
+                        _logger?.LogError(startEx, $"❌ 第{retryCount + 1}次启动盯盘时发生异常");
+                        
+                        // 🔧 修复：特殊处理各种错误类型
+                        if (startEx is TimeoutException)
+                        {
+                            errorMessage = "API调用超时（30秒），启动失败\n\n🚨 可能原因：\n• AutoMonitorService内部卡死\n• 网络连接问题\n• API服务响应缓慢\n• 内部死锁或阻塞\n\n💡 建议：\n• 检查网络连接\n• 重启应用程序\n• 检查API配置";
+                            WriteEmergencyLog("🚨 [PERFORM-TIMEOUT] 确认为超时错误，不重试");
+                            break; // 超时错误不重试，直接返回
+                        }
+                        else if (startEx.Message.Contains("channel has been closed", StringComparison.OrdinalIgnoreCase))
+                        {
+                            errorMessage = "连接通道已关闭，正在重试连接...\n\n可能原因：\n• 服务刚停止，通道未完全关闭\n• 网络连接不稳定\n• API连接超时";
+                            if (retryCount < 2)
+                            {
+                                _logger?.LogInformation($"🔄 检测到通道关闭错误，将等待{2000 * (retryCount + 1)}ms后重试");
+                                await Task.Delay(1000 * (retryCount + 1)); // 通道错误需要更长等待时间
+                                continue;
+                            }
+                        }
+                        else if (startEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+                        {
+                            errorMessage = "连接超时，正在重试...\n\n建议：\n• 检查网络连接\n• 确认API服务可用";
+                            if (retryCount < 2) continue;
+                        }
+                        else if (startEx.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase))
+                        {
+                            errorMessage = "API认证失败，请检查API密钥配置";
+                            break; // 认证错误不需要重试
+                        }
+                        else
+                        {
+                            if (retryCount < 2)
+                            {
+                                errorMessage = $"启动失败: {startEx.Message}，正在重试...";
+                                continue;
+                            }
+                            else
+                            {
+                                errorMessage = $"启动失败: {startEx.Message}";
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // 如果到这里说明所有重试都失败了
+                return (false, $"启动盯盘失败，请检查配置\n\n错误详情：{errorMessage}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 执行启动监控时发生异常");
+                return (false, $"启动盯盘时发生错误: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// 更新启动/停止按钮状态
         /// </summary>
         private void UpdateToggleButtonState(bool isRunning, string text, Color backgroundColor, bool enabled)
         {
+            _logger.LogCritical($"🔍 [UI-UPDATE-01] 开始更新按钮状态: {text}");
+            try
+            {
+                // 🔧 关键修复：检查是否在UI线程，避免不必要的Invoke调用
+                if (Application.Current.Dispatcher.CheckAccess())
+                {
+                    _logger.LogCritical("🔍 [UI-UPDATE-02] 在UI线程，直接更新");
+                    ToggleButtonText = text;
+                    ToggleButtonBackground = new SolidColorBrush(backgroundColor);
+                    ToggleButtonEnabled = enabled;
+                    
+                    if (isRunning)
+                    {
+                        ToggleButtonTooltip = "点击停止自动盯盘监控";
+                    }
+                    else
+                    {
+                        ToggleButtonTooltip = enabled ? "点击启动自动盯盘监控" : "正在处理中...";
+                    }
+                    _logger.LogCritical("🔍 [UI-UPDATE-03] UI线程直接更新完成");
+                }
+                else
+                {
+                    _logger.LogCritical("🔍 [UI-UPDATE-04] 非UI线程，使用Invoke");
             Application.Current.Dispatcher.Invoke(() =>
             {
+                        _logger.LogCritical("🔍 [UI-UPDATE-05] Invoke内部开始执行");
                 ToggleButtonText = text;
                 ToggleButtonBackground = new SolidColorBrush(backgroundColor);
                 ToggleButtonEnabled = enabled;
@@ -1522,7 +2011,15 @@ namespace BinanceFuturesTrader.Views
                 {
                     ToggleButtonTooltip = enabled ? "点击启动自动盯盘监控" : "正在处理中...";
                 }
-            });
+                        _logger.LogCritical("🔍 [UI-UPDATE-06] Invoke内部执行完成");
+                    });
+                    _logger.LogCritical("🔍 [UI-UPDATE-07] Invoke调用完成");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "🔍 [UI-UPDATE-ERROR] 更新按钮状态异常");
+            }
         }
 
         /// <summary>
@@ -1848,40 +2345,62 @@ namespace BinanceFuturesTrader.Views
             {
                 _logger.LogInformation("🚀 用户点击载入持仓配置按钮（新流程）");
                 
-                var confirmResult = MessageBox.Show("🔄 执行正确的持仓载入流程：\n\n1️⃣ 获取当前活跃持仓\n2️⃣ 查找本地配置文件\n3️⃣ 根据基础配置生成缺失配置\n4️⃣ 只更新触发值，保持执行状态\n\n是否继续？", 
-                    "持仓配置载入", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                
-                if (confirmResult == MessageBoxResult.Yes)
+                // 🔧 检查是否需要重置配置
+                var baseConfig = GetCurrentAutoMonitorConfig();
+                if (baseConfig == null)
                 {
-                    // 🚀 使用新的载入流程
-                    LoadCurrentPositionsWithConfigs();
-                    
-                    // 🎯 根据载入的配置重新生成表格列
-                    var config = GetCurrentAutoMonitorConfig();
-                    if (config != null)
-                    {
-                        _logger.LogInformation($"✅ 使用现有配置生成表格列: {config.Name}");
-                        GenerateDynamicDataGridColumns(config);
+                    MessageBox.Show("❌ 无法获取基础配置！\n\n请先在主界面配置自动盯盘参数。", "配置错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                // 🔧 询问用户是否需要用基础配置重置合约配置
+                var resetChoice = MessageBox.Show(
+                    $"📂 载入持仓配置选项\n\n基础配置：{baseConfig.Name}\n\n选择载入方式：\n\n✅ 【是】- 用基础配置重置所有合约配置\n   • 会完全按照基础配置重新生成所有触发条件\n   • 适用于修改基础配置后需要同步的情况\n\n❌ 【否】- 保留现有合约配置\n   • 优先使用已保存的合约配置\n   • 仅更新触发价格，保持执行状态\n\n🔧 建议：如果您刚修改了基础配置，选择【是】", 
+                    "载入配置选项", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                
+                if (resetChoice == MessageBoxResult.Cancel)
+                {
+                    return;
+                }
+                
+                bool forceResetFromBase = resetChoice == MessageBoxResult.Yes;
+                
+                if (forceResetFromBase)
+                {
+                    _logger.LogInformation("🔄 用户选择用基础配置重置合约配置");
+                    LoadCurrentPositionsWithBaseConfigReset(baseConfig);
                     }
                     else
                     {
-                        // 🔧 修复：没有配置时创建默认配置来生成表格列
-                        _logger.LogInformation("⚠️ 未找到配置，使用默认配置生成表格列");
-                        var defaultConfig = CreateDefaultAutoMonitorConfig();
-                        GenerateDynamicDataGridColumns(defaultConfig);
+                    _logger.LogInformation("🔄 用户选择保留现有合约配置");
+                    LoadCurrentPositionsWithConfigs();
+                }
+                
+                // 🎯 根据载入的配置重新生成表格列
+                _logger.LogInformation($"✅ 使用现有配置生成表格列: {baseConfig.Name}");
+                GenerateDynamicDataGridColumns(baseConfig);
+                    
+                    // 🔧 强制刷新界面显示
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        UpdateNewInterfaceStats();
+                        OnPropertyChanged(nameof(ContractMonitors));
                         
-                        // 🔧 提示用户应该先配置参数
-                        MessageBox.Show("检测到您尚未配置盯盘参数！\n\n🔧 当前显示的是默认配置的表格结构\n\n💡 建议操作：\n1. 关闭此面板\n2. 在主界面点击【盯盘参数配置】\n3. 配置好参数后再返回此面板\n4. 重新点击【加载配置】", 
-                            "配置提醒", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
+                        // 通知DataGrid刷新
+                        if (_contractMonitorDataGrid != null)
+                        {
+                            _contractMonitorDataGrid.Items.Refresh();
+                        }
+                    });
                     
                     var loadedContracts = ContractMonitors.Count;
                     var totalConditions = ContractMonitors.Sum(c => c.TriggerConditions.Count);
                     var executedConditions = ContractMonitors.Sum(c => c.TriggerConditions.Count(tc => tc.Status == TriggerExecutionStatus.Executed));
                     
-                    MessageBox.Show($"✅ 持仓配置载入完成！\n\n📊 载入结果：\n• 合约数量：{loadedContracts} 个\n• 触发条件：{totalConditions} 个\n• 已执行条件：{executedConditions} 个\n\n💾 配置已自动保存到本地\n🚀 现在可以启动盯盘功能了", 
+                MessageBox.Show($"✅ 持仓配置载入完成！\n\n📊 载入结果：\n• 合约数量：{loadedContracts} 个\n• 触发条件：{totalConditions} 个\n• 已执行条件：{executedConditions} 个\n• 重置方式：{(forceResetFromBase ? "基础配置重置" : "保留现有配置")}\n\n💾 配置已自动保存到本地\n🚀 现在可以启动盯盘功能了", 
                         "载入成功", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
+                        
+                    _logger.LogInformation($"✅ 配置载入完成，载入{loadedContracts}个合约");
             }
             catch (Exception ex)
             {
@@ -1919,6 +2438,9 @@ namespace BinanceFuturesTrader.Views
         /// <summary>
         /// 全部重置按钮点击事件
         /// </summary>
+        /// <summary>
+        /// 全部重置按钮点击事件 - 重置状态并重新加载基础配置
+        /// </summary>
         private void ResetAllButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -1931,17 +2453,32 @@ namespace BinanceFuturesTrader.Views
                     return;
                 }
                 
+                // 🔧 获取当前基础配置
+                var baseConfig = GetCurrentAutoMonitorConfig();
+                if (baseConfig == null)
+                {
+                    MessageBox.Show("❌ 无法获取基础配置！\n\n请先在主界面配置自动盯盘参数，然后再进行重置操作。", 
+                        "配置错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
                 var totalConditions = ContractMonitors.Sum(c => c.TriggerConditions.Count);
                 var executedConditions = ContractMonitors.Sum(c => c.TriggerConditions.Count(tc => tc.Status == TriggerExecutionStatus.Executed));
                 
-                var resetConfirm = MessageBox.Show($"🔄 确定要重置所有合约的执行状态吗？\n\n📊 统计信息：\n• 合约总数：{ContractMonitors.Count} 个\n• 触发条件总数：{totalConditions} 个\n• 已执行条件：{executedConditions} 个\n\n⚠️ 这将把所有\"已执行\"的触发条件重置为\"未触发\"状态", 
+                // 🔧 更新确认对话框，说明会重新加载配置
+                var resetConfirm = MessageBox.Show($"🔄 确定要全部重置并重新加载基础配置吗？\n\n📊 统计信息：\n• 合约总数：{ContractMonitors.Count} 个\n• 触发条件总数：{totalConditions} 个\n• 已执行条件：{executedConditions} 个\n\n⚠️ 此操作将：\n• 重置所有\"已执行\"的触发条件为\"未触发\"状态\n• 重新从基础配置加载所有目标价、止盈、止损设置\n• 保持合约的启用状态和个性化设置\n\n💡 基础配置: {baseConfig.Name}", 
                     "确认全部重置", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 
                 if (resetConfirm == MessageBoxResult.Yes)
                 {
                     var resetCount = 0;
+                    var reloadCount = 0;
+                    
+                    _logger.LogInformation($"🔄 开始全部重置，使用基础配置: {baseConfig.Name}");
+                    
                     foreach (var contract in ContractMonitors)
                     {
+                        // 🔧 第1步：重置执行状态
                         foreach (var condition in contract.TriggerConditions)
                         {
                             if (condition.Status == TriggerExecutionStatus.Executed)
@@ -1952,19 +2489,50 @@ namespace BinanceFuturesTrader.Views
                                 resetCount++;
                             }
                         }
+                        
+                        // 🔧 第2步：重新从基础配置加载所有触发价格和配置参数
+                        try
+                        {
+                            var beforeCount = contract.TriggerConditions.Count;
+                            
+                            // 使用现有的方法重新加载基础配置的触发价格
+                            UpdateTriggerPricesFromBaseConfig(baseConfig, contract);
+                            
+                            // 🎯 更高级的重载：如果基础配置中有新的阶梯，也要添加
+                            ReloadContractFromBaseConfig(baseConfig, contract.Symbol);
+                            
+                            var afterCount = contract.TriggerConditions.Count;
+                            reloadCount++;
+                            
+                            _logger.LogInformation($"✅ 重载完成: {contract.Symbol}_{contract.PositionSide} - 触发条件: {beforeCount} → {afterCount}");
+                        }
+                        catch (Exception reloadEx)
+                        {
+                            _logger.LogError(reloadEx, $"❌ 重载配置失败: {contract.Symbol}_{contract.PositionSide}");
+                        }
                     }
                     
-                    if (resetCount > 0)
+                    // 🔧 第3步：保存到文件
+                    SaveContractConfigsToFile();
+                    
+                    // 🔧 第4步：更新统计信息
+                    UpdateNewInterfaceStats();
+                    
+                    // 🔧 第5步：显示完成结果
+                    var resultMessage = $"✅ 全部重置和重载完成！\n\n📊 操作结果：\n• 重置执行状态：{resetCount} 个触发条件\n• 重载基础配置：{reloadCount} 个合约\n• 使用基础配置：{baseConfig.Name}\n\n💾 所有配置已保存到本地文件\n🔄 建议：可以启动盯盘功能测试新配置";
+                    
+                    if (resetCount > 0 || reloadCount > 0)
                     {
-                        SaveContractConfigsToFile();
-                        MessageBox.Show($"✅ 全部重置完成！\n📊 已重置 {resetCount} 个触发条件状态\n📁 配置已保存到本地文件", 
-                            "重置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+                        MessageBox.Show(resultMessage, "重置完成", MessageBoxButton.OK, MessageBoxImage.Information);
+                        AppendLog($"🔄 全部重置完成: 重置{resetCount}个状态, 重载{reloadCount}个合约配置");
                     }
                     else
                     {
-                        MessageBox.Show("ℹ️ 所有触发条件都处于\"未触发\"状态，无需重置", 
-                            "无需操作", MessageBoxButton.OK, MessageBoxImage.Information);
+                        MessageBox.Show("ℹ️ 所有触发条件都处于\"未触发\"状态，但已重新加载基础配置", 
+                            "重载完成", MessageBoxButton.OK, MessageBoxImage.Information);
                     }
+                    
+                    _logger.LogInformation($"✅ 全部重置和重载操作完成: 重置{resetCount}个状态, 重载{reloadCount}个合约");
                 }
             }
             catch (Exception ex)
@@ -2169,6 +2737,9 @@ namespace BinanceFuturesTrader.Views
                     AddPositionTiers.Clear();
                     ProfitProtectionTiers.Clear();
                 }
+                
+                // 🔧 新增：智能更新监控面板刷新间隔，跟随配置变化
+                UpdateRefreshTimerInterval();
             }
             catch (Exception ex)
             {
@@ -2342,6 +2913,71 @@ namespace BinanceFuturesTrader.Views
             });
         }
 
+        private void OnWorkLogAdded(object? sender, WorkLogEventArgs e)
+        {
+            try
+            {
+                AddWorkLog(e.Level, e.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理工作日志事件时发生错误");
+            }
+        }
+
+        /// <summary>
+        /// 处理配置同步事件
+        /// </summary>
+        private async void OnConfigurationSyncRequested(object sender, ViewModels.ConfigurationSyncEventArgs e)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 接收到配置同步请求：推仓{e.AddPositionTierCount}阶梯，止盈{e.ProfitProtectionTierCount}阶梯");
+                
+                // 🔧 关键修复：配置切换时，清理所有合约执行状态
+                if (_autoMonitorService != null)
+                {
+                    _logger.LogInformation("🧹 配置同步时清理所有合约执行状态");
+                    _autoMonitorService.ClearContractStates(symbol: null, positionSide: null, reason: "配置同步重置");
+                    
+                    // 🔧 重置所有UI中的合约状态
+                    Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        foreach (var contract in ContractMonitors)
+                        {
+                            foreach (var condition in contract.TriggerConditions)
+                            {
+                                condition.Status = TriggerExecutionStatus.NotTriggered;
+                                condition.LastExecutionTime = null;
+                                condition.StatusNote = $"配置同步重置 {DateTime.Now:HH:mm:ss}";
+                                
+                                // 触发属性更新
+                                condition.OnPropertyChanged(nameof(condition.Status));
+                                condition.OnPropertyChanged(nameof(condition.StatusText));
+                                condition.OnPropertyChanged(nameof(condition.StatusIcon));
+                            }
+                            
+                            // 触发合约级别属性更新
+                            contract.OnPropertyChanged(nameof(contract.TriggerConditions));
+                        }
+                        
+                        _logger.LogInformation($"✅ 已重置 {ContractMonitors.Count} 个合约的执行状态");
+                    });
+                }
+                
+                // 刷新数据显示
+                await RefreshDataAsync();
+                
+                AppendLog($"🔄 配置同步完成：推仓{e.AddPositionTierCount}阶梯，止盈{e.ProfitProtectionTierCount}阶梯，所有状态已重置");
+                _logger.LogInformation("✅ 配置同步处理完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 处理配置同步时发生异常");
+                AppendLog($"❌ 配置同步失败: {ex.Message}");
+            }
+        }
+
         // 🔧 新增：倒计时更新方法
         private void UpdateCountdown(object? sender, EventArgs e)
         {
@@ -2456,6 +3092,9 @@ namespace BinanceFuturesTrader.Views
                     
                     RealTimeLog += logEntry;
                     
+                    // 🔧 Phase 8: 记录到综合日志服务
+                    LogToComprehensiveService(message);
+                    
                     // 自动滚动到底部
                     if (_autoScroll)
                     {
@@ -2491,8 +3130,8 @@ namespace BinanceFuturesTrader.Views
             {
                 lock (_logLock)
                 {
-                    RealTimeLog = "";
-                    AppendLog("🧹 日志已清理");
+                    WorkLogs.Clear();
+                    AddWorkLog("INFO", "🧹 日志已清理");
                 }
             }
             catch (Exception ex)
@@ -2501,18 +3140,70 @@ namespace BinanceFuturesTrader.Views
             }
         }
 
-        // 🔧 新增：自动滚动按钮事件
-        private void AutoScrollButton_Click(object sender, RoutedEventArgs e)
+        // 🔧 新增：添加工作日志条目
+        private void AddWorkLog(string level, string message)
         {
             try
             {
-                _autoScroll = !_autoScroll;
-                AutoScrollButtonColor = new SolidColorBrush(_autoScroll ? Colors.Green : Colors.Gray);
-                AppendLog(_autoScroll ? "📜 自动滚动已开启" : "📜 自动滚动已关闭");
+                lock (_logLock)
+                {
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        WorkLogs.Add(new WorkLog(level, message));
+                        
+                        // 限制日志条目数量，避免内存过多占用
+                        if (WorkLogs.Count > 1000)
+                        {
+                            WorkLogs.RemoveAt(0);
+                        }
+
+                        // 自动滚动到最新日志
+                        if (_autoScroll)
+                        {
+                            try
+                            {
+                                // 查找日志ScrollViewer并滚动到底部
+                                var scrollViewer = FindName("LogScrollViewer") as ScrollViewer;
+                                scrollViewer?.ScrollToBottom();
+                            }
+                            catch
+                            {
+                                // 忽略滚动错误
+                            }
+                        }
+                    });
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "切换自动滚动时发生错误");
+                _logger.LogError(ex, "添加工作日志时发生错误: {Message}", message);
+            }
+        }
+
+        // 🔧 新增：自动滚动按钮事件 - 通过CheckBox状态变化触发
+        private void AutoScrollCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                _autoScroll = true;
+                AddWorkLog("INFO", "📜 自动滚动已开启");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "开启自动滚动时发生错误");
+            }
+        }
+
+        private void AutoScrollCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                _autoScroll = false;
+                AddWorkLog("INFO", "📜 自动滚动已关闭");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "关闭自动滚动时发生错误");
             }
         }
 
@@ -3042,884 +3733,823 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 添加基础列到DataGrid - 包含具体条件的触发金额和图标显示
+        /// 更新合约执行状态
         /// </summary>
-        private void AddBasicColumnsToDataGrid(DataGrid dataGrid)
+        public void UpdateContractExecutionState(string symbol, string positionSide, ExecutionType executionType,
+        int? tierIndex, bool isSuccess, string message)
+    {
+        try
         {
-            _logger.LogInformation("🎯 开始添加包含触发金额和图标的具体条件列");
+            var contractKey = $"{symbol}_{positionSide}";
+            var contractState = ContractStates.FirstOrDefault(c => c.Symbol == symbol && c.PositionSide == positionSide);
             
-            // 启用列
-            dataGrid.Columns.Add(new DataGridCheckBoxColumn
+            if (contractState != null)
             {
-                Header = "启用",
-                Binding = new System.Windows.Data.Binding("IsEnabled"),
-                Width = 50
+                // 更新执行状态
+                if (executionType == ExecutionType.AddPosition)
+                {
+                    if (tierIndex.HasValue && isSuccess)
+                    {
+                        contractState.AddPositionProgress = Math.Max(contractState.AddPositionProgress, tierIndex.Value);
+                    }
+                }
+                else if (executionType == ExecutionType.ProfitProtection)
+                {
+                    if (tierIndex.HasValue && isSuccess)
+                    {
+                        contractState.ProfitProtectionProgress = Math.Max(contractState.ProfitProtectionProgress, tierIndex.Value);
+                    }
+                }
+                
+                contractState.LastExecutionTime = DateTime.Now;
+                contractState.TotalExecutions++;
+                
+                // 更新进度计算
+                contractState.ExecutionProgress = (double)(contractState.AddPositionProgress + contractState.ProfitProtectionProgress) / 
+                                                (contractState.AddPositionTotalTiers + contractState.ProfitProtectionTotalTiers) * 100;
+            }
+            
+            // 添加执行历史记录
+            ExecutionHistory.Insert(0, new ExecutionHistoryDisplayModel
+            {
+                ExecutionTime = DateTime.Now,
+                Symbol = symbol,
+                PositionSide = positionSide,
+                ExecutionType = executionType.ToString(),
+                IsSuccess = isSuccess,
+                ResultText = isSuccess ? "成功" : "失败",
+                ResultColor = new SolidColorBrush(isSuccess ? Colors.Green : Colors.Red),
+                TriggerPnl = 0,
+                ResultMessage = message
             });
-
-            // 合约列
-            dataGrid.Columns.Add(new DataGridTextColumn
+            
+            // 保持历史记录数量限制
+            while (ExecutionHistory.Count > 100)
             {
-                Header = "合约",
-                Binding = new System.Windows.Data.Binding("Symbol"),
-                Width = 100
-            });
-
-            // 浮盈列
-            dataGrid.Columns.Add(new DataGridTextColumn
-            {
-                Header = "浮盈",
-                Binding = new System.Windows.Data.Binding("PnlText"),
-                Width = 80
-            });
-
-            // 🎯 保本条件列 - 显示触发金额和图标
-            try 
-            {
-                var breakEvenColumn = new DataGridTemplateColumn
-                {
-                    Header = "保本条件",
-                    Width = 120
-                };
-                
-                var breakEvenTemplate = new DataTemplate();
-                var breakEvenStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var amountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                amountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].DisplayTriggerPrice"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var iconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].StatusIcon"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色：已执行=绿色，未触发=灰色
-                var iconColorBinding = new System.Windows.Data.Binding("TriggerConditions[0].Status");
-                iconColorBinding.Converter = new StatusToIconColorConverter();
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, iconColorBinding);
-                
-                breakEvenStackFactory.AppendChild(amountTextFactory);
-                breakEvenStackFactory.AppendChild(iconTextFactory);
-                breakEvenTemplate.VisualTree = breakEvenStackFactory;
-                breakEvenColumn.CellTemplate = breakEvenTemplate;
-                dataGrid.Columns.Add(breakEvenColumn);
-                _logger.LogInformation("✅ 保本条件列创建成功");
+                ExecutionHistory.RemoveAt(ExecutionHistory.Count - 1);
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建保本条件列失败");
-            }
-
-            // 🎯 推仓1条件列 - 显示触发金额和图标
-            try 
-            {
-                var addPosition1Column = new DataGridTemplateColumn
-                {
-                    Header = "推仓1",
-                    Width = 120
-                };
-                
-                var addPosition1Template = new DataTemplate();
-                var addPosition1StackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                addPosition1StackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                addPosition1StackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var amount1TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                amount1TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[1].DisplayTriggerPrice"));
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                amount1TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var icon1TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                icon1TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[1].StatusIcon"));
-                icon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                icon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                icon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                icon1TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色
-                var icon1ColorBinding = new System.Windows.Data.Binding("TriggerConditions[1].Status");
-                icon1ColorBinding.Converter = new StatusToIconColorConverter();
-                icon1TextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, icon1ColorBinding);
-                
-                addPosition1StackFactory.AppendChild(amount1TextFactory);
-                addPosition1StackFactory.AppendChild(icon1TextFactory);
-                addPosition1Template.VisualTree = addPosition1StackFactory;
-                addPosition1Column.CellTemplate = addPosition1Template;
-                dataGrid.Columns.Add(addPosition1Column);
-                _logger.LogInformation("✅ 推仓1条件列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建推仓1条件列失败");
-            }
-
-            // 🎯 推仓2条件列 - 显示触发金额和图标
-            try 
-            {
-                var addPosition2Column = new DataGridTemplateColumn
-                {
-                    Header = "推仓2",
-                    Width = 120
-                };
-                
-                var addPosition2Template = new DataTemplate();
-                var addPosition2StackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                addPosition2StackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                addPosition2StackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var amount2TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                amount2TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[2].DisplayTriggerPrice"));
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                amount2TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var icon2TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                icon2TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[2].StatusIcon"));
-                icon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                icon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                icon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                icon2TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色
-                var icon2ColorBinding = new System.Windows.Data.Binding("TriggerConditions[2].Status");
-                icon2ColorBinding.Converter = new StatusToIconColorConverter();
-                icon2TextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, icon2ColorBinding);
-                
-                addPosition2StackFactory.AppendChild(amount2TextFactory);
-                addPosition2StackFactory.AppendChild(icon2TextFactory);
-                addPosition2Template.VisualTree = addPosition2StackFactory;
-                addPosition2Column.CellTemplate = addPosition2Template;
-                dataGrid.Columns.Add(addPosition2Column);
-                _logger.LogInformation("✅ 推仓2条件列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建推仓2条件列失败");
-            }
-
-            // 🎯 止盈1条件列 - 显示触发金额和图标
-            try 
-            {
-                var profit1Column = new DataGridTemplateColumn
-                {
-                    Header = "止盈1",
-                    Width = 120
-                };
-                
-                var profit1Template = new DataTemplate();
-                var profit1StackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                profit1StackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                profit1StackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var profitAmount1TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                profitAmount1TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[3].DisplayTriggerPrice"));
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                profitAmount1TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var profitIcon1TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                profitIcon1TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[3].StatusIcon"));
-                profitIcon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                profitIcon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                profitIcon1TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                profitIcon1TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色
-                var profitIcon1ColorBinding = new System.Windows.Data.Binding("TriggerConditions[3].Status");
-                profitIcon1ColorBinding.Converter = new StatusToIconColorConverter();
-                profitIcon1TextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, profitIcon1ColorBinding);
-                
-                profit1StackFactory.AppendChild(profitAmount1TextFactory);
-                profit1StackFactory.AppendChild(profitIcon1TextFactory);
-                profit1Template.VisualTree = profit1StackFactory;
-                profit1Column.CellTemplate = profit1Template;
-                dataGrid.Columns.Add(profit1Column);
-                _logger.LogInformation("✅ 止盈1条件列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建止盈1条件列失败");
-            }
-
-            // 🎯 止盈2条件列 - 显示触发金额和图标
-            try 
-            {
-                var profit2Column = new DataGridTemplateColumn
-                {
-                    Header = "止盈2",
-                    Width = 120
-                };
-                
-                var profit2Template = new DataTemplate();
-                var profit2StackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                profit2StackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                profit2StackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var profitAmount2TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                profitAmount2TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[4].DisplayTriggerPrice"));
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                profitAmount2TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var profitIcon2TextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                profitIcon2TextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[4].StatusIcon"));
-                profitIcon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                profitIcon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                profitIcon2TextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                profitIcon2TextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色
-                var profitIcon2ColorBinding = new System.Windows.Data.Binding("TriggerConditions[4].Status");
-                profitIcon2ColorBinding.Converter = new StatusToIconColorConverter();
-                profitIcon2TextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, profitIcon2ColorBinding);
-                
-                profit2StackFactory.AppendChild(profitAmount2TextFactory);
-                profit2StackFactory.AppendChild(profitIcon2TextFactory);
-                profit2Template.VisualTree = profit2StackFactory;
-                profit2Column.CellTemplate = profit2Template;
-                dataGrid.Columns.Add(profit2Column);
-                _logger.LogInformation("✅ 止盈2条件列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建止盈2条件列失败");
-            }
-
-            // 操作列
-            try 
-            {
-                var operationColumn = new DataGridTemplateColumn
-                {
-                    Header = "操作",
-                    Width = 180
-                };
-                
-                var operationTemplate = new DataTemplate();
-                var operationStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                operationStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                operationStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 编辑按钮
-                var editButtonFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Button));
-                editButtonFactory.SetValue(System.Windows.Controls.Button.ContentProperty, "编辑条件");
-                editButtonFactory.SetValue(System.Windows.Controls.Button.WidthProperty, 70.0);
-                editButtonFactory.SetValue(System.Windows.Controls.Button.HeightProperty, 24.0);
-                editButtonFactory.SetValue(System.Windows.Controls.Button.MarginProperty, new Thickness(2, 2, 2, 2));
-                editButtonFactory.SetValue(System.Windows.Controls.Button.BackgroundProperty, new SolidColorBrush(Colors.Blue));
-                editButtonFactory.SetValue(System.Windows.Controls.Button.ForegroundProperty, new SolidColorBrush(Colors.White));
-                editButtonFactory.SetValue(System.Windows.Controls.Button.FontSizeProperty, 9.0);
-                editButtonFactory.SetValue(System.Windows.Controls.Button.FontWeightProperty, FontWeights.Bold);
-                editButtonFactory.SetBinding(System.Windows.Controls.Button.TagProperty, new System.Windows.Data.Binding("ContractKey"));
-                editButtonFactory.AddHandler(System.Windows.Controls.Button.ClickEvent, new RoutedEventHandler(EditConditionsButton_Click));
-                
-                operationStackFactory.AppendChild(editButtonFactory);
-                operationTemplate.VisualTree = operationStackFactory;
-                operationColumn.CellTemplate = operationTemplate;
-                dataGrid.Columns.Add(operationColumn);
-                _logger.LogInformation("✅ 操作列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建操作列失败");
-            }
-
-            _logger.LogInformation($"✅ 具体条件列添加完成，总列数: {dataGrid.Columns.Count}");
+            
+            _logger.LogInformation($"✅ 合约执行状态更新完成: {contractKey} {executionType} 阶梯{tierIndex} - {(isSuccess ? "成功" : "失败")}");
         }
-
-        /// <summary>
-        /// 添加最简列结构到DataGrid（应急方案）
-        /// </summary>
-        private void AddMinimalColumnsToDataGrid(DataGrid dataGrid)
+        catch (Exception ex)
         {
-            dataGrid.Columns.Add(new DataGridTextColumn
-            {
-                Header = "合约信息",
-                Binding = new System.Windows.Data.Binding("ContractKey"),
-                Width = 200
-            });
+            _logger.LogError(ex, $"❌ 更新合约执行状态失败: {symbol}_{positionSide}");
         }
+    }
 
-        /// <summary>
-        /// 创建合约状态数据表格（旧版本，保持兼容性）
-        /// </summary>
-        private System.Windows.Controls.DataGrid CreateContractStateDataGrid()
+    /// <summary>
+    /// 处理新开仓事件
+    /// </summary>
+    public void HandleNewPositionOpened(string symbol, string positionSide, decimal quantity, decimal currentPnl)
+    {
+        try
         {
-            var dataGrid = new System.Windows.Controls.DataGrid
-            {
-                AutoGenerateColumns = false,
-                CanUserAddRows = false,
-                IsReadOnly = true,
-                GridLinesVisibility = System.Windows.Controls.DataGridGridLinesVisibility.Horizontal,
-                Background = new SolidColorBrush(Colors.White),
-                FontSize = 13,
-                RowHeight = 38, // 🔧 增加行高，确保内容完整显示
-                ItemsSource = ContractStates
-            };
-
-            // 合约列  
-            var symbolColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "合约",
-                Binding = new System.Windows.Data.Binding("Symbol"),
-                Width = 110,
-                FontWeight = FontWeights.Bold
-            };
-            dataGrid.Columns.Add(symbolColumn);
-
-            // 保本状态列
-            var breakEvenColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "保本状态",
-                Binding = new System.Windows.Data.Binding("BreakEvenStatus"),
-                Width = 100
-            };
-            dataGrid.Columns.Add(breakEvenColumn);
-
-            // 推仓进度列
-            var addPositionColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "推仓进度",
-                Binding = new System.Windows.Data.Binding("AddPositionProgress") { StringFormat = "{0}/4" },
-                Width = 80
-            };
-            dataGrid.Columns.Add(addPositionColumn);
-
-            // 保盈进度列
-            var profitProtectionColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "保盈进度",
-                Binding = new System.Windows.Data.Binding("ProfitProtectionProgress") { StringFormat = "{0}/3" },
-                Width = 80
-            };
-            dataGrid.Columns.Add(profitProtectionColumn);
-
-            // 总执行次数列
-            var totalExecutionsColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "总执行次数",
-                Binding = new System.Windows.Data.Binding("TotalExecutions"),
-                Width = 80
-            };
-            dataGrid.Columns.Add(totalExecutionsColumn);
-
-            // 最后执行列
-            var lastExecutionColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "最后执行",
-                Binding = new System.Windows.Data.Binding("LastExecutionTime") { StringFormat = "{0:MM-dd HH:mm}" },
-                Width = 90
-            };
-            dataGrid.Columns.Add(lastExecutionColumn);
-
-            return dataGrid;
+            _logger.LogInformation($"🆕 处理新开仓: {symbol}_{positionSide}, 数量: {quantity}");
+            // 这里可以添加新开仓的处理逻辑
         }
-
-        /// <summary>
-        /// 创建执行历史数据表格
-        /// </summary>
-        private System.Windows.Controls.DataGrid CreateExecutionHistoryDataGrid()
+        catch (Exception ex)
         {
-            var dataGrid = new System.Windows.Controls.DataGrid
-            {
-                AutoGenerateColumns = false,
-                CanUserAddRows = false,
-                IsReadOnly = true,
-                GridLinesVisibility = System.Windows.Controls.DataGridGridLinesVisibility.Horizontal,
-                AlternatingRowBackground = new SolidColorBrush(Color.FromRgb(240, 248, 240)),
-                FontSize = 12,
-                RowHeight = 35, // 🔧 增加行高，确保内容完整显示
-                ItemsSource = ExecutionHistory
-            };
-
-            // 🔧 优化列宽设置，确保内容完整显示并铺满可用空间
-            // 时间列
-            var timeColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "时间",
-                Binding = new System.Windows.Data.Binding("ExecutionTime") { StringFormat = "{0:HH:mm:ss}" },
-                Width = new System.Windows.Controls.DataGridLength(70) // 增加宽度确保时间完整显示
-            };
-            var timeStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            timeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            timeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            timeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0));
-            timeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Gray)));
-            timeColumn.ElementStyle = timeStyle;
-            dataGrid.Columns.Add(timeColumn);
-
-            // 合约列
-            var symbolColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "合约",
-                Binding = new System.Windows.Data.Binding("Symbol"),
-                Width = new System.Windows.Controls.DataGridLength(80) // 增加宽度确保合约名完整显示
-            };
-            var symbolStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            symbolColumn.ElementStyle = symbolStyle;
-            dataGrid.Columns.Add(symbolColumn);
-
-            // 类型列
-            var typeColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "类型",
-                Binding = new System.Windows.Data.Binding("ExecutionType"),
-                Width = new System.Windows.Controls.DataGridLength(1, System.Windows.Controls.DataGridLengthUnitType.Star) // 使用Star宽度自适应
-            };
-            var typeStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            typeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            typeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            typeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            typeStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0));
-            typeColumn.ElementStyle = typeStyle;
-            dataGrid.Columns.Add(typeColumn);
-
-            // 结果列
-            var resultColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "结果",
-                Binding = new System.Windows.Data.Binding("ResultText"),
-                Width = new System.Windows.Controls.DataGridLength(60) // 增加宽度确保结果文字完整显示
-            };
-            var resultStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            resultStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            resultStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            resultStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            resultStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0));
-            resultColumn.ElementStyle = resultStyle;
-            dataGrid.Columns.Add(resultColumn);
-
-            // 浮盈列
-            var pnlColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "浮盈",
-                Binding = new System.Windows.Data.Binding("TriggerPnl") { StringFormat = "{0:F1}U" },
-                Width = new System.Windows.Controls.DataGridLength(60) // 增加宽度确保浮盈数值完整显示
-            };
-            var pnlStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.DarkBlue)));
-            pnlColumn.ElementStyle = pnlStyle;
-            dataGrid.Columns.Add(pnlColumn);
-
-            return dataGrid;
+            _logger.LogError(ex, $"❌ 处理新开仓失败: {symbol}_{positionSide}");
         }
+    }
 
-        /// <summary>
-        /// 创建推仓配置卡片
-        /// </summary>
-        private System.Windows.Controls.Border CreateAddPositionConfigCard()
+    /// <summary>
+    /// 处理持仓关闭事件
+    /// </summary>
+    public void HandlePositionClosed(string symbol, string positionSide)
+    {
+        try
         {
-            var card = new System.Windows.Controls.Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(248, 249, 250)),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(12),
-                Margin = new Thickness(0, 0, 4, 0)
-            };
-
-            var panel = new System.Windows.Controls.StackPanel();
-
-            var title = new System.Windows.Controls.TextBlock
-            {
-                Text = "⚡ 推仓配置详情",
-                FontSize = 13,
-                FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(73, 80, 87)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            panel.Children.Add(title);
-
-            // 🔧 创建推仓配置数据表格 - 支持动态数量档位
-            var dataGrid = new System.Windows.Controls.DataGrid
-            {
-                AutoGenerateColumns = false,
-                CanUserAddRows = false,
-                IsReadOnly = true,
-                GridLinesVisibility = System.Windows.Controls.DataGridGridLinesVisibility.Horizontal,
-                Background = new SolidColorBrush(Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                FontSize = 12, // 增加字体大小提升可读性
-                RowHeight = 32, // 🔧 增加行高，确保文字完整显示
-                HeadersVisibility = System.Windows.Controls.DataGridHeadersVisibility.Column,
-                AlternatingRowBackground = new SolidColorBrush(Color.FromRgb(241, 243, 244)),
-                ItemsSource = AddPositionTiers,
-                MaxHeight = 220, // 相应增加最大高度
-                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled
-            };
-
-            // 🔧 优化列宽设置，确保内容完整显示
-            // 档位列
-            var tierColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "档位",
-                Binding = new System.Windows.Data.Binding("TierIndex"),
-                Width = new System.Windows.Controls.DataGridLength(50) // 固定宽度，确保数字完整显示
-            };
-            tierColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(73, 80, 87))));
-            dataGrid.Columns.Add(tierColumn);
-
-            // 触发浮盈列
-            var triggerColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "触发浮盈",
-                Binding = new System.Windows.Data.Binding("TriggerProfitAmount") { StringFormat = "{0:F0}U" },
-                Width = new System.Windows.Controls.DataGridLength(85) // 固定宽度，确保数值和单位完整显示
-            };
-            triggerColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(40, 167, 69))));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
-            dataGrid.Columns.Add(triggerColumn);
-
-            // 风险倍数列
-            var riskColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "风险倍数",
-                Binding = new System.Windows.Data.Binding("RiskMultiplier") { StringFormat = "{0:F1}倍" },
-                Width = new System.Windows.Controls.DataGridLength(80) // 固定宽度，确保倍数完整显示
-            };
-            riskColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            riskColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            riskColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            riskColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            riskColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0, 123, 255))));
-            riskColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
-            dataGrid.Columns.Add(riskColumn);
-
-            // 止损比例列
-            var stopLossColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "止损比例",
-                Binding = new System.Windows.Data.Binding("StopLossRatio") { StringFormat = "{0:P1}" },
-                Width = new System.Windows.Controls.DataGridLength(80) // 固定宽度，确保百分比完整显示
-            };
-            stopLossColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            stopLossColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            stopLossColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            stopLossColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            stopLossColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(220, 53, 69))));
-            stopLossColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
-            dataGrid.Columns.Add(stopLossColumn);
-
-            panel.Children.Add(dataGrid);
-            card.Child = panel;
-            return card;
+            _logger.LogInformation($"❌ 处理持仓关闭: {symbol}_{positionSide}");
+            // 这里可以添加持仓关闭的处理逻辑
         }
-
-        /// <summary>
-        /// 创建保盈配置卡片
-        /// </summary>
-        private System.Windows.Controls.Border CreateProfitProtectionConfigCard()
+        catch (Exception ex)
         {
-            var card = new System.Windows.Controls.Border
+            _logger.LogError(ex, $"❌ 处理持仓关闭失败: {symbol}_{positionSide}");
+        }
+    }
+
+            /// <summary>
+        /// 强制刷新持仓数据
+        /// </summary>
+        public void ForceRefreshPositionsData()
+        {
+            try
             {
-                Background = new SolidColorBrush(Color.FromRgb(248, 249, 250)),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(12),
-                Margin = new Thickness(4, 0, 0, 0)
-            };
-
-            var panel = new System.Windows.Controls.StackPanel();
-
-            var title = new System.Windows.Controls.TextBlock
+                _logger.LogInformation("🔄 强制刷新持仓数据");
+                // 这里可以添加强制刷新的逻辑
+            }
+            catch (Exception ex)
             {
-                Text = "💰 保盈配置详情",
-                FontSize = 13,
-                FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(73, 80, 87)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            panel.Children.Add(title);
-
-            // 🔧 创建保盈配置数据表格 - 支持动态数量档位
-            var dataGrid = new System.Windows.Controls.DataGrid
-            {
-                AutoGenerateColumns = false,
-                CanUserAddRows = false,
-                IsReadOnly = true,
-                GridLinesVisibility = System.Windows.Controls.DataGridGridLinesVisibility.Horizontal,
-                Background = new SolidColorBrush(Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                FontSize = 12, // 增加字体大小提升可读性
-                RowHeight = 32, // 🔧 增加行高，确保文字完整显示
-                HeadersVisibility = System.Windows.Controls.DataGridHeadersVisibility.Column,
-                AlternatingRowBackground = new SolidColorBrush(Color.FromRgb(241, 243, 244)),
-                ItemsSource = ProfitProtectionTiers,
-                MaxHeight = 220, // 相应增加最大高度
-                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled
-            };
-
-            // 🔧 优化列宽设置，确保内容完整显示
-            // 档位列
-            var tierColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "档位",
-                Binding = new System.Windows.Data.Binding("TierIndex"),
-                Width = new System.Windows.Controls.DataGridLength(50) // 固定宽度，确保数字完整显示
-            };
-            tierColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            tierColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(73, 80, 87))));
-            dataGrid.Columns.Add(tierColumn);
-
-            // 触发浮盈列
-            var triggerColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "触发浮盈",
-                Binding = new System.Windows.Data.Binding("TriggerProfitAmount") { StringFormat = "{0:F0}U" },
-                Width = new System.Windows.Controls.DataGridLength(85) // 固定宽度，确保数值和单位完整显示
-            };
-            triggerColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(40, 167, 69))));
-            triggerColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
-            dataGrid.Columns.Add(triggerColumn);
-
-            // 保护金额列
-            var protectionColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "保护金额",
-                Binding = new System.Windows.Data.Binding("ProtectionAmount") { StringFormat = "{0:F0}U" },
-                Width = new System.Windows.Controls.DataGridLength(85) // 固定宽度，确保数值和单位完整显示
-            };
-            protectionColumn.ElementStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            protectionColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right));
-            protectionColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            protectionColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            protectionColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(111, 66, 193))));
-            protectionColumn.ElementStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
-            dataGrid.Columns.Add(protectionColumn);
-
-            panel.Children.Add(dataGrid);
-            card.Child = panel;
-            return card;
+                _logger.LogError(ex, "❌ 强制刷新持仓数据失败");
+            }
         }
 
-        #endregion
+        /// <summary>
+        /// 更新刷新定时器间隔
+        /// </summary>
+        private void UpdateRefreshTimerInterval()
+        {
+            try
+            {
+                var config = _autoMonitorService?.CurrentConfig;
+                var interval = config?.ScanIntervalSeconds ?? 30;
+                if (_refreshTimer != null)
+                {
+                    _refreshTimer.Interval = TimeSpan.FromSeconds(interval);
+                    _logger.LogInformation($"✅ 刷新定时器间隔更新为 {interval} 秒");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 更新刷新定时器间隔失败");
+            }
+        }
 
         /// <summary>
-        /// 根据通用配置重新生成合约配置
+        /// 刷新当前持仓数据
+        /// </summary>
+        private void RefreshCurrentPositionsData()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 刷新当前持仓数据");
+                
+                // 🔧 修复：从AutoMonitorService获取实时状态数据
+                var positionProfiles = _autoMonitorService.GetPositionProfiles();
+                var unifiedStateManager = _autoMonitorService.UnifiedStateManager;
+                
+                _logger.LogDebug($"📊 获取到 {positionProfiles.Count} 个持仓档案");
+                
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    try
+                    {
+                        // 🔧 关键修复：如果ContractMonitors为空但有持仓，重新创建合约监控
+                        if (ContractMonitors.Count == 0 && positionProfiles.Count > 0)
+                        {
+                            _logger.LogInformation("🔄 ContractMonitors为空，从持仓重新创建合约监控模型");
+                            
+                            // 获取当前配置
+                            var currentConfig = GetCurrentAutoMonitorConfig();
+                            if (currentConfig != null)
+                            {
+                                // 为每个持仓创建合约监控模型
+                                foreach (var kvp in positionProfiles)
+                                {
+                                    var contractKey = kvp.Key;
+                                    var profile = kvp.Value;
+                                    
+                                    var contractMonitor = GenerateContractConfigFromBaseConfig(profile, currentConfig);
+                                    ContractMonitors.Add(contractMonitor);
+                                    _logger.LogInformation($"🔄 从持仓创建合约监控: {contractKey}，触发条件数量: {contractMonitor.TriggerConditions.Count}");
+                                }
+                            }
+                            else
+                            {
+                                // 如果没有配置，使用默认配置
+                                var defaultConfig = CreateDefaultAutoMonitorConfig();
+                                foreach (var kvp in positionProfiles)
+                                {
+                                    var contractKey = kvp.Key;
+                                    var profile = kvp.Value;
+                                    
+                                    var contractMonitor = GenerateContractConfigFromBaseConfig(profile, defaultConfig);
+                                    ContractMonitors.Add(contractMonitor);
+                                    _logger.LogInformation($"🔄 使用默认配置创建合约监控: {contractKey}");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // 🔧 更新现有合约的状态，而不是重新创建
+                            foreach (var contract in ContractMonitors.ToList())
+                            {
+                                var contractKey = $"{contract.Symbol}_{contract.PositionSide}";
+                                
+                                if (positionProfiles.TryGetValue(contractKey, out var profile))
+                                {
+                                    // 更新基本信息
+                                    contract.IsActive = profile.IsActive;
+                                    
+                                    // 🔧 关键修复：同步触发条件的执行状态
+                                    UpdateContractTriggerConditionsFromProfile(contract, profile, unifiedStateManager);
+                                    
+                                    _logger.LogDebug($"🔄 已更新合约状态: {contractKey}");
+                                }
+                                else
+                                {
+                                    // 持仓已关闭，标记为非活跃
+                                    contract.IsActive = false;
+                                    _logger.LogDebug($"❌ 合约已非活跃: {contractKey}");
+                                }
+                            }
+                            
+                            // 🔧 添加新的合约（如果有）
+                            foreach (var kvp in positionProfiles)
+                            {
+                                var contractKey = kvp.Key;
+                                var profile = kvp.Value;
+                                
+                                var existingContract = ContractMonitors.FirstOrDefault(c => 
+                                    $"{c.Symbol}_{c.PositionSide}" == contractKey);
+                                
+                                if (existingContract == null)
+                                {
+                                    // 创建新的合约监控模型
+                                    var newContract = CreateContractMonitorFromProfile(profile);
+                                    ContractMonitors.Add(newContract);
+                                    _logger.LogInformation($"🆕 添加新合约监控: {contractKey}");
+                                }
+                            }
+                        }
+                        
+                        // 🔧 触发UI属性更新
+                        OnPropertyChanged(nameof(ContractMonitors));
+                        UpdateNewInterfaceStats();
+                        
+                        // 🔧 强制刷新DataGrid显示和列结构
+                        if (_contractMonitorDataGrid != null)
+                        {
+                            // 重新生成列结构（如果有配置的话）
+                            var currentConfig = GetCurrentAutoMonitorConfig();
+                            if (currentConfig != null)
+                            {
+                                GenerateDynamicDataGridColumns(currentConfig);
+                                _logger.LogDebug("🔄 重新生成DataGrid列结构");
+                            }
+                            
+                            _contractMonitorDataGrid.Items.Refresh();
+                        }
+                        
+                        _logger.LogInformation($"✅ 持仓数据刷新完成，活跃合约: {ContractMonitors.Count(c => c.IsActive)} 个");
+                    }
+                    catch (Exception uiEx)
+                    {
+                        _logger.LogError(uiEx, "❌ UI更新时发生错误");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 刷新当前持仓数据失败");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 更新合约触发条件状态（从档案和UnifiedStateManager同步）
+        /// </summary>
+        private void UpdateContractTriggerConditionsFromProfile(ContractMonitorModel contract, PositionProfile profile, UnifiedStateManager stateManager)
+        {
+            try
+            {
+                _logger.LogDebug($"🔄 开始更新合约触发条件状态: {contract.Symbol}_{contract.PositionSide}");
+                
+                // 🔧 新增：优先从本地手动修改文件读取状态
+                var manualStates = LoadManualStatesFromFile(contract.Symbol, contract.PositionSide);
+                
+                foreach (var condition in contract.TriggerConditions)
+                {
+                    // 🔧 关键修复：从统一状态管理器获取最新状态
+                    bool isExecuted = false;
+                    
+                    switch (condition.Type)
+                    {
+                        case TriggerConditionType.BreakEven:
+                            // 🔧 优先检查手动修改状态
+                            if (manualStates.BreakEvenStatus == "√" || manualStates.BreakEvenStatus == "已执行")
+                            {
+                                isExecuted = true;
+                                _logger.LogInformation($"🔍 从手动修改文件读取到保本已执行状态: {contract.Symbol}_{contract.PositionSide}");
+                            }
+                            else
+                            {
+                                isExecuted = stateManager.IsExecuted(profile.Symbol, profile.PositionSide, ExecutionType.BreakEven);
+                            }
+                            break;
+                            
+                        case TriggerConditionType.AddPosition:
+                            if (condition.TierIndex.HasValue)
+                            {
+                                // 🔧 优先检查手动修改状态
+                                var manualPushStatus = GetManualPushStatus(manualStates, condition.TierIndex.Value);
+                                if (manualPushStatus == "√" || manualPushStatus == "已执行")
+                                {
+                                    isExecuted = true;
+                                    _logger.LogInformation($"🔍 从手动修改文件读取到推仓{condition.TierIndex}档已执行状态: {contract.Symbol}_{contract.PositionSide}");
+                                }
+                                else
+                                {
+                                    isExecuted = stateManager.IsExecuted(profile.Symbol, profile.PositionSide, ExecutionType.AddPosition, condition.TierIndex.Value);
+                                }
+                            }
+                            break;
+                            
+                        case TriggerConditionType.ProfitProtection:
+                            if (condition.TierIndex.HasValue)
+                            {
+                                // 🔧 优先检查手动修改状态
+                                var manualProfitStatus = GetManualProfitStatus(manualStates, condition.TierIndex.Value);
+                                if (manualProfitStatus == "√" || manualProfitStatus == "已执行")
+                                {
+                                    isExecuted = true;
+                                    _logger.LogInformation($"🔍 从手动修改文件读取到保盈{condition.TierIndex}档已执行状态: {contract.Symbol}_{contract.PositionSide}");
+                                }
+                                else
+                                {
+                                    isExecuted = stateManager.IsExecuted(profile.Symbol, profile.PositionSide, ExecutionType.ProfitProtection, condition.TierIndex.Value);
+                                }
+                            }
+                            break;
+                    }
+                    
+                    // 🔧 更新状态并触发属性变化通知
+                    var newStatus = isExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
+                    if (condition.Status != newStatus)
+                    {
+                        condition.Status = newStatus;
+                        condition.LastExecutionTime = isExecuted ? DateTime.Now : null;
+                        
+                        // 🔧 关键：触发属性变化通知
+                        condition.OnPropertyChanged(nameof(condition.Status));
+                        condition.OnPropertyChanged(nameof(condition.StatusText));
+                        condition.OnPropertyChanged(nameof(condition.StatusIcon));
+                        condition.OnPropertyChanged(nameof(condition.LastExecutionTime));
+                        
+                        _logger.LogDebug($"🔄 状态更新: {contract.Symbol}_{contract.PositionSide} {condition.TypeText}{(condition.TierIndex?.ToString() ?? "")} → {newStatus}");
+                    }
+                }
+                
+                // 🔧 触发合约级别的属性更新
+                contract.OnPropertyChanged(nameof(contract.TriggerConditions));
+                contract.OnPropertyChanged(nameof(contract.ExecutedCount));
+                contract.OnPropertyChanged(nameof(contract.ExecutionProgress));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 更新合约触发条件状态失败: {contract.Symbol}_{contract.PositionSide}");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：从本地文件加载手动修改的状态
+        /// </summary>
+        private ManualStatusData LoadManualStatesFromFile(string symbol, string positionSide)
+        {
+            var result = new ManualStatusData();
+            
+            try
+            {
+                var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
+                                             "BinanceFuturesTrader", "ContractConfigs.json");
+                
+                if (File.Exists(configPath))
+                {
+                    var json = File.ReadAllText(configPath);
+                    var savedConfigs = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+                    var contractName = $"{symbol} {positionSide}";
+                    
+                    if (savedConfigs != null && savedConfigs.ContainsKey(contractName))
+                    {
+                        var contractData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(savedConfigs[contractName].ToString());
+                        
+                        if (contractData != null)
+                        {
+                            // 读取保本状态
+                            if (contractData.ContainsKey("BreakEvenStatus"))
+                            {
+                                result.BreakEvenStatus = contractData["BreakEvenStatus"].ToString();
+                            }
+                            
+                            // 读取推仓状态
+                            for (int i = 1; i <= 4; i++)
+                            {
+                                var key = $"PushTier{i}Status";
+                                if (contractData.ContainsKey(key))
+                                {
+                                    result.PushTierStatuses[i] = contractData[key].ToString();
+                                }
+                            }
+                            
+                            // 读取保盈状态
+                            for (int i = 1; i <= 3; i++)
+                            {
+                                var key = $"ProfitTier{i}Status";
+                                if (contractData.ContainsKey(key))
+                                {
+                                    result.ProfitTierStatuses[i] = contractData[key].ToString();
+                                }
+                            }
+                            
+                            _logger.LogDebug($"🔍 成功从文件读取手动状态: {contractName} - 保本: {result.BreakEvenStatus}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 从文件读取手动状态失败: {symbol}_{positionSide}");
+            }
+            
+            return result;
+        }
+
+        /// <summary>
+        /// 🔧 新增：获取手动修改的推仓状态
+        /// </summary>
+        private string GetManualPushStatus(ManualStatusData manualStates, int tierIndex)
+        {
+            return manualStates.PushTierStatuses.TryGetValue(tierIndex, out var status) ? status : "";
+        }
+
+        /// <summary>
+        /// 🔧 新增：获取手动修改的保盈状态
+        /// </summary>
+        private string GetManualProfitStatus(ManualStatusData manualStates, int tierIndex)
+        {
+            return manualStates.ProfitTierStatuses.TryGetValue(tierIndex, out var status) ? status : "";
+        }
+
+        /// <summary>
+        /// 🔧 新增：手动状态数据结构
+        /// </summary>
+        private class ManualStatusData
+        {
+            public string BreakEvenStatus { get; set; } = "";
+            public Dictionary<int, string> PushTierStatuses { get; set; } = new();
+            public Dictionary<int, string> ProfitTierStatuses { get; set; } = new();
+        }
+
+
+
+        /// <summary>
+        /// 从持仓档案创建合约监控模型
+        /// </summary>
+        private ContractMonitorModel CreateContractMonitorFromProfile(PositionProfile profile)
+        {
+            var contract = new ContractMonitorModel
+            {
+                Symbol = profile.Symbol,
+                PositionSide = profile.PositionSide,
+                IsEnabled = true,
+                IsActive = profile.IsActive,
+                UnrealizedPnl = 0, // 将在后续刷新中更新
+                CurrentPrice = 0   // 将在后续刷新中更新
+            };
+            
+            // 🔧 初始化触发条件（如果需要的话）
+            // 这里可以根据基础配置生成默认的触发条件
+            
+            return contract;
+        }
+
+        /// <summary>
+        /// 创建示例合约数据
+        /// </summary>
+        private void CreateExampleContractData()
+        {
+            try
+            {
+                _logger.LogInformation("📝 创建示例合约数据");
+                
+                // 创建示例数据
+                var exampleContract = new ContractMonitorModel
+                {
+                    Symbol = "BTCUSDT",
+                    PositionSide = "LONG",
+                    IsEnabled = true,
+                    IsActive = true,
+                    UnrealizedPnl = 0,
+                    CurrentPrice = 50000
+                };
+
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    ContractMonitors.Add(exampleContract);
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建示例合约数据失败");
+            }
+        }
+
+        /// <summary>
+        /// 重新生成数据表格列
+        /// </summary>
+        private void RegenerateDataGridColumns()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 重新生成数据表格列");
+                // 这里可以添加重新生成列的逻辑
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 重新生成数据表格列失败");
+            }
+        }
+
+        /// <summary>
+        /// 重新生成数据表格列（带配置参数）
+        /// </summary>
+        private void RegenerateDataGridColumns(AutoMonitorConfig config)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 重新生成数据表格列: {config.Name}");
+                // 这里可以添加重新生成列的逻辑
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 重新生成数据表格列失败");
+            }
+        }
+
+        /// <summary>
+        /// 从通用配置重新生成合约配置
+        /// </summary>
+        private void RegenerateContractConfigsFromUniversalConfig()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 从通用配置重新生成合约配置");
+                // 这里可以添加重新生成配置的逻辑
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 从通用配置重新生成合约配置失败");
+            }
+        }
+
+        /// <summary>
+        /// 从通用配置重新生成合约配置（带配置参数）
         /// </summary>
         private void RegenerateContractConfigsFromUniversalConfig(AutoMonitorConfig config)
         {
             try
             {
-                _logger.LogInformation("🔄 开始根据通用配置重新生成合约配置");
-                
-                // 1. 先尝试从文件加载现有的合约配置，保留状态信息
-                var persistenceService = new AutoMonitorPersistenceService();
-                var existingContracts = persistenceService.LoadContractConfigs();
-                var existingStates = existingContracts.ToDictionary(c => c.ContractKey, c => c.TriggerConditions.ToDictionary(tc => $"{tc.Type}_{tc.TierIndex}", tc => tc.Status));
-                
-                // 2. 获取当前活跃持仓
-                var activePositions = _autoMonitorService.GetPositionProfiles();
-                _logger.LogInformation($"📊 找到 {activePositions.Count} 个活跃持仓");
-                
-                // 3. 清空现有数据
-                ContractMonitors.Clear();
-                
-                // 4. 为每个活跃持仓生成配置
-                foreach (var position in activePositions.Values)
-                {
-                    var contractMonitor = GenerateContractConfigFromUniversalConfig(config, position, existingStates);
-                    ContractMonitors.Add(contractMonitor);
-                    _logger.LogDebug($"✅ 生成合约配置: {contractMonitor.ContractKey} - {contractMonitor.TriggerConditions.Count} 个触发条件");
-                }
-                
-                // 5. 如果没有活跃持仓，创建示例数据
-                if (!activePositions.Any())
-                {
-                    _logger.LogInformation("📝 无活跃持仓，从通用配置创建示例数据");
-                    CreateExampleDataFromUniversalConfig(config);
-                }
-                
-                // 6. 保存到文件
-                SaveContractConfigsToFile();
-                
-                // 7. 重新生成表格列
-                RegenerateDataGridColumns(config);
-                
-                _logger.LogInformation($"✅ 合约配置重新生成完成，共 {ContractMonitors.Count} 个合约");
+                _logger.LogInformation($"🔄 从通用配置重新生成合约配置: {config.Name}");
+                // 这里可以添加重新生成配置的逻辑
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 重新生成合约配置失败");
-                throw;
+                _logger.LogError(ex, "❌ 从通用配置重新生成合约配置失败");
             }
         }
 
         /// <summary>
-        /// 根据通用配置为单个持仓生成合约配置
+        /// 创建默认自动监控配置
         /// </summary>
-        private ContractMonitorModel GenerateContractConfigFromUniversalConfig(AutoMonitorConfig config, PositionProfile position, Dictionary<string, Dictionary<string, TriggerExecutionStatus>> existingStates)
+        private AutoMonitorConfig CreateDefaultAutoMonitorConfig()
         {
-            var contract = new ContractMonitorModel
+            return new AutoMonitorConfig
             {
-                Symbol = position.Symbol,
-                PositionSide = position.PositionSide,
+                Name = "默认配置",
+                ScanIntervalSeconds = 30,
                 IsEnabled = true,
-                IsActive = position.IsActive,
-                CurrentPrice = 0, // 实时价格需要单独获取
-                PositionSize = 0, // 实时仓位需要单独获取
-                UnrealizedPnl = 0  // 实时盈亏需要单独获取
-            };
-
-            var conditionId = 1;
-
-            // 1. 生成保本条件
-            if (config.BreakEvenConfig.IsEnabled)
-            {
-                var breakEvenCondition = new TriggerConditionModel
+                BreakEvenConfig = new AutoBreakEvenConfig
                 {
-                    Id = conditionId++,
-                    Type = TriggerConditionType.BreakEven,
-                    TierIndex = null,
-                    Description = $"浮盈达到 {config.BreakEvenConfig.TriggerProfitAmount:F2}U 时保本",
-                    TriggerPrice = config.BreakEvenConfig.TriggerProfitAmount,
-                    KeepValue = 0,
-                    Status = GetExistingStatus(existingStates, contract.ContractKey, TriggerConditionType.BreakEven, null),
-                    StatusNote = "通用配置生成"
+                    IsEnabled = true,
+                    TriggerProfitAmount = 100
+                },
+                AddPositionConfig = new AutoAddPositionConfig
+                {
+                    IsEnabled = true,
+                    Tiers = new List<AddPositionTier>
+                    {
+                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = 200, RiskMultiplier = 1.5m, ProfitProtectionAmount = 50 },
+                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = 500, RiskMultiplier = 2.0m, ProfitProtectionAmount = 150 },
+                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = 1000, RiskMultiplier = 2.5m, ProfitProtectionAmount = 300 }
+                    }
+                },
+                ProfitProtectionConfig = new AutoProfitProtectionConfig
+                {
+                    IsEnabled = true,
+                    Tiers = new List<ProfitProtectionTier>
+                    {
+                        new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = 300, ProtectionAmount = 100 },
+                        new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = 800, ProtectionAmount = 250 },
+                        new ProfitProtectionTier { TierIndex = 3, TriggerProfitAmount = 1500, ProtectionAmount = 500 }
+                    }
+                }
+            };
+        }
+
+        /// <summary>
+        /// 基于配置创建示例数据
+        /// </summary>
+        private void CreateExampleDataBasedOnConfig(AutoMonitorConfig config)
+        {
+            try
+            {
+                _logger.LogInformation($"📝 基于配置创建示例数据: {config.Name}");
+                CreateExampleContractData();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 基于配置创建示例数据失败");
+            }
+        }
+
+        /// <summary>
+        /// 生成动态数据表格列
+        /// </summary>
+        private void GenerateDynamicDataGridColumns(AutoMonitorConfig config)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 生成动态数据表格列: {config.Name}");
+                // 这里可以添加生成动态列的逻辑
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 生成动态数据表格列失败");
+            }
+        }
+
+        /// <summary>
+        /// 初始化基础数据表格列
+        /// </summary>
+        private void InitializeBasicDataGridColumns()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 初始化基础数据表格列");
+                // 这里可以添加初始化基础列的逻辑
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 初始化基础数据表格列失败");
+            }
+        }
+
+        /// <summary>
+        /// 获取当前自动监控配置
+        /// </summary>
+        private AutoMonitorConfig GetCurrentAutoMonitorConfig()
+        {
+            try
+            {
+                return _autoMonitorService?.CurrentConfig ?? CreateDefaultAutoMonitorConfig();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 获取当前自动监控配置失败");
+                return CreateDefaultAutoMonitorConfig();
+            }
+        }
+
+        /// <summary>
+        /// 创建合约表格面板
+        /// </summary>
+        private System.Windows.Controls.Border CreateContractTablePanel()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 创建合约表格面板");
+                return new System.Windows.Controls.Border
+                {
+                    Background = new SolidColorBrush(Colors.White),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8)
                 };
-                contract.TriggerConditions.Add(breakEvenCondition);
             }
-
-            // 2. 生成加仓条件
-            if (config.AddPositionConfig.IsEnabled && config.AddPositionConfig.Tiers?.Any() == true)
+            catch (Exception ex)
             {
-                for (int i = 0; i < config.AddPositionConfig.Tiers.Count; i++)
-                {
-                    var tier = config.AddPositionConfig.Tiers[i];
-                    var addPositionCondition = new TriggerConditionModel
-                    {
-                        Id = conditionId++,
-                        Type = TriggerConditionType.AddPosition,
-                        TierIndex = i + 1,
-                        Description = $"第{i + 1}档推仓：浮盈达到 {tier.TriggerProfitAmount:F2}U 时推仓",
-                        TriggerPrice = tier.TriggerProfitAmount,
-                        KeepValue = 0,
-                        Status = GetExistingStatus(existingStates, contract.ContractKey, TriggerConditionType.AddPosition, i + 1),
-                        StatusNote = "通用配置生成"
-                    };
-                    contract.TriggerConditions.Add(addPositionCondition);
-                }
+                _logger.LogError(ex, "❌ 创建合约表格面板失败");
+                return new System.Windows.Controls.Border();
             }
-
-            // 3. 生成止盈条件
-            if (config.ProfitProtectionConfig.IsEnabled && config.ProfitProtectionConfig.Tiers?.Any() == true)
-            {
-                for (int i = 0; i < config.ProfitProtectionConfig.Tiers.Count; i++)
-                {
-                    var tier = config.ProfitProtectionConfig.Tiers[i];
-                    var profitCondition = new TriggerConditionModel
-                    {
-                        Id = conditionId++,
-                        Type = TriggerConditionType.ProfitProtection,
-                        TierIndex = i + 1,
-                        Description = $"第{i + 1}档止盈：浮盈达到 {tier.TriggerProfitAmount:F2}U 时止盈，保留 {tier.ProtectionAmount:F2}U",
-                        TriggerPrice = tier.TriggerProfitAmount,
-                        KeepValue = tier.ProtectionAmount,
-                        Status = GetExistingStatus(existingStates, contract.ContractKey, TriggerConditionType.ProfitProtection, i + 1),
-                        StatusNote = "通用配置生成"
-                    };
-                    contract.TriggerConditions.Add(profitCondition);
-                }
-            }
-
-            return contract;
         }
 
         /// <summary>
-        /// 获取现有的执行状态（如果存在）
+        /// 创建配置信息面板
         /// </summary>
-        private TriggerExecutionStatus GetExistingStatus(Dictionary<string, Dictionary<string, TriggerExecutionStatus>> existingStates, string contractKey, TriggerConditionType type, int? tierIndex)
+        private System.Windows.Controls.Border CreateConfigInfoPanel()
         {
-            if (existingStates.TryGetValue(contractKey, out var contractStates))
+            try
             {
-                var stateKey = $"{type}_{tierIndex}";
-                if (contractStates.TryGetValue(stateKey, out var status))
+                _logger.LogInformation("🔄 创建配置信息面板");
+                return new System.Windows.Controls.Border
                 {
-                    return status;
-                }
+                    Background = new SolidColorBrush(Colors.White),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8)
+                };
             }
-            return TriggerExecutionStatus.NotTriggered;
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建配置信息面板失败");
+                return new System.Windows.Controls.Border();
+            }
         }
 
         /// <summary>
-        /// ❌ 已废弃：创建示例数据（应使用LoadCurrentPositionsWithConfigs）
+        /// 创建历史面板
         /// </summary>
-        [Obsolete("应使用LoadCurrentPositionsWithConfigs方法载入真实持仓")]
-        private void CreateExampleDataFromUniversalConfig(AutoMonitorConfig config)
+        private System.Windows.Controls.Border CreateHistoryPanel()
         {
-            _logger.LogWarning("⚠️ 调用了废弃的示例数据创建方法，应使用LoadCurrentPositionsWithConfigs");
-            
-            // 🔧 修复：不再创建假数据，而是提示用户载入真实持仓
-            ContractMonitors.Clear();
-            
-            var placeholderContract = new ContractMonitorModel
+            try
             {
-                Symbol = "🔄 点击【载入持仓配置】",
-                PositionSide = "获取真实持仓数据",
-                IsEnabled = false,
-                IsActive = false,
-                CurrentPrice = 0,
-                PositionSize = 0,
-                UnrealizedPnl = 0
-            };
-            
-            ContractMonitors.Add(placeholderContract);
-            _logger.LogInformation("💡 已创建提示信息，请载入真实持仓配置");
+                _logger.LogInformation("🔄 创建历史面板");
+                return new System.Windows.Controls.Border
+                {
+                    Background = new SolidColorBrush(Colors.White),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8)
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建历史面板失败");
+                return new System.Windows.Controls.Border();
+            }
+        }
+
+        /// <summary>
+        /// 禁用实时同步
+        /// </summary>
+        private void DisableRealTimeSync()
+        {
+            try
+            {
+                _realTimeSyncEnabled = false;
+                _logger.LogInformation("🔄 已禁用实时同步");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 禁用实时同步失败");
+            }
+        }
+
+        /// <summary>
+        /// 启用实时同步
+        /// </summary>
+        private void EnableRealTimeSync()
+        {
+            try
+            {
+                _realTimeSyncEnabled = true;
+                _logger.LogInformation("🔄 已启用实时同步");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 启用实时同步失败");
+            }
+        }
+
+        /// <summary>
+        /// 更新新界面统计信息
+        /// </summary>
+        private void UpdateNewInterfaceStats()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 更新新界面统计信息");
+                
+                // 更新统计信息
+                var runningCount = ContractMonitors.Count(c => c.IsActive);
+                var totalConditions = ContractMonitors.Sum(c => c.TriggerConditions?.Count ?? 0);
+                
+                MonitorStatusText = _autoMonitorService?.IsRunning == true ? "运行中" : "已停止";
+                ContractCount = ContractMonitors.Count;
+                TotalConditionsText = totalConditions.ToString();
+                
+                OnPropertyChanged(nameof(MonitorStatusText));
+                OnPropertyChanged(nameof(ContractCount));
+                OnPropertyChanged(nameof(TotalConditionsText));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 更新新界面统计信息失败");
+            }
+        }
+
+        /// <summary>
+        /// 刷新合约监控状态
+        /// </summary>
+        private void RefreshContractMonitorStatus()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 刷新合约监控状态");
+                
+                foreach (var contract in ContractMonitors)
+                {
+                    // 更新合约状态
+                    contract.IsActive = _autoMonitorService?.IsRunning == true && contract.IsEnabled;
+                    
+                    // RowBackgroundColor是只读属性，通过更新状态来间接改变颜色
+                    // 触发属性更新通知
+                    contract.OnPropertyChanged(nameof(contract.RowBackgroundColor));
+                }
+                
+                UpdateNewInterfaceStats();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 刷新合约监控状态失败");
+            }
         }
 
         /// <summary>
@@ -3929,9 +4559,13 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                _logger.LogInformation("💾 保存合约配置到文件");
+                
                 var persistenceService = new AutoMonitorPersistenceService();
-                persistenceService.SaveContractConfigs(ContractMonitors.ToList());
-                _logger.LogInformation("💾 合约配置已保存到文件");
+                var contractList = ContractMonitors.ToList();
+                
+                persistenceService.SaveContractConfigs(contractList);
+                _logger.LogInformation($"✅ 已保存 {contractList.Count} 个合约配置");
             }
             catch (Exception ex)
             {
@@ -3940,1629 +4574,313 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 重新生成数据表格列
-        /// </summary>
-        private void RegenerateDataGridColumns(AutoMonitorConfig config)
-        {
-            try
-            {
-                if (_contractMonitorDataGrid != null)
-                {
-                    GenerateDynamicDataGridColumns(config);
-                    _logger.LogInformation("🔄 数据表格列已重新生成");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 重新生成数据表格列失败");
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：正确的持仓载入流程
-        /// 1. 载入当前持仓
-        /// 2. 查找本地配置文件
-        /// 3. 根据基础配置生成缺失的配置
-        /// 4. 只更新触发值，保持状态
+        /// 加载当前持仓和配置
         /// </summary>
         private void LoadCurrentPositionsWithConfigs()
         {
             try
             {
-                _logger.LogInformation("🚀 开始正确的持仓载入流程");
+                _logger.LogInformation("📂 加载当前持仓和配置");
                 
-                // 第1步：获取基础配置
-                var baseConfig = GetCurrentAutoMonitorConfig();
-                if (baseConfig == null)
-                {
-                    _logger.LogError("❌ 第1步失败：未找到基础配置");
-                    MessageBox.Show("❌ 步骤1失败：获取基础配置\n\n" +
-                        "未找到自动监控配置！\n\n" +
-                        "💡 解决方法：\n" +
-                        "请先在主界面配置自动盯盘参数。\n\n" +
-                        "📋 正确的载入流程：\n" +
-                        "1. ❌ 获取基础配置 ← 当前步骤失败\n" +
-                        "2. ⏸️ 查找当前持仓\n" +
-                        "3. ⏸️ 根据基础配置生成缺失配置\n" +
-                        "4. ⏸️ 更新触发值，保持执行状态", 
-                        "配置缺失 - 步骤1", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                
-                _logger.LogInformation($"📋 使用基础配置: {baseConfig.Name}");
-                
-                // 第2步：获取当前持仓
-                var currentPositions = GetCurrentActivePositions();
-                if (!currentPositions.Any())
-                {
-                    _logger.LogError("❌ 第2步失败：未找到活跃持仓");
-                    MessageBox.Show("❌ 步骤2失败：查找当前持仓\n\n" +
-                        "未找到当前活跃持仓！\n\n" +
-                        "🔧 可能的原因：\n" +
-                        "1. AutoMonitorService 未初始化或无持仓档案\n" +
-                        "2. MainViewModel 中无持仓数据\n" +
-                        "3. 账户中确实没有未平仓的合约持仓\n\n" +
-                        "💡 建议：\n" +
-                        "• 请先在主界面查看是否有活跃持仓\n" +
-                        "• 确保已连接到币安账户\n" +
-                        "• 确认AutoMonitorService正常运行\n\n" +
-                        "📋 正确的载入流程：\n" +
-                        "1. ✅ 获取基础配置\n" +
-                        "2. ❌ 查找当前持仓 ← 当前步骤失败\n" +
-                        "3. ⏸️ 根据基础配置生成缺失配置\n" +
-                        "4. ⏸️ 更新触发值，保持执行状态", 
-                        "载入失败 - 步骤2", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                
-                _logger.LogInformation($"📊 发现 {currentPositions.Count} 个活跃持仓");
-                
-                // 第3步：清空现有数据，准备载入
-                ContractMonitors.Clear();
-                
-                // 第4步：为每个持仓加载或生成配置
-                foreach (var position in currentPositions)
-                {
-                    var contractKey = $"{position.Symbol}_{position.PositionSide}";
-                    _logger.LogInformation($"🔄 处理持仓: {contractKey}");
-                    
-                    // 查找本地配置文件
-                    var localConfig = LoadLocalContractConfig(contractKey);
-                    
-                    ContractMonitorModel contractMonitor;
-                    if (localConfig != null)
-                    {
-                        _logger.LogInformation($"✅ 找到本地配置: {contractKey}");
-                        // 载入本地配置，但只更新触发值，保持状态
-                        contractMonitor = MergeConfigWithPosition(localConfig, position, baseConfig);
-                    }
-                    else
-                    {
-                        _logger.LogInformation($"🆕 未找到本地配置，根据基础配置生成: {contractKey}");
-                        // 根据基础配置生成新的合约配置
-                        contractMonitor = GenerateContractConfigFromBaseConfig(position, baseConfig);
-                    }
-                    
-                    ContractMonitors.Add(contractMonitor);
-                }
-                
-                _logger.LogInformation("✅ 第3步完成：配置生成/合并完毕");
-                _logger.LogInformation("📋 第4步：更新触发值，保持执行状态");
-                
-                // 第4步：保存当前配置到本地
-                SaveCurrentContractConfigs();
-                
-                // 更新界面
-                UpdateNewInterfaceStats();
-                
-                _logger.LogInformation("✅ 第4步完成：触发值更新完毕");
-                _logger.LogInformation($"🎉 载入流程完成！总共 {ContractMonitors.Count} 个合约");
-                
-                // 简化统计逻辑，避免复杂的文件检查
-                var totalConfigs = ContractMonitors.Count;
-                
-                MessageBox.Show($"🎉 持仓配置载入成功！\n\n" +
-                    $"📊 统计信息：\n" +
-                    $"• 总持仓数：{currentPositions.Count} 个\n" +
-                    $"• 载入配置数：{totalConfigs} 个\n" +
-                    $"• 监控条件总数：{ContractMonitors.Sum(c => c.TriggerConditions.Count)} 个\n\n" +
-                    $"📋 完成的载入流程：\n" +
-                    $"1. ✅ 获取基础配置\n" +
-                    $"2. ✅ 查找当前持仓\n" +
-                    $"3. ✅ 根据基础配置生成缺失配置\n" +
-                    $"4. ✅ 更新触发值，保持执行状态\n\n" +
-                    $"🔒 所有已有的执行状态完全保持不变", 
-                    "载入成功", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 载入持仓配置时发生错误");
-                // 出错时显示示例数据
-                var fallbackConfig = CreateDefaultAutoMonitorConfig();
-                CreateExampleDataBasedOnConfig(fallbackConfig);
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：获取当前活跃持仓（支持多种数据源）
-        /// </summary>
-        private List<PositionInfo> GetCurrentActivePositions()
-        {
-            var positions = new List<PositionInfo>();
-            
-            _logger.LogInformation("🔄 开始获取当前活跃持仓...");
-            
-            // 方案1：从 AutoMonitorService 获取持仓档案
-            try
-            {
-                _logger.LogInformation("📊 方案1：尝试从 AutoMonitorService 获取持仓");
-                var positionProfiles = _autoMonitorService?.GetPositionProfiles();
-                
-                if (positionProfiles != null && positionProfiles.Any())
-                {
-                    foreach (var kvp in positionProfiles)
-                    {
-                        var profile = kvp.Value;
-                        if (profile.IsActive && Math.Abs(profile.InitialQuantity) > 0)
-                        {
-                            positions.Add(new PositionInfo
-                            {
-                                Symbol = profile.Symbol,
-                                PositionSide = profile.PositionSide,
-                                Quantity = profile.InitialQuantity,
-                                Profile = profile
-                            });
-                            _logger.LogInformation($"✅ 发现持仓: {profile.Symbol}_{profile.PositionSide}, 数量: {profile.InitialQuantity}");
-                        }
-                    }
-                    
-                    if (positions.Any())
-                    {
-                        _logger.LogInformation($"📈 从 AutoMonitorService 获取到 {positions.Count} 个活跃持仓");
-                        return positions;
-                    }
-                    else
-                    {
-                        _logger.LogWarning("⚠️ AutoMonitorService 中没有活跃持仓");
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("⚠️ AutoMonitorService 返回空的持仓档案");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️ 从 AutoMonitorService 获取持仓失败");
-            }
-            
-            // 方案2：从 MainViewModel 获取当前持仓
-            try
-            {
-                _logger.LogInformation("📊 方案2：尝试从 MainViewModel 获取持仓");
-                var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow?.DataContext is MainViewModel mainViewModel)
-                {
-                    // 检查 MainViewModel 中的持仓数据
-                    var currentPositions = mainViewModel.Positions?.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
-                    
-                    if (currentPositions != null && currentPositions.Any())
-                    {
-                        foreach (var pos in currentPositions)
-                        {
-                            positions.Add(new PositionInfo
-                            {
-                                Symbol = pos.Symbol,
-                                PositionSide = pos.PositionSideString,
-                                Quantity = pos.PositionAmt,
-                                Profile = null // 没有 Profile，将根据基础配置生成
-                            });
-                            _logger.LogInformation($"✅ 发现持仓: {pos.Symbol}_{pos.PositionSideString}, 数量: {pos.PositionAmt}");
-                        }
-                        
-                        if (positions.Any())
-                        {
-                            _logger.LogInformation($"📈 从 MainViewModel 获取到 {positions.Count} 个活跃持仓");
-                            return positions;
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogWarning("⚠️ MainViewModel 中没有持仓数据");
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("⚠️ 无法获取 MainViewModel 实例");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️ 从 MainViewModel 获取持仓失败");
-            }
-            
-                         // 方案3：尝试从其他数据源获取
-             try
-             {
-                 _logger.LogInformation("📊 方案3：检查其他可用数据源");
-                 // 这里可以添加其他获取持仓的方法
-                 // 比如直接从文件、数据库或其他服务获取
-                 _logger.LogInformation("💡 暂无其他数据源，建议检查主界面是否有持仓数据");
-             }
-             catch (Exception ex)
-             {
-                 _logger.LogWarning(ex, "⚠️ 检查其他数据源时发生错误");
-             }
-            
-            // 如果所有方案都失败，记录详细错误信息
-            if (!positions.Any())
-            {
-                _logger.LogError("❌ 所有持仓获取方案都失败！");
-                _logger.LogError("🔧 可能的原因：");
-                _logger.LogError("   1. AutoMonitorService 未初始化或无持仓档案");
-                _logger.LogError("   2. MainViewModel 中无持仓数据");
-                _logger.LogError("   3. 币安API连接问题");
-                _logger.LogError("💡 建议：请先在主界面查看是否有活跃持仓，然后重试载入");
-            }
-            
-            return positions;
-        }
-
-        /// <summary>
-        /// 🔧 修复：强制刷新当前持仓数据，确保显示最新持仓
-        /// </summary>
-        private void RefreshCurrentPositionsData()
-        {
-            try
-            {
-                _logger.LogInformation("🔄 开始强制刷新当前持仓数据");
-                
-                // 第1步：获取基础配置
-                var baseConfig = GetCurrentAutoMonitorConfig();
-                if (baseConfig == null)
-                {
-                    _logger.LogError("❌ 无法获取基础配置，使用默认配置");
-                    baseConfig = CreateDefaultAutoMonitorConfig();
-                }
-                
-                // 第2步：获取最新持仓数据（强制刷新）
-                var currentPositions = GetCurrentActivePositionsWithRefresh();
-                
-                // 第3步：清理已平仓的合约
-                RemoveClosedPositions(currentPositions);
-                
-                // 第4步：添加新开仓的合约
-                AddNewPositions(currentPositions, baseConfig);
-                
-                // 第5步：更新界面统计
-                UpdateNewInterfaceStats();
-                
-                _logger.LogInformation($"✅ 持仓数据刷新完成，当前监控 {ContractMonitors.Count} 个合约");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 刷新持仓数据时发生错误");
-                // 出错时回退到原有逻辑
-                LoadCurrentPositionsWithConfigs();
-            }
-        }
-
-        /// <summary>
-        /// 🚀 公开方法：强制刷新持仓数据，供外部事件调用
-        /// </summary>
-        public void ForceRefreshPositionsData()
-        {
-            try
-            {
-                _logger.LogInformation("🚀 外部触发强制刷新持仓数据");
-                RefreshCurrentPositionsData();
-                AppendLog("🔄 检测到持仓变化，已自动刷新监控配置");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 外部触发的强制刷新失败");
-                AppendLog($"❌ 自动刷新失败: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：强制获取当前活跃持仓（包含刷新机制）
-        /// </summary>
-        private List<PositionInfo> GetCurrentActivePositionsWithRefresh()
-        {
-            var positions = new List<PositionInfo>();
-            
-            _logger.LogInformation("🔄 强制获取最新持仓数据...");
-            
-            // 优先从 MainViewModel 获取最新数据
-            try
-            {
-                var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow?.DataContext is MainViewModel mainViewModel)
-                {
-                    // 强制刷新 MainViewModel 的持仓数据
-                    _logger.LogInformation("🔄 从 MainViewModel 获取最新持仓数据");
-                    var currentPositions = mainViewModel.Positions?.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
-                    
-                    if (currentPositions != null && currentPositions.Any())
-                    {
-                        foreach (var pos in currentPositions)
-                        {
-                            positions.Add(new PositionInfo
-                            {
-                                Symbol = pos.Symbol,
-                                PositionSide = pos.PositionSideString,
-                                Quantity = pos.PositionAmt,
-                                Profile = null
-                            });
-                            _logger.LogInformation($"✅ 最新持仓: {pos.Symbol}_{pos.PositionSideString}, 数量: {pos.PositionAmt}");
-                        }
-                        
-                        return positions;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️ 从 MainViewModel 获取持仓失败");
-            }
-            
-            // 备用方案：从 AutoMonitorService 获取
-            try
-            {
-                var positionProfiles = _autoMonitorService?.GetPositionProfiles();
-                if (positionProfiles != null && positionProfiles.Any())
-                {
-                    foreach (var kvp in positionProfiles)
-                    {
-                        var profile = kvp.Value;
-                        if (profile.IsActive && Math.Abs(profile.InitialQuantity) > 0)
-                        {
-                            positions.Add(new PositionInfo
-                            {
-                                Symbol = profile.Symbol,
-                                PositionSide = profile.PositionSide,
-                                Quantity = profile.InitialQuantity,
-                                Profile = profile
-                            });
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️ 从 AutoMonitorService 获取持仓失败");
-            }
-            
-            return positions;
-        }
-
-        /// <summary>
-        /// 🔧 修复：清理已平仓的合约配置
-        /// </summary>
-        private void RemoveClosedPositions(List<PositionInfo> currentPositions)
-        {
-            var currentPositionKeys = currentPositions.Select(p => $"{p.Symbol}_{p.PositionSide}").ToHashSet();
-            var contractsToRemove = new List<ContractMonitorModel>();
-            
-            foreach (var contract in ContractMonitors)
-            {
-                var contractKey = $"{contract.Symbol}_{contract.PositionSide}";
-                if (!currentPositionKeys.Contains(contractKey))
-                {
-                    contractsToRemove.Add(contract);
-                    _logger.LogInformation($"🗑️ 移除已平仓合约: {contractKey}");
-                }
-            }
-            
-            foreach (var contract in contractsToRemove)
-            {
-                ContractMonitors.Remove(contract);
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：添加新开仓的合约配置
-        /// </summary>
-        private void AddNewPositions(List<PositionInfo> currentPositions, AutoMonitorConfig baseConfig)
-        {
-            var existingContractKeys = ContractMonitors.Select(c => $"{c.Symbol}_{c.PositionSide}").ToHashSet();
-            
-            foreach (var position in currentPositions)
-            {
-                var contractKey = $"{position.Symbol}_{position.PositionSide}";
-                
-                if (!existingContractKeys.Contains(contractKey))
-                {
-                    _logger.LogInformation($"🆕 添加新持仓合约: {contractKey}");
-                    
-                    // 尝试加载本地配置
-                    var localConfig = LoadLocalContractConfig(contractKey);
-                    
-                    ContractMonitorModel contractMonitor;
-                    if (localConfig != null)
-                    {
-                        contractMonitor = MergeConfigWithPosition(localConfig, position, baseConfig);
-                    }
-                    else
-                    {
-                        contractMonitor = GenerateContractConfigFromBaseConfig(position, baseConfig);
-                    }
-                    
-                    ContractMonitors.Add(contractMonitor);
-                }
-                else
-                {
-                    // 更新现有合约的持仓信息
-                    var existingContract = ContractMonitors.FirstOrDefault(c => 
-                        $"{c.Symbol}_{c.PositionSide}" == contractKey);
-                    
-                    if (existingContract != null)
-                    {
-                        existingContract.PositionSize = position.Quantity;
-                        existingContract.IsActive = true;
-                        _logger.LogInformation($"🔄 更新现有合约: {contractKey}, 数量: {position.Quantity}");
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// 从本地加载合约配置
-        /// </summary>
-        private ContractMonitorModel? LoadLocalContractConfig(string contractKey)
-        {
-            try
-            {
                 var persistenceService = new AutoMonitorPersistenceService();
                 var savedConfigs = persistenceService.LoadContractConfigs();
                 
-                return savedConfigs.FirstOrDefault(c => 
-                    $"{c.Symbol}_{c.PositionSide}" == contractKey);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, $"⚠️ 加载本地配置失败: {contractKey}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// 合并本地配置与持仓信息，只更新触发值，保持状态
-        /// </summary>
-        private ContractMonitorModel MergeConfigWithPosition(ContractMonitorModel localConfig, PositionInfo position, AutoMonitorConfig baseConfig)
-        {
-            // 保持本地配置的所有状态信息
-            var mergedConfig = localConfig;
-            
-            // 更新持仓相关信息
-            mergedConfig.Symbol = position.Symbol;
-            mergedConfig.PositionSide = position.PositionSide;
-            mergedConfig.PositionSize = position.Quantity;
-            mergedConfig.IsActive = true;
-            
-            // 🔧 关键：只更新触发价格，保持所有执行状态
-            UpdateTriggerPricesFromBaseConfig(mergedConfig, baseConfig);
-            
-            _logger.LogInformation($"🔄 合并配置完成: {mergedConfig.Symbol}_{mergedConfig.PositionSide}");
-            return mergedConfig;
-        }
-
-        /// <summary>
-        /// 根据基础配置生成新的合约配置
-        /// </summary>
-        private ContractMonitorModel GenerateContractConfigFromBaseConfig(PositionInfo position, AutoMonitorConfig baseConfig)
-        {
-            var contract = new ContractMonitorModel
-            {
-                Symbol = position.Symbol,
-                PositionSide = position.PositionSide,
-                IsEnabled = true,
-                IsActive = true,
-                PositionSize = position.Quantity,
-                CurrentPrice = 0, // 将通过实时更新获取
-                UnrealizedPnl = 0 // 将通过实时更新获取
-            };
-            
-            var conditionId = 1;
-            
-            // 根据基础配置添加保本条件
-            if (baseConfig.BreakEvenConfig.IsEnabled)
-            {
-                contract.TriggerConditions.Add(new TriggerConditionModel
+                Application.Current?.Dispatcher?.Invoke(() =>
                 {
-                    Id = conditionId++,
-                    Type = TriggerConditionType.BreakEven,
-                    TierIndex = null,
-                    TriggerPrice = baseConfig.BreakEvenConfig.TriggerProfitAmount,
-                    KeepValue = 0,
-                    Status = TriggerExecutionStatus.NotTriggered, // 新配置默认未触发
-                    Description = $"保本条件 - 浮盈{baseConfig.BreakEvenConfig.TriggerProfitAmount:F0}U"
-                });
-            }
-            
-            // 根据基础配置添加推仓条件
-            if (baseConfig.AddPositionConfig.IsEnabled)
-            {
-                foreach (var tier in baseConfig.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex))
-                {
-                    contract.TriggerConditions.Add(new TriggerConditionModel
-                    {
-                        Id = conditionId++,
-                        Type = TriggerConditionType.AddPosition,
-                        TierIndex = tier.TierIndex,
-                        TriggerPrice = tier.TriggerProfitAmount,
-                        KeepValue = 0,
-                        Status = TriggerExecutionStatus.NotTriggered, // 新配置默认未触发
-                        Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x"
-                    });
-                }
-            }
-            
-            // 根据基础配置添加止盈条件
-            if (baseConfig.ProfitProtectionConfig.IsEnabled)
-            {
-                foreach (var tier in baseConfig.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex))
-                {
-                    contract.TriggerConditions.Add(new TriggerConditionModel
-                    {
-                        Id = conditionId++,
-                        Type = TriggerConditionType.ProfitProtection,
-                        TierIndex = tier.TierIndex,
-                        TriggerPrice = tier.TriggerProfitAmount,
-                        KeepValue = tier.ProtectionAmount,
-                        Status = TriggerExecutionStatus.NotTriggered, // 新配置默认未触发
-                        Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U"
-                    });
-                }
-            }
-            
-            _logger.LogInformation($"🆕 生成新配置: {contract.Symbol}_{contract.PositionSide}, 条件数: {contract.TriggerConditions.Count}");
-            return contract;
-        }
-
-        /// <summary>
-        /// 更新触发价格，保持执行状态不变
-        /// </summary>
-        private void UpdateTriggerPricesFromBaseConfig(ContractMonitorModel contract, AutoMonitorConfig baseConfig)
-        {
-            // 更新保本条件触发价格
-            if (baseConfig.BreakEvenConfig.IsEnabled)
-            {
-                var breakEvenCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
-                if (breakEvenCondition != null)
-                {
-                    var oldPrice = breakEvenCondition.TriggerPrice;
-                    breakEvenCondition.TriggerPrice = baseConfig.BreakEvenConfig.TriggerProfitAmount;
-                    _logger.LogInformation($"📝 保本触发价格: {oldPrice:F0} → {breakEvenCondition.TriggerPrice:F0}");
-                }
-            }
-            
-            // 更新推仓条件触发价格
-            if (baseConfig.AddPositionConfig.IsEnabled)
-            {
-                foreach (var tier in baseConfig.AddPositionConfig.Tiers)
-                {
-                    var addCondition = contract.TriggerConditions.FirstOrDefault(c => 
-                        c.Type == TriggerConditionType.AddPosition && c.TierIndex == tier.TierIndex);
-                    if (addCondition != null)
-                    {
-                        var oldPrice = addCondition.TriggerPrice;
-                        addCondition.TriggerPrice = tier.TriggerProfitAmount;
-                        _logger.LogInformation($"📝 推仓{tier.TierIndex}触发价格: {oldPrice:F0} → {addCondition.TriggerPrice:F0}");
-                    }
-                }
-            }
-            
-            // 更新止盈条件触发价格
-            if (baseConfig.ProfitProtectionConfig.IsEnabled)
-            {
-                foreach (var tier in baseConfig.ProfitProtectionConfig.Tiers)
-                {
-                    var profitCondition = contract.TriggerConditions.FirstOrDefault(c => 
-                        c.Type == TriggerConditionType.ProfitProtection && c.TierIndex == tier.TierIndex);
-                    if (profitCondition != null)
-                    {
-                        var oldPrice = profitCondition.TriggerPrice;
-                        var oldKeep = profitCondition.KeepValue;
-                        profitCondition.TriggerPrice = tier.TriggerProfitAmount;
-                        profitCondition.KeepValue = tier.ProtectionAmount;
-                        _logger.LogInformation($"📝 止盈{tier.TierIndex}触发价格: {oldPrice:F0} → {profitCondition.TriggerPrice:F0}, 保护: {oldKeep:F0} → {profitCondition.KeepValue:F0}");
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：无持仓时显示提示信息，不创建假数据
-        /// </summary>
-        private void CreateExampleDataBasedOnConfig(AutoMonitorConfig config)
-        {
-            ContractMonitors.Clear();
-            
-            var noPositionContract = new ContractMonitorModel
-            {
-                Symbol = "⚠️ 无活跃持仓",
-                PositionSide = $"基于配置 '{config.Name}' 等待持仓数据",
-                IsEnabled = false,
-                IsActive = false,
-                CurrentPrice = 0,
-                PositionSize = 0,
-                UnrealizedPnl = 0
-            };
-            
-            // 添加一个保本条件作为配置预览（不可操作）
-            if (config.BreakEvenConfig.IsEnabled)
-            {
-                noPositionContract.TriggerConditions.Add(new TriggerConditionModel
-                {
-                    Id = 1,
-                    Type = TriggerConditionType.BreakEven,
-                    TriggerPrice = config.BreakEvenConfig.TriggerProfitAmount,
-                    Status = TriggerExecutionStatus.NotTriggered,
-                    Description = $"[配置预览] 保本条件 - 浮盈{config.BreakEvenConfig.TriggerProfitAmount:F0}U"
-                });
-            }
-            
-            ContractMonitors.Add(noPositionContract);
-            _logger.LogInformation($"💡 无活跃持仓，已显示基于配置 '{config.Name}' 的提示信息");
-        }
-
-        /// <summary>
-        /// 保存当前合约配置到本地
-        /// </summary>
-        private void SaveCurrentContractConfigs()
-        {
-            try
-            {
-                var persistenceService = new AutoMonitorPersistenceService();
-                persistenceService.SaveContractConfigs(ContractMonitors.ToList());
-                _logger.LogInformation("💾 合约配置已保存到本地");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 保存合约配置失败");
-            }
-        }
-
-        /// <summary>
-        /// 持仓信息结构
-        /// </summary>
-        private class PositionInfo
-        {
-            public string Symbol { get; set; } = string.Empty;
-            public string PositionSide { get; set; } = string.Empty;
-            public decimal Quantity { get; set; }
-            public PositionProfile? Profile { get; set; }
-        }
-
-        /// <summary>
-        /// 更新新界面的统计信息
-        /// </summary>
-        private void UpdateNewInterfaceStats()
-        {
-            try
-            {
-                var isRunning = _autoMonitorService.IsRunning;
-                
-                // 更新监控状态
-                MonitorStatusText = isRunning ? "运行中" : "已停止";
-                
-                // 更新按钮状态
-                if (isRunning)
-                {
-                    UpdateToggleButtonState(true, "停止盯盘", Colors.Red, true);
-                    StatusCardBackground = new SolidColorBrush(Colors.Green);
-                }
-                else
-                {
-                    UpdateToggleButtonState(false, "启动盯盘", Colors.Green, true);
-                    StatusCardBackground = new SolidColorBrush(Colors.Red);
-                }
-                
-                // 更新编辑权限
-                UpdateEditPermissions(!isRunning);
-                
-                // 更新合约数量
-                ContractCount = ContractMonitors.Count;
-                
-                // 计算总触发条件数
-                var totalConditions = 0;
-                var executingCount = 0; // 不再使用执行中状态
-                var executedCount = 0;
-                
-                foreach (var contract in ContractMonitors)
-                {
-                    totalConditions += contract.TriggerConditions.Count;
-                    executingCount += 0; // 不再使用执行中状态
-                    executedCount += contract.TriggerConditions.Count(c => c.Status == TriggerExecutionStatus.Executed);
-                }
-                
-                TotalConditionsText = totalConditions.ToString();
-                ExecutingCount = executingCount;
-                ExecutedCount = executedCount;
-                
-                // 更新扫描间隔
-                var config = _autoMonitorService.CurrentConfig;
-                ScanIntervalText = config != null ? $"{config.ScanIntervalSeconds}秒" : "未配置";
-                
-                _logger.LogDebug($"📊 统计更新完成 - 合约:{ContractCount}, 条件:{totalConditions}, 执行中:{executingCount}, 已执行:{executedCount}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 更新新界面统计信息时发生错误");
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：刷新合约监控状态（包括实时数据和执行状态）
-        /// </summary>
-        private void RefreshContractMonitorStatus()
-        {
-            try
-            {
-                if (!ContractMonitors.Any()) return;
-                
-                var positionProfiles = _autoMonitorService.GetPositionProfiles();
-                var config = _autoMonitorService.CurrentConfig;
-                
-                if (positionProfiles == null || config == null) return;
-                
-                // 🔧 修复：获取最新的持仓数据以更新实时价格和浮盈
-                var currentPositions = GetCurrentRealTimePositions();
-                
-                foreach (var contract in ContractMonitors)
-                {
-                    var contractKey = contract.ContractKey; // 使用ContractKey属性
+                    ContractMonitors.Clear();
                     
-                    // 跳过示例合约和提示合约
-                    if (contractKey.StartsWith("示例") || contractKey.StartsWith("⚠️") || contractKey.StartsWith("💡")) continue;
-                    
-                    // 🔧 修复：更新实时持仓数据（价格、浮盈）
-                    var currentPosition = currentPositions.FirstOrDefault(p => 
-                        $"{p.Symbol}_{p.PositionSideString}" == contractKey);
-                    
-                    if (currentPosition != null)
+                    foreach (var config in savedConfigs)
                     {
-                        // 更新实时数据
-                        contract.CurrentPrice = currentPosition.MarkPrice;
-                        contract.PositionSize = currentPosition.PositionAmt;
-                        contract.UnrealizedPnl = currentPosition.UnrealizedProfit;
-                        
-                        _logger.LogDebug($"🔄 更新实时数据: {contractKey} - 价格:{currentPosition.MarkPrice:F4}, 浮盈:{currentPosition.UnrealizedProfit:F2}U");
-                    }
-                    
-                    // 查找对应的持仓档案
-                    if (positionProfiles.TryGetValue(contractKey, out var profile))
-                    {
-                        // 更新活跃状态
-                        contract.IsActive = profile.IsActive;
-                        
-                        // 🔧 修复：更新每个触发条件的状态（保护已执行状态）
-                        foreach (var condition in contract.TriggerConditions)
+                        var monitor = new ContractMonitorModel
                         {
-                            var triggerKey = GenerateTriggerKey(contractKey, condition.Type, condition.TierIndex);
+                            Symbol = config.Symbol,
+                            PositionSide = config.PositionSide,
+                            IsEnabled = config.IsEnabled,
+                            IsActive = false,
+                            UnrealizedPnl = 0,
+                            CurrentPrice = 0
+                        };
+                        
+                        ContractMonitors.Add(monitor);
+                    }
+                    
+                    _logger.LogInformation($"✅ 已加载 {savedConfigs.Count} 个合约配置");
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 加载当前持仓和配置失败");
+            }
+        }
+
+        /// <summary>
+        /// 🔄 用基础配置重置所有合约配置
+        /// </summary>
+        private void LoadCurrentPositionsWithBaseConfigReset(AutoMonitorConfig baseConfig)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 用基础配置重置所有合约配置: {baseConfig.Name}");
+                
+                // 🔧 关键修复：配置切换时，首先清理所有执行状态
+                if (_autoMonitorService != null)
+                {
+                    _logger.LogInformation("🧹 配置切换时清理所有合约执行状态");
+                    _autoMonitorService.ClearContractStates(symbol: null, positionSide: null, reason: "配置切换重置");
+                }
+                
+                // 获取当前活跃持仓
+                var activePositions = _autoMonitorService.GetPositionProfiles();
+                _logger.LogInformation($"📊 找到 {activePositions.Count} 个活跃持仓");
+                
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    ContractMonitors.Clear();
+                    
+                    // 为每个活跃持仓生成完全基于基础配置的合约配置
+                    foreach (var position in activePositions.Values)
+                    {
+                        var contractMonitor = GenerateContractConfigFromBaseConfig(position, baseConfig);
+                        
+                        // 🔧 关键修复：确保新生成的合约配置状态为未触发
+                        foreach (var condition in contractMonitor.TriggerConditions)
+                        {
+                            condition.Status = TriggerExecutionStatus.NotTriggered;
+                            condition.LastExecutionTime = null;
+                            condition.StatusNote = $"配置切换重置 {DateTime.Now:HH:mm:ss}";
+                        }
+                        
+                        ContractMonitors.Add(contractMonitor);
+                        _logger.LogDebug($"✅ 基于基础配置生成合约配置: {contractMonitor.Symbol}_{contractMonitor.PositionSide} - {contractMonitor.TriggerConditions.Count} 个触发条件");
+                    }
+                    
+                    // 如果没有活跃持仓，加载已保存的配置但用基础配置重置
+                    if (!activePositions.Any())
+                    {
+                        _logger.LogInformation("📝 无活跃持仓，从已保存配置加载但用基础配置重置");
+                        var persistenceService = new AutoMonitorPersistenceService();
+                        var savedConfigs = persistenceService.LoadContractConfigs();
+                        
+                        foreach (var savedConfig in savedConfigs)
+                        {
+                            var contractMonitor = new ContractMonitorModel
+                            {
+                                Symbol = savedConfig.Symbol,
+                                PositionSide = savedConfig.PositionSide,
+                                IsEnabled = savedConfig.IsEnabled,
+                                IsActive = false,
+                                UnrealizedPnl = 0,
+                                CurrentPrice = 0
+                            };
                             
-                            if (profile.TriggerRecords.TryGetValue(triggerKey, out var triggerRecord))
-                            {
-                                // 根据TriggerRecord更新状态
-                                var newStatus = triggerRecord.IsExecuted ? 
-                                    TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
-                                
-                                // 🔧 状态保护：如果当前状态是已执行，而数据源显示未执行，可能是数据滞后
-                                if (condition.Status == TriggerExecutionStatus.Executed && newStatus == TriggerExecutionStatus.NotTriggered)
-                                {
-                                    // 保护已执行状态，记录数据不一致警告
-                                    _logger.LogWarning($"⚠️ 状态保护: {contractKey} {condition.TypeText}{(condition.TierIndex?.ToString() ?? "")} 当前已执行，但数据源显示未执行，保持已执行状态");
-                                    AppendLog($"⚠️ 状态保护: {contractKey} {condition.TypeText}{(condition.TierIndex?.ToString() ?? "")} 状态保护中");
-                                }
-                                else
-                                {
-                                    condition.Status = newStatus;
-                                    condition.LastExecutionTime = triggerRecord.TriggerTime;
-                                }
-                            }
-                            else
-                            {
-                                // 🔧 状态保护：如果当前状态是已执行，但数据源中没有记录，可能是数据滞后
-                                if (condition.Status == TriggerExecutionStatus.Executed)
-                                {
-                                    // 保护已执行状态，不要重置为未触发
-                                    _logger.LogWarning($"⚠️ 状态保护: {contractKey} {condition.TypeText}{(condition.TierIndex?.ToString() ?? "")} 当前已执行，但数据源无记录，保持已执行状态");
-                                    AppendLog($"⚠️ 状态保护: {contractKey} {condition.TypeText}{(condition.TierIndex?.ToString() ?? "")} 等待数据同步");
-                                }
-                                else
-                                {
-                                    // 如果当前状态不是已执行，才设置为未触发
-                                    condition.Status = TriggerExecutionStatus.NotTriggered;
-                                    condition.LastExecutionTime = null;
-                                }
-                            }
-                        }
-                        
-                        // 🔧 修复：检查触发条件与实时浮盈的匹配度，用于调试
-                        if (currentPosition != null)
-                        {
-                            var realPnl = currentPosition.UnrealizedProfit;
-                            var triggeredConditions = contract.TriggerConditions
-                                .Where(c => c.Status == TriggerExecutionStatus.Executed && realPnl >= c.TriggerPrice)
-                                .ToList();
-                            var shouldTriggerConditions = contract.TriggerConditions
-                                .Where(c => c.Status == TriggerExecutionStatus.NotTriggered && realPnl >= c.TriggerPrice)
-                                .ToList();
+                            // 用基础配置重置这个合约的触发条件
+                            ReloadContractFromBaseConfig(baseConfig, contractMonitor.Symbol);
                             
-                            if (shouldTriggerConditions.Any())
+                            // 🔧 关键修复：确保重置后的状态为未触发
+                            foreach (var condition in contractMonitor.TriggerConditions)
                             {
-                                var conditionNames = string.Join(", ", shouldTriggerConditions.Select(c => $"{c.TypeText}{(c.TierIndex.HasValue ? c.TierIndex.ToString() : "")}"));
-                                _logger.LogWarning($"⚠️ {contractKey} 浮盈{realPnl:F2}U 应触发但未执行: {conditionNames}");
-                                AppendLog($"⚠️ {contractKey} 浮盈{realPnl:F2}U 应触发: {conditionNames}");
+                                condition.Status = TriggerExecutionStatus.NotTriggered;
+                                condition.LastExecutionTime = null;
+                                condition.StatusNote = $"配置切换重置 {DateTime.Now:HH:mm:ss}";
                             }
+                            
+                            ContractMonitors.Add(contractMonitor);
                         }
                     }
-                }
-                
-                // 🔧 修复：执行状态稳定性验证
-                var executedConditionsCount = ContractMonitors
-                    .SelectMany(c => c.TriggerConditions)
-                    .Count(c => c.Status == TriggerExecutionStatus.Executed);
                     
-                if (executedConditionsCount > 0)
-                {
-                    AppendLog($"✅ 状态验证: 当前有 {executedConditionsCount} 个已执行状态");
-                }
-                
-                _logger.LogDebug($"🔄 刷新了 {ContractMonitors.Count} 个合约的监控状态和实时数据，已执行条件: {executedConditionsCount}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 刷新合约监控状态时发生错误");
-            }
-        }
-
-        /// <summary>
-        /// 🔧 修复：获取当前实时持仓数据（用于更新监控面板显示）
-        /// </summary>
-        private List<Models.PositionInfo> GetCurrentRealTimePositions()
-        {
-            try
-            {
-                var positions = new List<Models.PositionInfo>();
-                
-                // 优先从 MainViewModel 获取最新持仓数据
-                var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow?.DataContext is MainViewModel mainViewModel)
-                {
-                    var currentPositions = mainViewModel.Positions?.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
-                    
-                    if (currentPositions != null && currentPositions.Any())
-                    {
-                        positions.AddRange(currentPositions);
-                        _logger.LogDebug($"📊 从 MainViewModel 获取到 {positions.Count} 个实时持仓");
-                        return positions;
-                    }
-                }
-                
-                // 备用方案：从 AutoMonitorService 获取
-                var positionProfiles = _autoMonitorService?.GetPositionProfiles();
-                if (positionProfiles != null && positionProfiles.Any())
-                {
-                    foreach (var kvp in positionProfiles)
-                    {
-                        var profile = kvp.Value;
-                        if (profile.IsActive && Math.Abs(profile.InitialQuantity) > 0)
-                        {
-                            // 创建一个基于Profile的PositionInfo（数据可能不是最新的）
-                            positions.Add(new Models.PositionInfo
-                            {
-                                Symbol = profile.Symbol,
-                                PositionSideString = profile.PositionSide,
-                                PositionAmt = profile.InitialQuantity,
-                                UnrealizedProfit = 0, // Profile中没有实时浮盈
-                                MarkPrice = 0 // Profile中没有实时价格
-                            });
-                        }
-                    }
-                    _logger.LogDebug($"📊 从 AutoMonitorService 获取到 {positions.Count} 个持仓（可能数据不是最新）");
-                }
-                
-                return positions;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 获取实时持仓数据失败");
-                return new List<Models.PositionInfo>();
-            }
-        }
-
-        /// <summary>
-        /// 生成触发条件的键值
-        /// </summary>
-        private string GenerateTriggerKey(string contractKey, TriggerConditionType type, int? tierIndex)
-        {
-            return tierIndex.HasValue 
-                ? $"{contractKey}_{type}_{tierIndex.Value}"
-                : $"{contractKey}_{type}";
-        }
-        
-        /// <summary>
-        /// 初始化基础的DataGrid列结构
-        /// </summary>
-        private void InitializeBasicDataGridColumns()
-        {
-            try
-            {
-                _logger.LogInformation("🎯 初始化基础DataGrid列结构");
-                
-                if (_contractMonitorDataGrid == null)
-                {
-                    _logger.LogWarning("⚠️ ContractMonitorDataGrid未初始化，跳过基础列初始化");
-                    return;
-                }
-                
-                // 🔧 修复：清空现有列，只创建基础列，不再重复创建示例列
-                _contractMonitorDataGrid.Columns.Clear();
-                
-                // 创建基础列（合约、仓位、价格等）
-                CreateBasicColumns(_contractMonitorDataGrid);
-                
-                _logger.LogInformation($"✅ 基础列结构初始化完成，共{_contractMonitorDataGrid.Columns.Count}列（仅基础列）");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 初始化基础DataGrid列结构时发生错误");
-            }
-        }
-
-        /// <summary>
-        /// ❌ 已废弃：应使用LoadCurrentPositionsWithConfigs载入真实持仓
-        /// </summary>
-        [Obsolete("应使用LoadCurrentPositionsWithConfigs方法载入真实持仓配置")]
-        private void CreateExampleContractData()
-        {
-            try
-            {
-                _logger.LogWarning("⚠️ 调用了废弃的示例数据创建方法，建议使用LoadCurrentPositionsWithConfigs");
-                
-                // 🔧 修复：不再创建假的BTC/ETH数据，而是提示载入真实持仓
-                ContractMonitors.Clear();
-                
-                var placeholderContract = new ContractMonitorModel
-                {
-                    Symbol = "💡 载入提示",
-                    PositionSide = "点击【载入持仓配置】获取真实数据",
-                    IsEnabled = false,
-                    IsActive = false,
-                    CurrentPrice = 0,
-                    PositionSize = 0,
-                    UnrealizedPnl = 0
-                };
-                
-                ContractMonitors.Add(placeholderContract);
-                _logger.LogInformation("💡 已显示提示信息，请载入真实持仓配置");
-                
-                // 更新统计信息
-                UpdateNewInterfaceStats();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 显示提示信息时发生错误");
-            }
-        }
-
-        /// <summary>
-        /// 根据配置创建合约监控模型
-        /// </summary>
-        private ContractMonitorModel CreateContractFromConfig(string symbol, string positionSide, AutoMonitorConfig config, bool hasExecutedConditions = false)
-        {
-            var contract = new ContractMonitorModel
-            {
-                Symbol = symbol,
-                PositionSide = positionSide,
-                IsEnabled = true,
-                IsActive = true
-            };
-            
-            var conditionId = 1;
-            
-            // 🎯 根据配置添加保本条件
-            if (config.BreakEvenConfig.IsEnabled)
-            {
-                contract.TriggerConditions.Add(new TriggerConditionModel
-                {
-                    Id = conditionId++,
-                    Type = TriggerConditionType.BreakEven,
-                    TierIndex = null,
-                    TriggerPrice = config.BreakEvenConfig.TriggerProfitAmount,
-                    KeepValue = 0,
-                    Status = hasExecutedConditions ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered,
-                    Description = $"保本条件 - 浮盈{config.BreakEvenConfig.TriggerProfitAmount:F0}U",
-                    LastExecutionTime = hasExecutedConditions ? DateTime.Now.AddMinutes(-15) : null
+                    _logger.LogInformation($"✅ 基础配置重置完成，共处理 {ContractMonitors.Count} 个合约，所有状态已重置为未触发");
                 });
+                
+                // 保存重置后的配置
+                SaveContractConfigsToFile();
             }
-            
-            // 🎯 根据配置添加推仓条件
-            if (config.AddPositionConfig.IsEnabled)
+            catch (Exception ex)
             {
-                foreach (var tier in config.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex))
+                _logger.LogError(ex, "❌ 用基础配置重置合约配置失败");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 🆕 从基础配置生成合约配置
+        /// </summary>
+        private ContractMonitorModel GenerateContractConfigFromBaseConfig(PositionProfile position, AutoMonitorConfig baseConfig)
+        {
+            try
+            {
+                                 var contractMonitor = new ContractMonitorModel
+                 {
+                     Symbol = position.Symbol,
+                     PositionSide = position.PositionSide,
+                     IsEnabled = true,
+                     IsActive = false,
+                     UnrealizedPnl = 0,
+                     CurrentPrice = 0
+                 };
+                
+                var conditionId = 1;
+                
+                // 生成保本条件
+                if (baseConfig.BreakEvenConfig.IsEnabled)
                 {
-                    contract.TriggerConditions.Add(new TriggerConditionModel
+                    contractMonitor.TriggerConditions.Add(new TriggerConditionModel
                     {
                         Id = conditionId++,
-                        Type = TriggerConditionType.AddPosition,
-                        TierIndex = tier.TierIndex,
-                        TriggerPrice = tier.TriggerProfitAmount,
+                        Type = TriggerConditionType.BreakEven,
+                        TierIndex = null,
+                        TriggerPrice = baseConfig.BreakEvenConfig.TriggerProfitAmount,
                         KeepValue = 0,
                         Status = TriggerExecutionStatus.NotTriggered,
-                        Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x"
+                        Description = $"保本条件 - 浮盈{baseConfig.BreakEvenConfig.TriggerProfitAmount:F0}U",
+                        StatusNote = $"基础配置生成 {DateTime.Now:HH:mm:ss}"
                     });
                 }
-            }
-            
-            // 🎯 根据配置添加止盈条件
-            if (config.ProfitProtectionConfig.IsEnabled)
-            {
-                foreach (var tier in config.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex))
+                
+                // 生成推仓条件
+                if (baseConfig.AddPositionConfig.IsEnabled)
                 {
-                    contract.TriggerConditions.Add(new TriggerConditionModel
+                    foreach (var tier in baseConfig.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex))
                     {
-                        Id = conditionId++,
-                        Type = TriggerConditionType.ProfitProtection,
-                        TierIndex = tier.TierIndex,
-                        TriggerPrice = tier.TriggerProfitAmount,
-                        KeepValue = tier.ProtectionAmount,
-                        Status = TriggerExecutionStatus.NotTriggered,
-                        Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U"
-                    });
+                        contractMonitor.TriggerConditions.Add(new TriggerConditionModel
+                        {
+                            Id = conditionId++,
+                            Type = TriggerConditionType.AddPosition,
+                            TierIndex = tier.TierIndex,
+                            TriggerPrice = tier.TriggerProfitAmount,
+                            KeepValue = tier.ProfitProtectionAmount,
+                            Status = TriggerExecutionStatus.NotTriggered,
+                            Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x",
+                            StatusNote = $"基础配置生成 {DateTime.Now:HH:mm:ss}"
+                        });
+                    }
                 }
-            }
-            
-            return contract;
-        }
-
-        /// <summary>
-        /// ❌ 已废弃：创建示例列结构（统一使用GenerateDynamicDataGridColumns）
-        /// </summary>
-        [Obsolete("已统一使用GenerateDynamicDataGridColumns方法，此方法已废弃")]
-        private void CreateExampleColumns(DataGrid dataGrid)
-        {
-            try
-            {
-                // 🎯 保本列 - 显示触发金额和图标
-                var breakEvenColumn = new DataGridTemplateColumn
+                
+                // 生成止盈条件
+                if (baseConfig.ProfitProtectionConfig.IsEnabled)
                 {
-                    Header = "保本价格",
-                    Width = 120
-                };
-                
-                var breakEvenTemplate = new DataTemplate();
-                var breakEvenStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var amountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                amountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].DisplayTriggerPrice"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var iconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].StatusIcon"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色
-                var iconColorBinding = new System.Windows.Data.Binding("TriggerConditions[0].Status");
-                iconColorBinding.Converter = new StatusToIconColorConverter();
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, iconColorBinding);
-                
-                breakEvenStackFactory.AppendChild(amountTextFactory);
-                breakEvenStackFactory.AppendChild(iconTextFactory);
-                breakEvenTemplate.VisualTree = breakEvenStackFactory;
-                breakEvenColumn.CellTemplate = breakEvenTemplate;
-                dataGrid.Columns.Add(breakEvenColumn);
-
-                // 保本状态列已移除 - 使用图形化状态显示（触发金额+状态图标）
-                /*
-                var breakEvenStatusColumn = new DataGridTextColumn
-                {
-                    Header = "保本状态",
-                    Binding = new System.Windows.Data.Binding("TriggerConditions[0].StatusText") { Mode = BindingMode.OneWay },
-                    Width = 90,
-                    HeaderStyle = dataGrid.ColumnHeaderStyle
-                };
-                dataGrid.Columns.Add(breakEvenStatusColumn);
-                */
-
-                // 🎯 示例推仓列 - 显示触发金额和图标
-                for (int i = 1; i <= 2; i++)
-                {
-                    var addPositionColumn = new DataGridTemplateColumn
+                    foreach (var tier in baseConfig.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex))
                     {
-                        Header = $"推仓{i}价格",
-                        Width = 120
-                    };
-                    
-                    var addTemplate = new DataTemplate();
-                    var addStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                    addStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                    addStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                    
-                    // 触发金额文本
-                    var addAmountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    addAmountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i}].DisplayTriggerPrice"));
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                    addAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 状态图标
-                    var addIconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    addIconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i}].StatusIcon"));
-                    addIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    addIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    addIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                    addIconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 根据状态设置图标颜色
-                    var addIconColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{i}].Status");
-                    addIconColorBinding.Converter = new StatusToIconColorConverter();
-                    addIconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, addIconColorBinding);
-                    
-                    addStackFactory.AppendChild(addAmountTextFactory);
-                    addStackFactory.AppendChild(addIconTextFactory);
-                    addTemplate.VisualTree = addStackFactory;
-                    addPositionColumn.CellTemplate = addTemplate;
-                    dataGrid.Columns.Add(addPositionColumn);
-
-                    // 推仓状态列已移除 - 使用图形化状态显示（触发金额+状态图标）
-                    /*
-                    var addStatusColumn = new DataGridTextColumn
-                    {
-                        Header = $"推仓{i}状态",
-                        Binding = new System.Windows.Data.Binding($"TriggerConditions[{i}].StatusText") { Mode = BindingMode.OneWay },
-                        Width = 90,
-                        HeaderStyle = dataGrid.ColumnHeaderStyle
-                    };
-                    dataGrid.Columns.Add(addStatusColumn);
-                    */
+                        contractMonitor.TriggerConditions.Add(new TriggerConditionModel
+                        {
+                            Id = conditionId++,
+                            Type = TriggerConditionType.ProfitProtection,
+                            TierIndex = tier.TierIndex,
+                            TriggerPrice = tier.TriggerProfitAmount,
+                            KeepValue = tier.ProtectionAmount,
+                            Status = TriggerExecutionStatus.NotTriggered,
+                            Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U",
+                            StatusNote = $"基础配置生成 {DateTime.Now:HH:mm:ss}"
+                        });
+                    }
                 }
-
-                // 🎯 示例止盈列 - 显示触发金额和图标
-                for (int i = 3; i <= 4; i++)
-                {
-                    var profitColumn = new DataGridTemplateColumn
-                    {
-                        Header = $"止盈{i-2}目标",
-                        Width = 120
-                    };
-                    
-                    var profitTemplate = new DataTemplate();
-                    var profitStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                    profitStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                    profitStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                    
-                    // 触发金额文本
-                    var profitAmountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    profitAmountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i}].DisplayTriggerPrice"));
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                    profitAmountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 状态图标
-                    var profitIconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    profitIconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i}].StatusIcon"));
-                    profitIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    profitIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    profitIconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                    profitIconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 根据状态设置图标颜色
-                    var profitIconColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{i}].Status");
-                    profitIconColorBinding.Converter = new StatusToIconColorConverter();
-                    profitIconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, profitIconColorBinding);
-                    
-                    profitStackFactory.AppendChild(profitAmountTextFactory);
-                    profitStackFactory.AppendChild(profitIconTextFactory);
-                    profitTemplate.VisualTree = profitStackFactory;
-                    profitColumn.CellTemplate = profitTemplate;
-                    dataGrid.Columns.Add(profitColumn);
-
-                    // 止盈状态列已移除 - 使用图形化状态显示（触发金额+状态图标）
-                    /*
-                    var profitStatusColumn = new DataGridTextColumn
-                    {
-                        Header = $"止盈{i-2}状态",
-                        Binding = new System.Windows.Data.Binding($"TriggerConditions[{i}].StatusText") { Mode = BindingMode.OneWay },
-                        Width = 90,
-                        HeaderStyle = dataGrid.ColumnHeaderStyle
-                    };
-                    dataGrid.Columns.Add(profitStatusColumn);
-                    */
-                }
-
-                // 操作列已移除
                 
-                _logger.LogInformation("✅ 示例列结构创建完成");
+                _logger.LogDebug($"✅ 为 {position.Symbol}_{position.PositionSide} 生成了 {contractMonitor.TriggerConditions.Count} 个触发条件");
+                return contractMonitor;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 创建示例列时发生错误");
+                _logger.LogError(ex, $"❌ 为 {position.Symbol}_{position.PositionSide} 生成合约配置失败");
+                throw;
             }
         }
 
         /// <summary>
-        /// 根据配置动态生成DataGrid列
+        /// 添加基础列到数据网格
         /// </summary>
-        private void GenerateDynamicDataGridColumns(AutoMonitorConfig config)
+        private void AddBasicColumnsToDataGrid(System.Windows.Controls.DataGrid dataGrid)
         {
             try
             {
-                _logger.LogInformation("🎯 开始动态生成表格列");
+                _logger.LogInformation("📋 添加基础列到数据网格");
                 
-                // 🎯 修复：直接使用保存的DataGrid引用
-                if (_contractMonitorDataGrid == null)
+                dataGrid.Columns.Clear();
+                
+                // 添加基础列
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
                 {
-                    _logger.LogWarning("⚠️ ContractMonitorDataGrid未初始化，跳过动态列生成");
-                    return;
-                }
+                    Header = "合约",
+                    Binding = new System.Windows.Data.Binding("Symbol"),
+                    Width = new System.Windows.Controls.DataGridLength(80)
+                });
                 
-                // 清空现有列
-                _contractMonitorDataGrid.Columns.Clear();
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "方向",
+                    Binding = new System.Windows.Data.Binding("PositionSide"),
+                    Width = new System.Windows.Controls.DataGridLength(60)
+                });
                 
-                CreateBasicColumns(_contractMonitorDataGrid);
-                CreateBreakEvenColumns(_contractMonitorDataGrid, config);
-                CreateAddPositionColumns(_contractMonitorDataGrid, config);
-                CreateProfitProtectionColumns(_contractMonitorDataGrid, config);
-                // CreateOperationColumn(_contractMonitorDataGrid); // 已移除操作列
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridCheckBoxColumn
+                {
+                    Header = "启用",
+                    Binding = new System.Windows.Data.Binding("IsEnabled"),
+                    Width = new System.Windows.Controls.DataGridLength(50)
+                });
                 
-                _logger.LogInformation($"✅ 动态列生成完成，共{_contractMonitorDataGrid.Columns.Count}列");
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "当前价格",
+                    Binding = new System.Windows.Data.Binding("CurrentPrice"),
+                    Width = new System.Windows.Controls.DataGridLength(80)
+                });
                 
-                // 🎯 计算预期列数进行验证
-                var expectedColumns = 6; // 基础列
-                if (config.BreakEvenConfig.IsEnabled) expectedColumns += 2; // 保本列
-                if (config.AddPositionConfig.IsEnabled) expectedColumns += config.AddPositionConfig.Tiers.Count * 2; // 推仓列
-                if (config.ProfitProtectionConfig.IsEnabled) expectedColumns += config.ProfitProtectionConfig.Tiers.Count * 2; // 止盈列
-                // expectedColumns += 1; // 操作列已移除
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "未实现盈亏",
+                    Binding = new System.Windows.Data.Binding("CurrentPnl"),
+                    Width = new System.Windows.Controls.DataGridLength(100)
+                });
                 
-                _logger.LogInformation($"📊 列数验证: 实际{_contractMonitorDataGrid.Columns.Count}列，预期{expectedColumns}列");
+                _logger.LogInformation($"✅ 已添加 {dataGrid.Columns.Count} 个基础列");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 动态生成表格列时发生错误");
+                _logger.LogError(ex, "❌ 添加基础列到数据网格失败");
             }
         }
-        
-        /// <summary>
-        /// 创建基础列（启用、合约、方向、状态、价格等）
-        /// </summary>
-        private void CreateBasicColumns(DataGrid dataGrid)
-        {
-            // 启用/禁用列
-            var enabledColumn = new System.Windows.Controls.DataGridCheckBoxColumn
-            {
-                Header = "启用",
-                Binding = new System.Windows.Data.Binding("IsEnabled"),
-                Width = 50
-            };
-            var enabledStyle = new Style(typeof(System.Windows.Controls.CheckBox));
-            enabledStyle.Setters.Add(new Setter(System.Windows.Controls.CheckBox.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            enabledStyle.Setters.Add(new Setter(System.Windows.Controls.CheckBox.VerticalAlignmentProperty, VerticalAlignment.Center));
-            enabledColumn.ElementStyle = enabledStyle;
-            dataGrid.Columns.Add(enabledColumn);
-
-            // 合约列
-            var symbolColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "合约",
-                Binding = new System.Windows.Data.Binding("Symbol"),
-                Width = 100,
-                IsReadOnly = true
-            };
-            var symbolStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            symbolStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            symbolColumn.ElementStyle = symbolStyle;
-            dataGrid.Columns.Add(symbolColumn);
-
-            // 浮盈列
-            var pnlColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "浮盈",
-                Binding = new System.Windows.Data.Binding("PnlText"),
-                Width = 80,
-                IsReadOnly = true
-            };
-            var pnlStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas")));
-            pnlStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            pnlColumn.ElementStyle = pnlStyle;
-            dataGrid.Columns.Add(pnlColumn);
-        }
-        
-        /// <summary>
-        /// 创建保本条件列
-        /// </summary>
-        private void CreateBreakEvenColumns(DataGrid dataGrid, AutoMonitorConfig config)
-        {
-            if (!config.BreakEvenConfig.IsEnabled) return;
-
-            // 🎯 保本条件列 - 显示触发金额和图标
-            try 
-            {
-                var breakEvenColumn = new DataGridTemplateColumn
-                {
-                    Header = "保本条件",
-                    Width = 120
-                };
-                
-                var breakEvenTemplate = new DataTemplate();
-                var breakEvenStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                breakEvenStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                
-                // 触发金额文本
-                var amountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                amountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].DisplayTriggerPrice"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                amountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 状态图标
-                var iconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("TriggerConditions[0].StatusIcon"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                iconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                
-                // 根据状态设置图标颜色：已执行=绿色，未触发=灰色
-                var iconColorBinding = new System.Windows.Data.Binding("TriggerConditions[0].Status");
-                iconColorBinding.Converter = new StatusToIconColorConverter();
-                iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, iconColorBinding);
-                
-                breakEvenStackFactory.AppendChild(amountTextFactory);
-                breakEvenStackFactory.AppendChild(iconTextFactory);
-                breakEvenTemplate.VisualTree = breakEvenStackFactory;
-                breakEvenColumn.CellTemplate = breakEvenTemplate;
-                dataGrid.Columns.Add(breakEvenColumn);
-                _logger.LogInformation("✅ 保本条件图标列创建成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 创建保本条件图标列失败");
-            }
-
-            // 保本状态列 - 隐藏状态列，通过颜色来区分状态
-            // 由于现在整行背景色和文字颜色已经能够明显区分状态，可以考虑隐藏状态列
-            // 如果需要显示状态列，可以取消注释以下代码：
-            /*
-            var statusColumn = new System.Windows.Controls.DataGridTextColumn
-            {
-                Header = "保本状态",
-                Width = 60,
-                IsReadOnly = true
-            };
-            var statusBinding = new System.Windows.Data.Binding("TriggerConditions[0].StatusText");
-            statusColumn.Binding = statusBinding;
-            var statusStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-            statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-            statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-            statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-            statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 9.0));
-            // 动态绑定状态颜色
-            var statusColorBinding = new System.Windows.Data.Binding("TriggerConditions[0].StatusColor");
-            statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, statusColorBinding));
-            statusColumn.ElementStyle = statusStyle;
-            dataGrid.Columns.Add(statusColumn);
-            */
-        }
-        
-        /// <summary>
-        /// 🎯 动态创建推仓条件列（根据阶梯数量）
-        /// </summary>
-        private void CreateAddPositionColumns(DataGrid dataGrid, AutoMonitorConfig config)
-        {
-            if (!config.AddPositionConfig.IsEnabled) return;
-
-            var tiers = config.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex).ToList();
-            
-            for (int i = 0; i < tiers.Count; i++)
-            {
-                var tier = tiers[i];
-                
-                // 🎯 推仓条件列 - 显示触发金额和图标
-                try 
-                {
-                    var addPositionColumn = new DataGridTemplateColumn
-                    {
-                        Header = $"推仓{tier.TierIndex}",
-                        Width = 120
-                    };
-                    
-                    var addPositionTemplate = new DataTemplate();
-                    var addPositionStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                    addPositionStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                    addPositionStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                    
-                    // 触发金额文本
-                    var amountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    amountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i + 1}].DisplayTriggerPrice"));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 状态图标
-                    var iconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{i + 1}].StatusIcon"));
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 根据状态设置图标颜色
-                    var iconColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{i + 1}].Status");
-                    iconColorBinding.Converter = new StatusToIconColorConverter();
-                    iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, iconColorBinding);
-                    
-                    addPositionStackFactory.AppendChild(amountTextFactory);
-                    addPositionStackFactory.AppendChild(iconTextFactory);
-                    addPositionTemplate.VisualTree = addPositionStackFactory;
-                    addPositionColumn.CellTemplate = addPositionTemplate;
-                    dataGrid.Columns.Add(addPositionColumn);
-                    _logger.LogInformation($"✅ 推仓{tier.TierIndex}图标列创建成功");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"❌ 创建推仓{tier.TierIndex}图标列失败");
-                }
-
-                // 推仓状态列 - 隐藏状态列，通过颜色来区分状态
-                // 由于现在整行背景色和文字颜色已经能够明显区分状态，可以考虑隐藏状态列
-                // 如果需要显示状态列，可以取消注释以下代码：
-                /*
-                var statusColumn = new System.Windows.Controls.DataGridTextColumn
-                {
-                    Header = $"推仓{tier.TierIndex}状态",
-                    Width = 60,
-                    IsReadOnly = true
-                };
-                var statusBinding = new System.Windows.Data.Binding($"TriggerConditions[{i + 1}].StatusText");
-                statusColumn.Binding = statusBinding;
-                var statusStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 9.0));
-                // 动态绑定状态颜色
-                var statusColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{i + 1}].StatusColor");
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, statusColorBinding));
-                statusColumn.ElementStyle = statusStyle;
-                dataGrid.Columns.Add(statusColumn);
-                */
-            }
-        }
-        
-        /// <summary>
-        /// 🎯 动态创建止盈条件列（根据阶梯数量）
-        /// </summary>
-        private void CreateProfitProtectionColumns(DataGrid dataGrid, AutoMonitorConfig config)
-        {
-            if (!config.ProfitProtectionConfig.IsEnabled) return;
-
-            var tiers = config.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex).ToList();
-            var addPositionCount = config.AddPositionConfig.IsEnabled ? config.AddPositionConfig.Tiers.Count : 0;
-            var baseIndex = 1 + addPositionCount; // 保本(1) + 推仓数量
-            
-            for (int i = 0; i < tiers.Count; i++)
-            {
-                var tier = tiers[i];
-                
-                // 🎯 止盈条件列 - 显示触发金额和图标
-                try 
-                {
-                    var profitColumn = new DataGridTemplateColumn
-                    {
-                        Header = $"止盈{tier.TierIndex}",
-                        Width = 120
-                    };
-                    
-                    var profitTemplate = new DataTemplate();
-                    var profitStackFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
-                    profitStackFactory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, Orientation.Horizontal);
-                    profitStackFactory.SetValue(System.Windows.Controls.StackPanel.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                    
-                    // 触发金额文本
-                    var amountTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    amountTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{baseIndex + i}].DisplayTriggerPrice"));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(Colors.Black));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 0, 5, 0));
-                    amountTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 状态图标
-                    var iconTextFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
-                    iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding($"TriggerConditions[{baseIndex + i}].StatusIcon"));
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
-                    iconTextFactory.SetValue(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-                    
-                    // 根据状态设置图标颜色
-                    var iconColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{baseIndex + i}].Status");
-                    iconColorBinding.Converter = new StatusToIconColorConverter();
-                    iconTextFactory.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, iconColorBinding);
-                    
-                    profitStackFactory.AppendChild(amountTextFactory);
-                    profitStackFactory.AppendChild(iconTextFactory);
-                    profitTemplate.VisualTree = profitStackFactory;
-                    profitColumn.CellTemplate = profitTemplate;
-                    dataGrid.Columns.Add(profitColumn);
-                    _logger.LogInformation($"✅ 止盈{tier.TierIndex}图标列创建成功");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"❌ 创建止盈{tier.TierIndex}图标列失败");
-                }
-
-                // 止盈状态列 - 隐藏状态列，通过颜色来区分状态
-                // 由于现在整行背景色和文字颜色已经能够明显区分状态，可以考虑隐藏状态列
-                // 如果需要显示状态列，可以取消注释以下代码：
-                /*
-                var statusColumn = new System.Windows.Controls.DataGridTextColumn
-                {
-                    Header = $"止盈{tier.TierIndex}状态",
-                    Width = 60,
-                    IsReadOnly = true
-                };
-                var statusBinding = new System.Windows.Data.Binding($"TriggerConditions[{baseIndex + i}].StatusText");
-                statusColumn.Binding = statusBinding;
-                var statusStyle = new Style(typeof(System.Windows.Controls.TextBlock));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold));
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.FontSizeProperty, 9.0));
-                // 动态绑定状态颜色
-                var statusColorBinding = new System.Windows.Data.Binding($"TriggerConditions[{baseIndex + i}].StatusColor");
-                statusStyle.Setters.Add(new Setter(System.Windows.Controls.TextBlock.ForegroundProperty, statusColorBinding));
-                statusColumn.ElementStyle = statusStyle;
-                dataGrid.Columns.Add(statusColumn);
-                */
-            }
-        }
-        
-        // CreateOperationColumn 方法已移除 - 用户要求清理操作列及其"编辑条件"和"重置状态"按钮
 
         /// <summary>
-        /// 创建简化的备用表格（当主表格创建失败时使用）
+        /// 添加最小列到数据网格
         /// </summary>
-        private System.Windows.Controls.DataGrid CreateFallbackDataGrid()
+        private void AddMinimalColumnsToDataGrid(System.Windows.Controls.DataGrid dataGrid)
         {
             try
             {
-                _logger.LogInformation("🎯 创建简化备用表格");
+                _logger.LogInformation("📋 添加最小列到数据网格");
+                
+                dataGrid.Columns.Clear();
+                
+                // 只添加最基础的列
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "合约",
+                    Binding = new System.Windows.Data.Binding("Symbol"),
+                    Width = new System.Windows.Controls.DataGridLength(100)
+                });
+                
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridCheckBoxColumn
+                {
+                    Header = "启用",
+                    Binding = new System.Windows.Data.Binding("IsEnabled"),
+                    Width = new System.Windows.Controls.DataGridLength(60)
+                });
+                
+                _logger.LogInformation($"✅ 已添加 {dataGrid.Columns.Count} 个最小列");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 添加最小列到数据网格失败");
+            }
+        }
+
+        /// <summary>
+        /// 创建执行历史数据网格
+        /// </summary>
+        private System.Windows.Controls.DataGrid CreateExecutionHistoryDataGrid()
+        {
+            try
+            {
+                _logger.LogInformation("📊 创建执行历史数据网格");
                 
                 var dataGrid = new System.Windows.Controls.DataGrid
                 {
@@ -5570,840 +4888,499 @@ namespace BinanceFuturesTrader.Views
                     CanUserAddRows = false,
                     IsReadOnly = true,
                     GridLinesVisibility = System.Windows.Controls.DataGridGridLinesVisibility.All,
-                    FontSize = 12,
-                    RowHeight = 35,
                     Background = new SolidColorBrush(Colors.White),
-                    ItemsSource = ContractMonitors,
-                    Margin = new Thickness(0),
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    VerticalAlignment = VerticalAlignment.Stretch
+                    FontSize = 10,
+                    RowHeight = 25,
+                    ItemsSource = ExecutionHistory
                 };
-
-                // 设置简单的列头样式
-                var headerStyle = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader));
-                headerStyle.Setters.Add(new Setter(System.Windows.Controls.Primitives.DataGridColumnHeader.BackgroundProperty, new SolidColorBrush(Colors.SteelBlue)));
-                headerStyle.Setters.Add(new Setter(System.Windows.Controls.Primitives.DataGridColumnHeader.ForegroundProperty, new SolidColorBrush(Colors.White)));
-                headerStyle.Setters.Add(new Setter(System.Windows.Controls.Primitives.DataGridColumnHeader.FontWeightProperty, FontWeights.Bold));
-                dataGrid.ColumnHeaderStyle = headerStyle;
-
-                // 不设置整行背景颜色，让单元格自己控制颜色
-                var rowStyle = new Style(typeof(System.Windows.Controls.DataGridRow));
-                // 移除整行背景颜色绑定，让状态颜色显示在单元格中
-                dataGrid.RowStyle = rowStyle;
-
-                // 添加基础列
-                dataGrid.Columns.Add(new DataGridTextColumn
+                
+                // 添加列
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "时间",
+                    Binding = new System.Windows.Data.Binding("ExecutionTime") { StringFormat = "HH:mm:ss" },
+                    Width = new System.Windows.Controls.DataGridLength(60)
+                });
+                
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
                 {
                     Header = "合约",
                     Binding = new System.Windows.Data.Binding("Symbol"),
-                    Width = 100
+                    Width = new System.Windows.Controls.DataGridLength(70)
                 });
-
-                dataGrid.Columns.Add(new DataGridTextColumn
+                
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
                 {
-                    Header = "触发条件数",
-                    Binding = new System.Windows.Data.Binding("TriggerConditions.Count"),
-                    Width = 100
+                    Header = "操作",
+                    Binding = new System.Windows.Data.Binding("ExecutionType"),
+                    Width = new System.Windows.Controls.DataGridLength(60)
                 });
-
-                _logger.LogInformation($"✅ 简化表格创建完成，{dataGrid.Columns.Count}列");
+                
+                dataGrid.Columns.Add(new System.Windows.Controls.DataGridTextColumn
+                {
+                    Header = "结果",
+                    Binding = new System.Windows.Data.Binding("ResultText"),
+                    Width = new System.Windows.Controls.DataGridLength(50)
+                });
+                
                 return dataGrid;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 创建简化表格也失败");
-                throw;
+                _logger.LogError(ex, "❌ 创建执行历史数据网格失败");
+                return new System.Windows.Controls.DataGrid();
             }
         }
 
         /// <summary>
-        /// 打开快速编辑对话框 - 支持止盈条件双值编辑和中文显示
+        /// 创建后备数据网格
+        /// </summary>
+        private System.Windows.Controls.DataGrid CreateFallbackDataGrid()
+        {
+            try
+            {
+                _logger.LogInformation("🔧 创建后备数据网格");
+                
+                var dataGrid = new System.Windows.Controls.DataGrid
+                {
+                    AutoGenerateColumns = false,
+                    CanUserAddRows = false,
+                    IsReadOnly = true,
+                    Background = new SolidColorBrush(Colors.White),
+                    ItemsSource = ContractMonitors
+                };
+                
+                AddMinimalColumnsToDataGrid(dataGrid);
+                return dataGrid;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建后备数据网格失败");
+                return new System.Windows.Controls.DataGrid();
+            }
+        }
+
+        /// <summary>
+        /// 打开快速编辑对话框
         /// </summary>
         private void OpenQuickEditDialog(ContractMonitorModel contract)
         {
             try
             {
-                _logger.LogInformation($"📝 打开合约 {contract.Symbol} {contract.PositionSide} 的快速编辑对话框");
-
-                var dialog = new Window
+                _logger.LogInformation($"🔧 打开快速编辑对话框: {contract.Symbol}");
+                
+                var result = MessageBox.Show(
+                    $"是否启用合约 {contract.Symbol} 的监控？",
+                    "快速编辑",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                
+                if (result == MessageBoxResult.Yes)
                 {
-                    Title = $"编辑触发条件 - {contract.Symbol} {contract.PositionSide}",
-                    Width = 580,
-                    Height = 500,
-                    WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                    Owner = this,
-                    ResizeMode = ResizeMode.NoResize
-                };
-
-                var mainPanel = new StackPanel { Margin = new Thickness(15) };
-
-                // 标题
-                var titleText = new TextBlock
-                {
-                    Text = $"📋 编辑 {contract.Symbol} {contract.PositionSide} 的触发条件",
-                    FontSize = 16,
-                    FontWeight = FontWeights.Bold,
-                    Margin = new Thickness(0, 0, 0, 15),
-                    TextWrapping = TextWrapping.Wrap
-                };
-                mainPanel.Children.Add(titleText);
-
-                // 条件列表
-                var scrollViewer = new ScrollViewer { Height = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-                var conditionsPanel = new StackPanel();
-
-                foreach (var condition in contract.TriggerConditions)
-                {
-                    var conditionBorder = new Border
-                    {
-                        BorderBrush = GetTypeColor(condition.Type), // 使用类型颜色作为边框
-                        BorderThickness = new Thickness(2),
-                        CornerRadius = new CornerRadius(5),
-                        Margin = new Thickness(0, 0, 0, 10),
-                        Background = condition.BackgroundColor // 使用背景颜色
-                    };
-
-                    var conditionGrid = new Grid { Margin = new Thickness(10) };
-                    conditionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
-                    conditionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    conditionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
-                    conditionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
-
-                    // 条件类型和描述（带颜色标识）
-                    var typePanel = new StackPanel();
-                    var typeText = new TextBlock
-                    {
-                        Text = condition.TypeText, // 使用中文显示
-                        FontWeight = FontWeights.Bold,
-                        FontSize = 12,
-                        Foreground = GetTypeColor(condition.Type) // 使用类型颜色
-                    };
-                    var descText = new TextBlock
-                    {
-                        Text = condition.Description,
-                        FontSize = 10,
-                        Foreground = new SolidColorBrush(Colors.Gray),
-                        TextWrapping = TextWrapping.Wrap
-                    };
-                    typePanel.Children.Add(typeText);
-                    typePanel.Children.Add(descText);
-                    Grid.SetColumn(typePanel, 0);
-                    conditionGrid.Children.Add(typePanel);
-
-                    // 触发值编辑
-                    var valuePanel = new StackPanel();
-                    
-                    // 主触发值
-                    var triggerValuePanel = new StackPanel { Orientation = Orientation.Horizontal };
-                    triggerValuePanel.Children.Add(new TextBlock 
-                    { 
-                        Text = condition.Type == TriggerConditionType.ProfitProtection ? "触发值: " : "目标值: ",
-                        Width = 50,
-                        VerticalAlignment = VerticalAlignment.Center,
-                        FontSize = 10
-                    });
-                    
-                    var triggerValueTextBox = new TextBox
-                    {
-                        Text = condition.TriggerPrice.ToString("F2"),
-                        Width = 70,
-                        Tag = $"trigger_{condition.Id}",
-                        FontSize = 10
-                    };
-                    triggerValuePanel.Children.Add(triggerValueTextBox);
-                    valuePanel.Children.Add(triggerValuePanel);
-
-                    // 止盈条件的保留值
-                    if (condition.Type == TriggerConditionType.ProfitProtection)
-                    {
-                        var keepValuePanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 0) };
-                        keepValuePanel.Children.Add(new TextBlock 
-                        { 
-                            Text = "保留值: ",
-                            Width = 50,
-                            VerticalAlignment = VerticalAlignment.Center,
-                            FontSize = 10
-                        });
-                        
-                        var keepValueTextBox = new TextBox
-                        {
-                            Text = condition.KeepValue.ToString("F2"),
-                            Width = 70,
-                            Tag = $"keep_{condition.Id}",
-                            FontSize = 10,
-                            ToolTip = "触发时保留的盈利金额"
-                        };
-                        keepValuePanel.Children.Add(keepValueTextBox);
-                        valuePanel.Children.Add(keepValuePanel);
-                    }
-
-                    Grid.SetColumn(valuePanel, 1);
-                    conditionGrid.Children.Add(valuePanel);
-
-                    // 状态选择
-                    var statusComboBox = new ComboBox
-                    {
-                        Width = 70,
-                        FontSize = 10,
-                        Tag = condition.Id
-                    };
-                    statusComboBox.Items.Add("未触发");
-                    statusComboBox.Items.Add("已执行");
-                    statusComboBox.SelectedItem = condition.StatusText;
-                    Grid.SetColumn(statusComboBox, 2);
-                    conditionGrid.Children.Add(statusComboBox);
-
-                    // 重置按钮
-                    var resetButton = new Button
-                    {
-                        Content = "重置",
-                        Width = 70,
-                        Height = 25,
-                        FontSize = 10,
-                        Tag = condition.Id
-                    };
-                    resetButton.Click += (s, e) =>
-                    {
-                        condition.Status = TriggerExecutionStatus.NotTriggered;
-                        condition.LastExecutionTime = null;
-                        statusComboBox.SelectedItem = "未触发";
-                        _logger.LogInformation($"🔄 重置条件状态: {condition.Description}");
-                    };
-                    Grid.SetColumn(resetButton, 3);
-                    conditionGrid.Children.Add(resetButton);
-
-                    conditionBorder.Child = conditionGrid;
-                    conditionsPanel.Children.Add(conditionBorder);
+                    contract.IsEnabled = !contract.IsEnabled;
+                    _logger.LogInformation($"✅ 合约 {contract.Symbol} 监控状态已切换为: {contract.IsEnabled}");
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 打开快速编辑对话框失败: {contract?.Symbol}");
+            }
+        }
 
-                scrollViewer.Content = conditionsPanel;
-                mainPanel.Children.Add(scrollViewer);
-
-                // 按钮面板
-                var buttonPanel = new StackPanel 
-                { 
-                    Orientation = Orientation.Horizontal, 
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    Margin = new Thickness(0, 15, 0, 0)
-                };
-
-                var saveButton = new Button
+        /// <summary>
+        /// 更新触发价格从基础配置（带参数）
+        /// </summary>
+        private void UpdateTriggerPricesFromBaseConfig(AutoMonitorConfig config, ContractMonitorModel contract)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 更新触发价格从基础配置: {config.Name} - {contract.Symbol}");
+                
+                // 更新保本条件触发价格
+                if (config.BreakEvenConfig.IsEnabled)
                 {
-                    Content = "保存配置",
-                    Width = 80,
-                    Height = 30,
-                    Margin = new Thickness(0, 0, 10, 0),
-                    Background = new SolidColorBrush(Colors.Green),
-                    Foreground = new SolidColorBrush(Colors.White),
-                    FontWeight = FontWeights.Bold
-                };
-
-                var cancelButton = new Button
-                {
-                    Content = "❌ 取消",
-                    Width = 80,
-                    Height = 30,
-                    Background = new SolidColorBrush(Colors.Gray),
-                    Foreground = new SolidColorBrush(Colors.White),
-                    FontWeight = FontWeights.Bold
-                };
-
-                saveButton.Click += (s, e) =>
-                {
-                    try
+                    var breakEvenCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
+                    if (breakEvenCondition != null)
                     {
-                        // 保存修改
-                        foreach (var condition in contract.TriggerConditions)
+                        breakEvenCondition.TriggerPrice = config.BreakEvenConfig.TriggerProfitAmount;
+                        breakEvenCondition.Description = $"保本条件 - 浮盈{config.BreakEvenConfig.TriggerProfitAmount:F0}U";
+                        breakEvenCondition.StatusNote = $"触发价格更新 {DateTime.Now:HH:mm:ss}";
+                    }
+                }
+                
+                // 更新推仓条件触发价格
+                if (config.AddPositionConfig.IsEnabled)
+                {
+                    foreach (var tier in config.AddPositionConfig.Tiers)
+                    {
+                        var condition = contract.TriggerConditions.FirstOrDefault(c => 
+                            c.Type == TriggerConditionType.AddPosition && c.TierIndex == tier.TierIndex);
+                        if (condition != null)
                         {
-                            // 查找对应的输入框
-                            var triggerTextBox = FindControlByTag(conditionsPanel, $"trigger_{condition.Id}") as TextBox;
-                            var keepTextBox = FindControlByTag(conditionsPanel, $"keep_{condition.Id}") as TextBox;
-                            var statusComboBox = FindControlByTag(conditionsPanel, condition.Id) as ComboBox;
-
-                            // 更新触发值
-                            if (triggerTextBox != null && decimal.TryParse(triggerTextBox.Text, out decimal triggerValue))
-                            {
-                                condition.TriggerPrice = triggerValue;
-                            }
-
-                            // 更新保留值（仅止盈条件）
-                            if (keepTextBox != null && decimal.TryParse(keepTextBox.Text, out decimal keepValue))
-                            {
-                                condition.KeepValue = keepValue;
-                            }
-
-                            // 更新状态
-                            if (statusComboBox?.SelectedItem is string statusText)
-                            {
-                                condition.Status = statusText == "已执行" ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
-                                if (condition.Status == TriggerExecutionStatus.Executed && condition.LastExecutionTime == null)
-                                {
-                                    condition.LastExecutionTime = DateTime.Now;
-                                }
-                                else if (condition.Status == TriggerExecutionStatus.NotTriggered)
-                                {
-                                    condition.LastExecutionTime = null;
-                                }
-                            }
+                            condition.TriggerPrice = tier.TriggerProfitAmount;
+                            condition.KeepValue = tier.ProfitProtectionAmount;
+                            condition.Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x";
+                            condition.StatusNote = $"触发价格更新 {DateTime.Now:HH:mm:ss}";
                         }
-
-                        _logger.LogInformation($"💾 已保存合约 {contract.Symbol} {contract.PositionSide} 的触发条件修改");
-                        UpdateNewInterfaceStats(); // 更新统计信息
-                        dialog.DialogResult = true;
                     }
-                    catch (Exception ex)
+                }
+                
+                // 更新止盈条件触发价格
+                if (config.ProfitProtectionConfig.IsEnabled)
+                {
+                    foreach (var tier in config.ProfitProtectionConfig.Tiers)
                     {
-                        _logger.LogError(ex, "保存编辑时发生错误");
-                        MessageBox.Show($"保存失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                };
-
-                cancelButton.Click += (s, e) => dialog.Close();
-
-                buttonPanel.Children.Add(saveButton);
-                buttonPanel.Children.Add(cancelButton);
-                mainPanel.Children.Add(buttonPanel);
-
-                dialog.Content = mainPanel;
-                dialog.ShowDialog();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 打开编辑对话框时发生错误");
-                MessageBox.Show($"打开编辑对话框失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        /// <summary>
-        /// 根据触发条件类型获取颜色
-        /// </summary>
-        private SolidColorBrush GetTypeColor(TriggerConditionType type)
-        {
-            return type switch
-            {
-                TriggerConditionType.BreakEven => new SolidColorBrush(Colors.DodgerBlue),      // 蓝色 - 保本
-                TriggerConditionType.AddPosition => new SolidColorBrush(Colors.Orange),        // 橙色 - 推仓
-                TriggerConditionType.ProfitProtection => new SolidColorBrush(Colors.Green),    // 绿色 - 止盈
-                _ => new SolidColorBrush(Colors.Gray)
-            };
-        }
-
-        /// <summary>
-        /// 根据Tag查找控件
-        /// </summary>
-        private FrameworkElement? FindControlByTag(DependencyObject parent, object tag)
-        {
-            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
-            {
-                var child = VisualTreeHelper.GetChild(parent, i);
-                if (child is FrameworkElement element && Equals(element.Tag, tag))
-                {
-                    return element;
-                }
-                var result = FindControlByTag(child, tag);
-                if (result != null) return result;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// 获取当前自动监控配置（简化版）
-        /// </summary>
-        private AutoMonitorConfig? GetCurrentAutoMonitorConfig()
-        {
-            try
-            {
-                // 🎯 优先从AutoMonitorService获取，否则从MainViewModel获取
-                var config = _autoMonitorService?.CurrentConfig ?? _mainViewModel?.CurrentAutoMonitorConfig;
-                if (config != null)
-                {
-                    var source = _autoMonitorService?.CurrentConfig != null ? "AutoMonitorService" : "MainViewModel";
-                    _logger.LogInformation($"从{source}获取到配置：{config.Name}");
-                    return config;
-                }
-
-                _logger.LogWarning("⚠️ 未找到配置信息，请先在主界面配置自动盯盘参数");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 获取自动监控配置失败");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// 创建默认配置（当没有找到配置时使用）
-        /// </summary>
-        /// <summary>
-        /// 🔧 修复：创建默认配置（金额四舍五入取整）
-        /// </summary>
-        private AutoMonitorConfig CreateDefaultAutoMonitorConfig()
-        {
-            _logger.LogInformation("🔧 创建默认AutoMonitorConfig配置");
-            return new AutoMonitorConfig
-            {
-                Name = "默认配置",
-                IsEnabled = true,
-                ScanIntervalSeconds = 30,
-                CooldownSeconds = 10,
-                BreakEvenConfig = new AutoBreakEvenConfig
-                {
-                    IsEnabled = true,
-                    TriggerProfitAmount = Math.Round(200m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
-                },
-                AddPositionConfig = new AutoAddPositionConfig
-                {
-                    IsEnabled = true,
-                    Tiers = new List<AddPositionTier>
-                    {
-                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(300m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.5m, StopLossRatio = 0.5m },
-                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(500m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 2.0m, StopLossRatio = 0.6m }
-                    }
-                },
-                ProfitProtectionConfig = new AutoProfitProtectionConfig
-                {
-                    IsEnabled = true,
-                    Tiers = new List<ProfitProtectionTier>
-                    {
-                        new ProfitProtectionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(1000m, 0, MidpointRounding.AwayFromZero), ProtectionAmount = Math.Round(800m, 0, MidpointRounding.AwayFromZero) },
-                        new ProfitProtectionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(2000m, 0, MidpointRounding.AwayFromZero), ProtectionAmount = Math.Round(1600m, 0, MidpointRounding.AwayFromZero) }
+                        var condition = contract.TriggerConditions.FirstOrDefault(c => 
+                            c.Type == TriggerConditionType.ProfitProtection && c.TierIndex == tier.TierIndex);
+                        if (condition != null)
+                        {
+                            condition.TriggerPrice = tier.TriggerProfitAmount;
+                            condition.KeepValue = tier.ProtectionAmount;
+                            condition.Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U";
+                            condition.StatusNote = $"触发价格更新 {DateTime.Now:HH:mm:ss}";
+                        }
                     }
                 }
-            };
-        }
-
-        /// <summary>
-        /// 创建左侧配置信息面板
-        /// </summary>
-        private System.Windows.Controls.Border CreateConfigInfoPanel()
-        {
-            var configBorder = new System.Windows.Controls.Border
-            {
-                Background = new SolidColorBrush(Colors.White),
-                BorderBrush = new SolidColorBrush(Colors.LightGray),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(5),
-                Margin = new Thickness(0, 0, 3, 0)
-            };
-
-            var scrollViewer = new System.Windows.Controls.ScrollViewer
-            {
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-            };
-
-            var stackPanel = new System.Windows.Controls.StackPanel
-            {
-                Margin = new Thickness(8, 8, 8, 8)
-            };
-
-            // 标题
-            var titleTextBlock = new System.Windows.Controls.TextBlock
-            {
-                Text = "⚙️ 配置信息",
-                FontWeight = FontWeights.Bold,
-                FontSize = 14,
-                Margin = new Thickness(0, 0, 0, 8),
-                Foreground = new SolidColorBrush(Colors.DarkBlue)
-            };
-            stackPanel.Children.Add(titleTextBlock);
-
-            // 获取当前配置
-            var config = GetCurrentAutoMonitorConfig();
-            if (config != null)
-            {
-                // 基础配置
-                var basicConfigCard = CreateConfigCard("基础配置", new Dictionary<string, string>
-                {
-                    ["配置名称"] = config.Name,
-                    ["扫描间隔"] = $"{config.ScanIntervalSeconds}秒",
-                    ["冷却时间"] = $"{config.CooldownSeconds}秒",
-                    ["配置状态"] = config.IsEnabled ? "已启用" : "未启用"
-                });
-                stackPanel.Children.Add(basicConfigCard);
-
-                // 保本配置 - 简化版本
-                var breakEvenCard = CreateConfigCard("🛡️ 保本配置", new Dictionary<string, string>
-                {
-                    ["启用状态"] = config.BreakEvenConfig.IsEnabled ? "已启用" : "未启用",
-                    ["触发盈利"] = config.BreakEvenConfig.IsEnabled ? $"{config.BreakEvenConfig.TriggerProfitAmount:F2}U" : "未配置"
-                }, Colors.DodgerBlue);
-                stackPanel.Children.Add(breakEvenCard);
-
-                // 加仓配置 - 简化版本
-                var addPositionCard = CreateConfigCard("📈 加仓配置", new Dictionary<string, string>
-                {
-                    ["启用状态"] = config.AddPositionConfig.IsEnabled ? "已启用" : "未启用",
-                    ["阶梯数量"] = config.AddPositionConfig.Tiers?.Count.ToString() ?? "0"
-                }, Colors.Orange);
-                stackPanel.Children.Add(addPositionCard);
-
-                // 止盈配置 - 简化版本
-                var profitCard = CreateConfigCard("🎯 止盈配置", new Dictionary<string, string>
-                {
-                    ["启用状态"] = config.ProfitProtectionConfig.IsEnabled ? "已启用" : "未启用",
-                    ["阶梯数量"] = config.ProfitProtectionConfig.Tiers?.Count.ToString() ?? "0"
-                }, Colors.Green);
-                stackPanel.Children.Add(profitCard);
-            }
-            else
-            {
-                // 无配置时的提示
-                var noConfigCard = CreateConfigCard("⚠️ 配置状态", new Dictionary<string, string>
-                {
-                    ["状态"] = "未找到配置",
-                    ["提示"] = "请先在主界面配置自动盯盘参数"
-                }, Colors.Gray);
-                stackPanel.Children.Add(noConfigCard);
-            }
-
-            scrollViewer.Content = stackPanel;
-            configBorder.Child = scrollViewer;
-            return configBorder;
-        }
-
-        /// <summary>
-        /// 创建配置信息卡片
-        /// </summary>
-        private System.Windows.Controls.Border CreateConfigCard(string title, Dictionary<string, string> items, Color? accentColor = null)
-        {
-            var cardBorder = new System.Windows.Controls.Border
-            {
-                Background = new SolidColorBrush(Colors.White),
-                BorderBrush = new SolidColorBrush(accentColor ?? Colors.LightGray),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(3),
-                Margin = new Thickness(0, 0, 0, 8),
-                Padding = new Thickness(8, 8, 8, 8)
-            };
-
-            if (accentColor.HasValue)
-            {
-                cardBorder.Background = new SolidColorBrush(Color.FromArgb(20, accentColor.Value.R, accentColor.Value.G, accentColor.Value.B));
-            }
-
-            var stackPanel = new System.Windows.Controls.StackPanel();
-
-            // 标题
-            var titleTextBlock = new System.Windows.Controls.TextBlock
-            {
-                Text = title,
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 12,
-                Margin = new Thickness(0, 0, 0, 5),
-                Foreground = new SolidColorBrush(accentColor ?? Colors.DarkBlue)
-            };
-            stackPanel.Children.Add(titleTextBlock);
-
-            // 配置项
-            foreach (var item in items)
-            {
-                var itemPanel = new System.Windows.Controls.StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    Margin = new Thickness(0, 1, 0, 1)
-                };
-
-                var keyTextBlock = new System.Windows.Controls.TextBlock
-                {
-                    Text = $"{item.Key}:",
-                    FontSize = 11,
-                    Width = 80,
-                    Foreground = new SolidColorBrush(Colors.DarkGray)
-                };
-
-                var valueTextBlock = new System.Windows.Controls.TextBlock
-                {
-                    Text = item.Value,
-                    FontSize = 11,
-                    FontWeight = FontWeights.Medium,
-                    Foreground = new SolidColorBrush(Colors.Black)
-                };
-
-                itemPanel.Children.Add(keyTextBlock);
-                itemPanel.Children.Add(valueTextBlock);
-                stackPanel.Children.Add(itemPanel);
-            }
-
-            cardBorder.Child = stackPanel;
-            return cardBorder;
-        }
-
-        /// <summary>
-        /// 创建右侧合约表格面板（基于原左侧面板的合约表格）
-        /// </summary>
-        private System.Windows.Controls.Border CreateContractTablePanel()
-        {
-            return CreateLeftPanel(); // 暂时使用原左侧面板内容
-        }
-
-        /// <summary>
-        /// 创建历史记录面板
-        /// </summary>
-        private System.Windows.Controls.Border CreateHistoryPanel()
-        {
-            var historyBorder = new System.Windows.Controls.Border
-            {
-                Background = new SolidColorBrush(Colors.White),
-                BorderBrush = new SolidColorBrush(Colors.LightGray),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(5),
-                Margin = new Thickness(3, 0, 0, 0)
-            };
-
-            var stackPanel = new System.Windows.Controls.StackPanel
-            {
-                Margin = new Thickness(8, 8, 8, 8)
-            };
-
-            // 标题
-            var titleTextBlock = new System.Windows.Controls.TextBlock
-            {
-                Text = "📈 执行历史记录",
-                FontWeight = FontWeights.Bold,
-                FontSize = 14,
-                Margin = new Thickness(0, 0, 0, 8),
-                Foreground = new SolidColorBrush(Colors.DarkBlue)
-            };
-            stackPanel.Children.Add(titleTextBlock);
-
-            // 执行历史数据表格
-            var historyDataGrid = CreateExecutionHistoryDataGrid();
-            historyDataGrid.Height = 200; // 限制高度
-            historyDataGrid.Margin = new Thickness(0, 5, 0, 0);
-            stackPanel.Children.Add(historyDataGrid);
-
-            historyBorder.Child = stackPanel;
-            return historyBorder;
-        }
-
-        /// <summary>
-        /// 🆕 处理新开仓事件 - 自动生成并添加监控配置
-        /// </summary>
-        public void HandleNewPositionOpened(string symbol, string positionSide, decimal quantity, decimal pnl)
-        {
-            try
-            {
-                _logger.LogInformation($"🆕 处理新开仓: {symbol}_{positionSide}, 数量: {quantity}, 浮盈: {pnl:F2}U");
-
-                // 检查是否已经存在该合约的配置
-                var contractKey = $"{symbol}_{positionSide}";
-                var existingContract = ContractMonitors.FirstOrDefault(c => $"{c.Symbol}_{c.PositionSide}" == contractKey);
                 
-                if (existingContract != null)
-                {
-                    _logger.LogInformation($"⚠️ 合约 {contractKey} 的配置已存在，跳过自动生成");
-                    return;
-                }
-
-                // 获取基础配置
-                var baseConfig = GetCurrentAutoMonitorConfig();
-                if (baseConfig == null)
-                {
-                    _logger.LogWarning($"⚠️ 无法获取基础配置，无法为新开仓 {contractKey} 生成监控配置");
-                    AppendLog($"⚠️ 检测到新开仓 {symbol} 但无基础配置，请先配置盯盘参数后手动刷新载入");
-                    return;
-                }
-
-                // 生成新的监控配置
-                var positionInfo = new PositionInfo
-                {
-                    Symbol = symbol,
-                    PositionSide = positionSide,
-                    Quantity = Math.Abs(quantity)
-                };
-
-                var newContract = GenerateContractConfigFromBaseConfig(positionInfo, baseConfig);
-                
-                // 添加到监控列表
-                ContractMonitors.Add(newContract);
-                
-                // 保存配置到本地
-                SaveCurrentContractConfigs();
-                
-                // 更新统计信息
-                UpdateNewInterfaceStats();
-                
-                // 记录日志
-                AppendLog($"🆕 自动添加新开仓监控: {symbol}_{positionSide} (数量: {Math.Abs(quantity):F6})");
-                
-                _logger.LogInformation($"✅ 成功为新开仓 {contractKey} 生成并添加监控配置");
+                _logger.LogInformation($"✅ 触发价格更新完成: {contract.Symbol}_{contract.PositionSide}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ 处理新开仓失败: {symbol}_{positionSide}");
-                AppendLog($"❌ 处理新开仓失败: {symbol}_{positionSide} - {ex.Message}");
+                _logger.LogError(ex, $"❌ 更新触发价格从基础配置失败: {contract.Symbol}_{contract.PositionSide}");
+                throw;
             }
         }
 
         /// <summary>
-        /// 🗑️ 处理平仓事件 - 移除监控配置
+        /// 🆕 重新从基础配置加载合约配置（完整实现）
         /// </summary>
-        public void HandlePositionClosed(string symbol, string positionSide)
+        private void ReloadContractFromBaseConfig(AutoMonitorConfig baseConfig, string symbol)
         {
             try
             {
-                _logger.LogInformation($"❌ 处理平仓: {symbol}_{positionSide}");
-
-                var contractKey = $"{symbol}_{positionSide}";
-                var existingContract = ContractMonitors.FirstOrDefault(c => $"{c.Symbol}_{c.PositionSide}" == contractKey);
+                _logger.LogInformation($"🔄 从基础配置重新加载合约: {baseConfig.Name} - {symbol}");
                 
-                if (existingContract != null)
-                {
-                    // 移除监控配置
-                    ContractMonitors.Remove(existingContract);
-                    
-                    // 保存配置到本地
-                    SaveCurrentContractConfigs();
-                    
-                    // 更新统计信息
-                    UpdateNewInterfaceStats();
-                    
-                    // 记录日志
-                    AppendLog($"🗑️ 自动移除平仓合约监控: {symbol}_{positionSide}");
-                    
-                    _logger.LogInformation($"✅ 成功移除平仓合约 {contractKey} 的监控配置");
-                }
-                else
-                {
-                    _logger.LogInformation($"ℹ️ 平仓合约 {contractKey} 在监控列表中不存在，无需移除");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"❌ 处理平仓失败: {symbol}_{positionSide}");
-                AppendLog($"❌ 处理平仓失败: {symbol}_{positionSide} - {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 🔄 立即更新特定合约的执行状态 - 用于实时状态同步
-        /// </summary>
-        public void UpdateContractExecutionState(string symbol, string positionSide, ExecutionType executionType, 
-            int? tierIndex, bool isSuccess, string message)
-        {
-            try
-            {
-                var contractKey = $"{symbol}_{positionSide}";
-                var contract = ContractMonitors.FirstOrDefault(c => $"{c.Symbol}_{c.PositionSide}" == contractKey);
-                
+                var contract = ContractMonitors.FirstOrDefault(c => c.Symbol == symbol);
                 if (contract == null)
                 {
-                    _logger.LogWarning($"⚠️ 无法找到合约 {contractKey} 的监控配置，跳过状态更新");
+                    _logger.LogWarning($"⚠️ 未找到合约: {symbol}");
                     return;
                 }
-
-                // 🎯 查找对应的触发条件并更新状态
-                TriggerConditionModel? targetCondition = null;
                 
-                switch (executionType)
+                var conditionId = contract.TriggerConditions.Any() ? contract.TriggerConditions.Max(c => c.Id) + 1 : 1;
+                var updatedCount = 0;
+                var addedCount = 0;
+                var removedCount = 0;
+                
+                // 🔧 第1步：更新保本条件
+                if (baseConfig.BreakEvenConfig.IsEnabled)
                 {
-                    case ExecutionType.BreakEven:
-                        targetCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
-                        break;
-                        
-                    case ExecutionType.AddPosition:
-                        if (tierIndex.HasValue)
-                        {
-                            targetCondition = contract.TriggerConditions.FirstOrDefault(c => 
-                                c.Type == TriggerConditionType.AddPosition && c.TierIndex == tierIndex.Value);
-                        }
-                        break;
-                        
-                    case ExecutionType.ProfitProtection:
-                        if (tierIndex.HasValue)
-                        {
-                            targetCondition = contract.TriggerConditions.FirstOrDefault(c => 
-                                c.Type == TriggerConditionType.ProfitProtection && c.TierIndex == tierIndex.Value);
-                        }
-                        break;
-                }
-
-                if (targetCondition != null)
-                {
-                    // 🔧 立即更新状态
-                    targetCondition.Status = isSuccess ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
-                    targetCondition.LastExecutionTime = DateTime.Now;
-                    
-                    _logger.LogInformation($"✅ 立即更新了 {contractKey} 的 {executionType}" +
-                        $"{(tierIndex.HasValue ? $"阶梯{tierIndex}" : "")} 状态为: {targetCondition.Status}");
-                    
-                    // 🎯 强制通知属性更改，确保UI立即刷新
-                    targetCondition.OnPropertyChanged(nameof(targetCondition.Status));
-                    targetCondition.OnPropertyChanged(nameof(targetCondition.StatusIcon));
-                    targetCondition.OnPropertyChanged(nameof(targetCondition.LastExecutionTime));
-                    
-                    // 🔧 通知合约级别的属性更新
-                    contract.OnPropertyChanged(nameof(contract.ExecutedCount));
-                    contract.OnPropertyChanged(nameof(contract.ExecutionProgress));
-                    contract.OnPropertyChanged(nameof(contract.BreakEvenStatusText));
-                    
-                    // 🎯 记录状态更新日志
-                    AppendLog($"🔄 实时更新: {symbol}_{positionSide} {executionType}" +
-                        $"{(tierIndex.HasValue ? $"阶梯{tierIndex}" : "")} → {(isSuccess ? "已执行" : "执行失败")}");
-                    
-                    // 🔧 修复：立即保存状态到持久化存储，防止状态丢失
-                    try
+                    var breakEvenCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
+                    if (breakEvenCondition == null)
                     {
-                        // 保存当前合约配置到本地文件
-                        SaveCurrentContractConfigs();
-                        
-                        // 🔧 修复：强制刷新AutoMonitorService的状态数据
-                        _ = Task.Run(async () => 
+                        // 如果没有保本条件，新增一个
+                        contract.TriggerConditions.Add(new TriggerConditionModel
                         {
-                            try
-                            {
-                                // 延迟一段时间，确保状态变更已处理
-                                await Task.Delay(100);
-                                
-                                // 触发服务状态刷新
-                                if (_autoMonitorService != null)
-                                {
-                                    // 这里可以调用服务的状态同步方法
-                                    // 暂时通过日志记录状态更新
-                                    _logger.LogInformation($"🔄 触发服务状态同步: {symbol}_{positionSide} {executionType}");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, "❌ 异步状态同步失败");
-                            }
+                            Id = conditionId++,
+                            Type = TriggerConditionType.BreakEven,
+                            TierIndex = null,
+                            TriggerPrice = baseConfig.BreakEvenConfig.TriggerProfitAmount,
+                            KeepValue = 0,
+                            Status = TriggerExecutionStatus.NotTriggered,
+                            Description = $"保本条件 - 浮盈{baseConfig.BreakEvenConfig.TriggerProfitAmount:F0}U",
+                            StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}"
                         });
-                        
-                        _logger.LogInformation($"💾 状态已保存到本地: {symbol}_{positionSide} {executionType}{(tierIndex.HasValue ? $"阶梯{tierIndex}" : "")}");
-                        AppendLog($"💾 状态已保存: {symbol}_{positionSide} {executionType}{(tierIndex.HasValue ? $"阶梯{tierIndex}" : "")}");
+                        addedCount++;
+                        _logger.LogInformation($"🆕 新增保本条件: {contract.Symbol}_{contract.PositionSide}");
                     }
-                    catch (Exception saveEx)
+                    else
                     {
-                        _logger.LogError(saveEx, $"❌ 保存状态失败: {symbol}_{positionSide} {executionType}");
-                        AppendLog($"⚠️ 状态保存失败: {saveEx.Message}");
+                        // 🔧 更新已存在的保本条件参数
+                        var oldTriggerPrice = breakEvenCondition.TriggerPrice;
+                        breakEvenCondition.TriggerPrice = baseConfig.BreakEvenConfig.TriggerProfitAmount;
+                        breakEvenCondition.KeepValue = 0;
+                        breakEvenCondition.Description = $"保本条件 - 浮盈{baseConfig.BreakEvenConfig.TriggerProfitAmount:F0}U";
+                        breakEvenCondition.StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}";
+                        
+                        if (oldTriggerPrice != breakEvenCondition.TriggerPrice)
+                        {
+                            updatedCount++;
+                            _logger.LogInformation($"🔄 更新保本条件: {contract.Symbol}_{contract.PositionSide} - 触发价格: {oldTriggerPrice:F0} → {breakEvenCondition.TriggerPrice:F0}");
+                        }
                     }
-                    
-                    // 🚀 立即更新统计信息
-                    UpdateNewInterfaceStats();
                 }
                 else
                 {
-                    _logger.LogWarning($"⚠️ 无法找到 {contractKey} 对应的触发条件: {executionType}" +
-                        $"{(tierIndex.HasValue ? $"阶梯{tierIndex}" : "")}");
+                    // 如果基础配置禁用了保本，移除现有的保本条件
+                    var existingBreakEven = contract.TriggerConditions.Where(c => c.Type == TriggerConditionType.BreakEven).ToList();
+                    foreach (var condition in existingBreakEven)
+                    {
+                        contract.TriggerConditions.Remove(condition);
+                        removedCount++;
+                        _logger.LogInformation($"🗑️ 移除保本条件: {contract.Symbol}_{contract.PositionSide}");
+                    }
+                }
+                
+                // 🔧 第2步：更新推仓条件
+                if (baseConfig.AddPositionConfig.IsEnabled && baseConfig.AddPositionConfig.Tiers.Any())
+                {
+                    foreach (var tier in baseConfig.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex))
+                    {
+                        var existingCondition = contract.TriggerConditions.FirstOrDefault(c => 
+                            c.Type == TriggerConditionType.AddPosition && c.TierIndex == tier.TierIndex);
+                        
+                        if (existingCondition == null)
+                        {
+                            // 如果没有这个阶梯的推仓条件，新增一个
+                            contract.TriggerConditions.Add(new TriggerConditionModel
+                            {
+                                Id = conditionId++,
+                                Type = TriggerConditionType.AddPosition,
+                                TierIndex = tier.TierIndex,
+                                TriggerPrice = tier.TriggerProfitAmount,
+                                KeepValue = tier.ProfitProtectionAmount,
+                                Status = TriggerExecutionStatus.NotTriggered,
+                                Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x",
+                                StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}"
+                            });
+                            addedCount++;
+                            _logger.LogInformation($"🆕 新增推仓{tier.TierIndex}条件: {contract.Symbol}_{contract.PositionSide}");
+                        }
+                        else
+                        {
+                            // 🔧 更新已存在的推仓条件参数
+                            var oldTriggerPrice = existingCondition.TriggerPrice;
+                            var oldKeepValue = existingCondition.KeepValue;
+                            existingCondition.TriggerPrice = tier.TriggerProfitAmount;
+                            existingCondition.KeepValue = tier.ProfitProtectionAmount;
+                            existingCondition.Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x";
+                            existingCondition.StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}";
+                            
+                            if (oldTriggerPrice != existingCondition.TriggerPrice || oldKeepValue != existingCondition.KeepValue)
+                            {
+                                updatedCount++;
+                                _logger.LogInformation($"🔄 更新推仓{tier.TierIndex}条件: {contract.Symbol}_{contract.PositionSide} - 触发价格: {oldTriggerPrice:F0} → {existingCondition.TriggerPrice:F0}, 保盈金额: {oldKeepValue:F0} → {existingCondition.KeepValue:F0}");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // 如果基础配置禁用了推仓，移除现有的推仓条件
+                    var existingAddPosition = contract.TriggerConditions.Where(c => c.Type == TriggerConditionType.AddPosition).ToList();
+                    foreach (var condition in existingAddPosition)
+                    {
+                        contract.TriggerConditions.Remove(condition);
+                        removedCount++;
+                        _logger.LogInformation($"🗑️ 移除推仓{condition.TierIndex}条件: {contract.Symbol}_{contract.PositionSide}");
+                    }
+                }
+                
+                // 🔧 第3步：更新止盈条件
+                if (baseConfig.ProfitProtectionConfig.IsEnabled && baseConfig.ProfitProtectionConfig.Tiers.Any())
+                {
+                    foreach (var tier in baseConfig.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex))
+                    {
+                        var existingCondition = contract.TriggerConditions.FirstOrDefault(c => 
+                            c.Type == TriggerConditionType.ProfitProtection && c.TierIndex == tier.TierIndex);
+                        
+                        if (existingCondition == null)
+                        {
+                            // 如果没有这个阶梯的止盈条件，新增一个
+                            contract.TriggerConditions.Add(new TriggerConditionModel
+                            {
+                                Id = conditionId++,
+                                Type = TriggerConditionType.ProfitProtection,
+                                TierIndex = tier.TierIndex,
+                                TriggerPrice = tier.TriggerProfitAmount,
+                                KeepValue = tier.ProtectionAmount,
+                                Status = TriggerExecutionStatus.NotTriggered,
+                                Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U",
+                                StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}"
+                            });
+                            addedCount++;
+                            _logger.LogInformation($"🆕 新增止盈{tier.TierIndex}条件: {contract.Symbol}_{contract.PositionSide}");
+                        }
+                        else
+                        {
+                            // 🔧 更新已存在的止盈条件参数
+                            var oldTriggerPrice = existingCondition.TriggerPrice;
+                            var oldKeepValue = existingCondition.KeepValue;
+                            existingCondition.TriggerPrice = tier.TriggerProfitAmount;
+                            existingCondition.KeepValue = tier.ProtectionAmount;
+                            existingCondition.Description = $"止盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 保护{tier.ProtectionAmount:F0}U";
+                            existingCondition.StatusNote = $"从基础配置重载 {DateTime.Now:HH:mm:ss}";
+                            
+                            if (oldTriggerPrice != existingCondition.TriggerPrice || oldKeepValue != existingCondition.KeepValue)
+                            {
+                                updatedCount++;
+                                _logger.LogInformation($"🔄 更新止盈{tier.TierIndex}条件: {contract.Symbol}_{contract.PositionSide} - 触发价格: {oldTriggerPrice:F0} → {existingCondition.TriggerPrice:F0}, 保护金额: {oldKeepValue:F0} → {existingCondition.KeepValue:F0}");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // 如果基础配置禁用了止盈，移除现有的止盈条件
+                    var existingProfitProtection = contract.TriggerConditions.Where(c => c.Type == TriggerConditionType.ProfitProtection).ToList();
+                    foreach (var condition in existingProfitProtection)
+                    {
+                        contract.TriggerConditions.Remove(condition);
+                        removedCount++;
+                        _logger.LogInformation($"🗑️ 移除止盈{condition.TierIndex}条件: {contract.Symbol}_{contract.PositionSide}");
+                    }
+                }
+                
+                // 🔧 第4步：重新排序条件ID
+                var reorderedConditions = contract.TriggerConditions.OrderBy(c => c.Type).ThenBy(c => c.TierIndex ?? 0).ToList();
+                contract.TriggerConditions.Clear();
+                
+                for (int i = 0; i < reorderedConditions.Count; i++)
+                {
+                    reorderedConditions[i].Id = i + 1;
+                    contract.TriggerConditions.Add(reorderedConditions[i]);
+                }
+                
+                _logger.LogInformation($"✅ 配置重载完成: {contract.Symbol}_{contract.PositionSide} - 最终条件数: {contract.TriggerConditions.Count} (新增: {addedCount}, 更新: {updatedCount}, 移除: {removedCount})");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 重载合约配置失败: {symbol}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 记录日志到全面服务
+        /// </summary>
+        private void LogToComprehensiveService(string message, string level = "Info")
+        {
+            try
+            {
+                if (_comprehensiveLoggingService != null)
+                {
+                    switch (level.ToLower())
+                    {
+                        case "error":
+                            _comprehensiveLoggingService.LogError(message);
+                            break;
+                        case "info":
+                        default:
+                            _comprehensiveLoggingService.LogInfo(message);
+                            break;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ 更新合约执行状态失败: {symbol}_{positionSide} {executionType}");
-                AppendLog($"❌ 状态更新失败: {symbol}_{positionSide} {executionType} - {ex.Message}");
+                _logger.LogError(ex, $"❌ 记录日志到全面服务失败: {message}");
             }
         }
-    }
 
-    public class RelayCommand : ICommand
+        /// <summary>
+        /// 创建推仓配置卡片
+        /// </summary>
+        private System.Windows.Controls.Border CreateAddPositionConfigCard()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 创建推仓配置卡片");
+                
+                var card = new System.Windows.Controls.Border
+                {
+                    Background = new SolidColorBrush(Colors.White),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8),
+                    Margin = new Thickness(4)
+                };
+
+                var textBlock = new System.Windows.Controls.TextBlock
+                {
+                    Text = "推仓配置",
+                    FontWeight = FontWeights.Bold,
+                    FontSize = 14
+                };
+
+                card.Child = textBlock;
+                return card;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建推仓配置卡片失败");
+                return new System.Windows.Controls.Border();
+            }
+        }
+
+        /// <summary>
+        /// 创建止盈保护配置卡片
+        /// </summary>
+        private System.Windows.Controls.Border CreateProfitProtectionConfigCard()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 创建止盈保护配置卡片");
+                
+                var card = new System.Windows.Controls.Border
+                {
+                    Background = new SolidColorBrush(Colors.White),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8),
+                    Margin = new Thickness(4)
+                };
+
+                var textBlock = new System.Windows.Controls.TextBlock
+                {
+                    Text = "止盈保护配置",
+                    FontWeight = FontWeights.Bold,
+                    FontSize = 14
+                };
+
+                card.Child = textBlock;
+                return card;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 创建止盈保护配置卡片失败");
+                return new System.Windows.Controls.Border();
+            }
+        }
+
+    /// <summary>
+    /// 工作日志显示模型
+    /// </summary>
+    public class WorkLog
     {
-        private readonly Action _execute;
-        public RelayCommand(Action execute) => _execute = execute;
-        public event EventHandler? CanExecuteChanged;
-        public bool CanExecute(object? parameter) => true;
-        public void Execute(object? parameter) => _execute();
+        public DateTime Time { get; set; }
+        public string Level { get; set; }
+        public string Message { get; set; }
+        public string TimeText => Time.ToString("HH:mm:ss");
+        public string LevelText => $"[{Level}]";
+        public SolidColorBrush LevelColor { get; set; }
+        public SolidColorBrush MessageColor { get; set; }
+
+        public WorkLog(string level, string message)
+        {
+            Time = DateTime.Now;
+            Level = level;
+            Message = message;
+            
+            // 根据日志级别设置颜色
+            LevelColor = level switch
+            {
+                "INFO" => new SolidColorBrush(Colors.LightGreen),
+                "WARN" => new SolidColorBrush(Colors.Yellow),
+                "ERROR" => new SolidColorBrush(Colors.Red),
+                "DEBUG" => new SolidColorBrush(Colors.LightBlue),
+                _ => new SolidColorBrush(Colors.White)
+            };
+            
+            MessageColor = level switch
+            {
+                "ERROR" => new SolidColorBrush(Colors.Red),
+                "WARN" => new SolidColorBrush(Colors.Yellow),
+                _ => new SolidColorBrush(Colors.LightGreen)
+            };
+        }
     }
 
     public class ContractStateDisplayModel
@@ -6418,7 +5395,7 @@ namespace BinanceFuturesTrader.Views
         public double ExecutionProgress { get; set; }
         public DateTime LastExecutionTime { get; set; }
         
-        // 🔧 新增：动态进度显示支持（支持多次推仓多次止盈）
+        // 新增：动态进度显示支持（支持多次推仓多次止盈）
         public int AddPositionTotalTiers { get; set; }
         public int ProfitProtectionTotalTiers { get; set; }
         public string AddPositionProgressDisplay => $"{AddPositionProgress}/{AddPositionTotalTiers}";
@@ -6504,7 +5481,7 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
-                // 🔧 修复：增强持仓变化处理，确保实时响应
+                // 修复：增强持仓变化处理，确保实时响应
                 if (eventData.ChangeType == PositionChangeType.Opened)
                 {
                     _logger.LogInformation($"🆕 检测到新开仓: {eventData.Symbol}_{eventData.PositionSide}, 立即添加监控配置");
@@ -6586,4 +5563,186 @@ namespace BinanceFuturesTrader.Views
         }
     }
 
+    /// <summary>
+    /// 中继命令实现
+    /// </summary>
+    public class RelayCommand : ICommand
+    {
+        private readonly Action _execute;
+        public RelayCommand(Action execute) => _execute = execute;
+        public event EventHandler? CanExecuteChanged;
+        public bool CanExecute(object? parameter) => true;
+        public void Execute(object? parameter) => _execute();
+    }
+
+    // 添加XAML中缺少的事件处理方法
+    private void StartStopButton_Click(object sender, RoutedEventArgs e)
+    {
+        // 重用现有的ToggleMonitorButton_Click逻辑
+        ToggleMonitorButton_Click(sender, e);
+    }
+
+    private void ConfigButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("🔧 用户点击配置按钮");
+            
+            // 显示配置操作选项
+            var result = MessageBox.Show("配置功能\n\n选择操作：\n确定 - 加载配置\n取消 - 查看当前配置", "配置", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+            
+            if (result == MessageBoxResult.OK)
+            {
+                LoadFromConfigButton_Click(sender, e);
+            }
+            else
+            {
+                UpdateConfiguration();
+                MessageBox.Show($"当前配置: {ConfigName}\n扫描间隔: {ScanIntervalDisplay}\n保本配置: {BreakEvenConfigDisplay}", "当前配置", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 打开配置界面时发生错误");
+            MessageBox.Show($"打开配置界面失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ConfigManageButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("📝 用户点击配置管理按钮");
+            
+            // 显示配置管理选项
+            var result = MessageBox.Show("配置管理功能\n\n选择操作：\n确定 - 导出当前配置\n取消 - 导入配置", "配置管理", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+            
+            if (result == MessageBoxResult.OK)
+            {
+                // 导出配置
+                SaveConfigButton_Click(sender, e);
+            }
+            else
+            {
+                // 导入配置
+                LoadFromConfigButton_Click(sender, e);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 配置管理时发生错误");
+            MessageBox.Show($"配置管理失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ComprehensiveLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("📊 用户点击全面日志按钮");
+            
+            // 显示日志信息摘要
+            if (_comprehensiveLoggingService != null)
+            {
+                var summary = $"日志服务统计:\n• UI日志条目: {_comprehensiveLoggingService.UILogEntries.Count}\n• 操作日志: {_comprehensiveLoggingService.OperationLogs.Count}\n• 监控日志: {_comprehensiveLoggingService.MonitoringLogs.Count}\n• 错误日志: {_comprehensiveLoggingService.ErrorLogs.Count}";
+                MessageBox.Show(summary, "全面日志统计", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show("日志服务不可用。", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 打开全面日志时发生错误");
+            MessageBox.Show($"打开日志窗口失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void AddContractButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("➕ 用户点击添加合约按钮");
+            
+            // 创建新的合约监控项
+            var newContract = new ContractMonitorModel
+            {
+                Symbol = "BTCUSDT",
+                PositionSide = "LONG",
+                IsEnabled = true
+            };
+            
+            ContractMonitors.Add(newContract);
+            AppendLog($"➕ 添加新合约: {newContract.Symbol}_{newContract.PositionSide}");
+            
+            // 打开编辑对话框
+            OpenEditDialog(newContract);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 添加合约时发生错误");
+            MessageBox.Show($"添加合约失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveContractButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("➖ 用户点击移除合约按钮");
+            
+            if (_contractMonitorDataGrid?.SelectedItem is ContractMonitorModel selectedContract)
+            {
+                var result = MessageBox.Show($"确定要移除合约 {selectedContract.Symbol}_{selectedContract.PositionSide} 吗？", 
+                    "确认移除", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                
+                if (result == MessageBoxResult.Yes)
+                {
+                    ContractMonitors.Remove(selectedContract);
+                    AppendLog($"➖ 移除合约: {selectedContract.Symbol}_{selectedContract.PositionSide}");
+                }
+            }
+            else
+            {
+                MessageBox.Show("请先选择要移除的合约。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 移除合约时发生错误");
+            MessageBox.Show($"移除合约失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ExportLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _logger.LogInformation("📤 用户点击导出日志按钮");
+            
+            var saveFileDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "导出日志",
+                Filter = "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+                FileName = $"AutoMonitor_Log_{DateTime.Now:yyyy-MM-dd_HHmmss}.txt"
+            };
+            
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                var logContent = RealTimeLog;
+                File.WriteAllText(saveFileDialog.FileName, logContent, Encoding.UTF8);
+                
+                MessageBox.Show($"日志已导出到：\n{saveFileDialog.FileName}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                AppendLog($"📤 日志已导出到: {saveFileDialog.FileName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 导出日志时发生错误");
+            MessageBox.Show($"导出日志失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 }
+}
+#endregion

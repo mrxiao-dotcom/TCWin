@@ -6,6 +6,9 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using BinanceFuturesTrader.Models;
+using BinanceFuturesTrader.Views.AutoMonitor.Components;
+using BinanceFuturesTrader.Views.AutoMonitor.Models;
+using Microsoft.Extensions.Logging;
 
 namespace BinanceFuturesTrader.Views
 {
@@ -18,6 +21,7 @@ namespace BinanceFuturesTrader.Views
         private decimal _triggerProfitAmount;
         private decimal _riskCapitalMultiplier;
         private decimal _stopLossPercentage;
+        private decimal _profitProtectionAmount;
         private bool _isEnabled;
         private string _description = "";
 
@@ -43,6 +47,12 @@ namespace BinanceFuturesTrader.Views
         {
             get => _stopLossPercentage;
             set { _stopLossPercentage = value; OnPropertyChanged(); }
+        }
+
+        public decimal ProfitProtectionAmount
+        {
+            get => _profitProtectionAmount;
+            set { _profitProtectionAmount = value; OnPropertyChanged(); }
         }
 
         public bool IsEnabled
@@ -133,6 +143,9 @@ namespace BinanceFuturesTrader.Views
         /// 保盈止损阶梯数据
         /// </summary>
         public ObservableCollection<ProfitProtectionStageViewModel> ProfitProtectionStages { get; set; }
+
+        // 🎯 新增：配置同步管理器（静态引用）
+        public static ConfigurationSyncManager? ConfigurationSyncManager { get; set; }
 
         // 账户信息（用于生成智能默认配置）
         private decimal _accountEquity = 1000m;
@@ -328,7 +341,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 2m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = Math.Round(-singleRiskCapital / 2m, 0, MidpointRounding.AwayFromZero) // 第一阶梯：负二分之一倍风险金
                         },
                         new AddPositionTier
                         {
@@ -336,7 +350,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 3m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = 0m // 其他阶梯：0
                         },
                         new AddPositionTier
                         {
@@ -344,7 +359,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 4m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = 0m // 其他阶梯：0
                         },
                         new AddPositionTier { TierIndex = 4, IsEnabled = false }
                     }
@@ -416,7 +432,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 1m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = Math.Round(-singleRiskCapital / 2m, 0, MidpointRounding.AwayFromZero) // 第一阶梯：负二分之一倍风险金
                         },
                         new AddPositionTier
                         {
@@ -424,7 +441,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 2m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = 0m // 其他阶梯：0
                         },
                         new AddPositionTier
                         {
@@ -432,7 +450,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 3m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = 0m // 其他阶梯：0
                         },
                         new AddPositionTier
                         {
@@ -440,7 +459,8 @@ namespace BinanceFuturesTrader.Views
                             IsEnabled = true,
                             TriggerProfitAmount = Math.Round(singleRiskCapital * 4m, 0, MidpointRounding.AwayFromZero), // 四舍五入取整
                             RiskMultiplier = 1.0m, // 加仓倍数为1倍风险金
-                            StopLossRatio = 0.10m // 止损金额为10%
+                            StopLossRatio = 0.10m, // 止损金额为10%
+                            ProfitProtectionAmount = 0m // 其他阶梯：0
                         }
                     }
                 },
@@ -661,6 +681,7 @@ namespace BinanceFuturesTrader.Views
                         TriggerProfitAmount = tier.TriggerProfitAmount,
                         RiskCapitalMultiplier = tier.RiskMultiplier,
                         StopLossPercentage = tier.StopLossRatio * 100, // 转换为百分比显示
+                        ProfitProtectionAmount = tier.ProfitProtectionAmount,
                         IsEnabled = tier.IsEnabled,
                         Description = $"阶梯{tier.TierIndex} - {(tier.IsEnabled ? "启用" : "禁用")}"
                     });
@@ -799,6 +820,15 @@ namespace BinanceFuturesTrader.Views
                 // 创建配置对象
                 ConfigResult = CreateConfigFromInputs();
 
+                // 🎯 新增：配置同步处理
+                if (ConfigurationSyncManager != null)
+                {
+                    if (!HandleConfigurationSync())
+                    {
+                        return; // 用户取消了配置同步
+                    }
+                }
+
                 // 设置对话框结果并关闭
                 DialogResult = true;
                 Close();
@@ -807,6 +837,88 @@ namespace BinanceFuturesTrader.Views
             {
                 MessageBox.Show($"配置创建失败：{ex.Message}", "错误", 
                     MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🎯 新增：处理配置同步
+        /// </summary>
+        private bool HandleConfigurationSync()
+        {
+            try
+            {
+                if (ConfigurationSyncManager == null)
+                {
+                    return true; // 没有配置同步管理器，直接返回
+                }
+
+                // 检查是否可以进行配置同步
+                if (!ConfigurationSyncManager.CanSyncConfiguration())
+                {
+                    MessageBox.Show("❌ 无法同步配置：请先停止自动盯盘监控", "配置同步", 
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+
+                // 计算新的阶梯数量
+                var newAddPositionTiers = AddPositionStages.Count(s => s.IsEnabled);
+                var newProfitProtectionTiers = ProfitProtectionStages.Count(s => s.IsEnabled);
+
+                // 分析配置变化
+                var analysis = ConfigurationSyncManager.AnalyzeConfigurationChange(
+                    newAddPositionTiers, newProfitProtectionTiers);
+
+                // 如果有变化，提示用户进行同步
+                if (analysis.HasChanges)
+                {
+                    var changeDescription = ConfigurationSyncManager.GenerateChangeDescription(analysis);
+                    
+                    var confirmMessage = $"🔄 检测到配置变化，需要同步现有合约配置：\n\n{changeDescription}\n\n" +
+                                       $"💡 同步后，新的阶梯结构将应用到所有现有合约。\n" +
+                                       $"🔧 新增的阶梯需要手动设置具体的触发条件。\n\n" +
+                                       $"是否立即同步配置？";
+
+                    var result = MessageBox.Show(confirmMessage, "配置同步确认", 
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        // 执行配置同步
+                        var syncSuccess = ConfigurationSyncManager.HandleBaseConfigurationChange(
+                            newAddPositionTiers, newProfitProtectionTiers, false);
+
+                        if (syncSuccess)
+                        {
+                            MessageBox.Show("✅ 配置同步成功！\n\n💡 表格列结构已自动调整", 
+                                "配置同步", MessageBoxButton.OK, MessageBoxImage.Information);
+                        }
+                        else
+                        {
+                            MessageBox.Show("❌ 配置同步失败，请检查日志了解详情", 
+                                "配置同步", MessageBoxButton.OK, MessageBoxImage.Error);
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        // 用户选择不同步，询问是否继续
+                        var continueResult = MessageBox.Show("⚠️ 您选择不同步配置，这可能导致表格显示不一致。\n\n是否继续保存配置？", 
+                            "确认继续", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                        
+                        if (continueResult != MessageBoxResult.Yes)
+                        {
+                            return false; // 用户取消操作
+                        }
+                    }
+                }
+
+                return true; // 配置同步完成或无需同步
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"❌ 配置同步处理异常：{ex.Message}", "配置同步异常", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
             }
         }
 
@@ -841,14 +953,20 @@ namespace BinanceFuturesTrader.Views
                 var newRiskMultiplier = lastStage != null ? lastStage.RiskCapitalMultiplier : 1.0m;
                 var newStopLossPercentage = lastStage != null ? lastStage.StopLossPercentage : 10m;
                 
+                // 计算保盈金额默认值：第一阶梯为负二分之一倍风险金，其他阶梯为0
+                var newProfitProtectionAmount = newStageIndex == 1 
+                    ? -riskCapitalIncrement / 2m  // 负二分之一倍风险金
+                    : 0m;  // 其他阶梯为0
+                
                 var newStage = new AddPositionStageViewModel
                 {
                     Stage = newStageIndex,
                     TriggerProfitAmount = newTriggerAmount,
                     RiskCapitalMultiplier = newRiskMultiplier,
                     StopLossPercentage = newStopLossPercentage,
+                    ProfitProtectionAmount = newProfitProtectionAmount,
                     IsEnabled = true,
-                    Description = $"浮盈{newTriggerAmount:F0}U时推仓，风险金{newRiskMultiplier:F1}倍，止损{newStopLossPercentage:F0}%"
+                    Description = $"浮盈{newTriggerAmount:F0}U时推仓，风险金{newRiskMultiplier:F1}倍，止损{newStopLossPercentage:F0}%，保盈{newProfitProtectionAmount:F0}U"
                 };
                 
                 AddPositionStages.Add(newStage);
@@ -908,9 +1026,15 @@ namespace BinanceFuturesTrader.Views
                 var newStageIndex = ProfitProtectionStages.Count + 1;
                 var lastStage = ProfitProtectionStages.LastOrDefault();
                 
-                // 智能计算新阶梯的默认值
-                var newTriggerAmount = lastStage != null ? lastStage.TriggerProfitAmount + 1000 : 1000;
-                var newProtectionAmount = lastStage != null ? newTriggerAmount * 0.8m : 800; // 保护80%利润
+                // 🔧 修改：使用风险金倍数来计算新阶梯的默认值，而不是固定1000
+                var singleRiskCapital = _accountEquity / _riskCapitalTimes; // 计算一份风险金
+                
+                // 智能计算新阶梯的默认值（按照需求文档：第一阶梯10倍，第二阶梯20倍，第三阶梯30倍，后续依此类推）
+                var newTriggerAmount = lastStage != null 
+                    ? Math.Round(lastStage.TriggerProfitAmount + (10 * singleRiskCapital), 0, MidpointRounding.AwayFromZero)
+                    : Math.Round(10 * singleRiskCapital, 0, MidpointRounding.AwayFromZero); // 第一个阶梯是10倍风险金
+                    
+                var newProtectionAmount = Math.Round(newTriggerAmount * 0.8m, 0, MidpointRounding.AwayFromZero); // 保护80%利润
                 
                 var newStage = new ProfitProtectionStageViewModel
                 {
@@ -923,6 +1047,14 @@ namespace BinanceFuturesTrader.Views
                 
                 ProfitProtectionStages.Add(newStage);
                 UpdateStageCountDisplay();
+                
+                // 显示智能计算的提示信息
+                var riskMultiplier = newTriggerAmount / singleRiskCapital;
+                var message = $"已添加保盈阶梯{newStageIndex}：\n" +
+                             $"触发值：{newTriggerAmount:F0}U ({riskMultiplier:F0}倍风险金)\n" +
+                             $"保护值：{newProtectionAmount:F0}U (80%利润保护)\n" +
+                             $"(基于一份风险金 {singleRiskCapital:F0}U = 账户权益{_accountEquity:F0}U ÷ 风险次数{_riskCapitalTimes})";
+                MessageBox.Show(message, "保盈阶梯添加成功", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -1011,6 +1143,17 @@ namespace BinanceFuturesTrader.Views
                         MessageBox.Show($"推仓阶梯{stage.Stage}的参数无效，请检查触发盈利值、风险金倍数和止损比例", "输入验证", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return false;
                     }
+                    
+                    // 验证保盈金额范围
+                    var singleRiskCapital = _accountEquity / _riskCapitalTimes;
+                    var minProfitProtection = -singleRiskCapital; // 最小负一倍风险金
+                    var maxProfitProtection = stage.TriggerProfitAmount; // 最大为当前阶梯触发值
+                    
+                    if (stage.ProfitProtectionAmount < minProfitProtection || stage.ProfitProtectionAmount > maxProfitProtection)
+                    {
+                        MessageBox.Show($"推仓阶梯{stage.Stage}的保盈金额无效，范围应为{minProfitProtection:F0}U 到 {maxProfitProtection:F0}U", "输入验证", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return false;
+                    }
                 }
             }
 
@@ -1084,6 +1227,7 @@ namespace BinanceFuturesTrader.Views
                         TriggerProfitAmount = viewModel.TriggerProfitAmount,
                         RiskMultiplier = viewModel.RiskCapitalMultiplier,
                         StopLossRatio = viewModel.StopLossPercentage / 100,
+                        ProfitProtectionAmount = viewModel.ProfitProtectionAmount,
                         IsTriggered = false
                     });
                 }

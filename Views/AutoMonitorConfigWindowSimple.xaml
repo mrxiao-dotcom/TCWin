@@ -1,0 +1,204 @@
+<Window x:Class="BinanceFuturesTrader.Views.AutoMonitorConfigWindowSimple"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="自动盯盘管理面板" Height="900" Width="1400"
+        WindowStartupLocation="CenterScreen"
+        Background="White">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="200"/>
+        </Grid.RowDefinitions>
+
+        <!-- 第一区域：综合信息与控制按钮区 -->
+        <Border Grid.Row="0" Background="#F5F5F5" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="15">
+            <StackPanel>
+                <!-- 标题 -->
+                <TextBlock Text="📊 综合信息与控制" FontSize="18" FontWeight="Bold" 
+                          HorizontalAlignment="Center" Margin="0,0,0,15"/>
+                
+                <!-- 主要信息和按钮区 -->
+                <Grid Margin="0,0,0,15">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <!-- 左侧信息栏 -->
+                    <Grid Grid.Column="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <TextBlock Grid.Column="0" Text="持仓总品种：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <TextBlock Grid.Column="1" Name="PositionCountText" Text="0" FontWeight="Bold" 
+                                  VerticalAlignment="Center" Margin="0,0,30,0"/>
+                        
+                        <TextBlock Grid.Column="2" Text="当前基础配置：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <ComboBox Grid.Column="3" Name="ConfigSelectionComboBox" Width="150" Height="30"
+                                 SelectionChanged="ConfigSelectionComboBox_SelectionChanged" 
+                                 DisplayMemberPath="Name" Margin="0,0,30,0"/>
+                        
+                        <TextBlock Grid.Column="4" Text="扫描间隔：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBox Name="ScanIntervalTextBox" Width="60" Text="30" Margin="0,0,5,0"/>
+                            <TextBlock Text="秒" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                    
+                    <!-- 右侧按钮栏 -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+                        <Button Name="StartStopButton" Content="启动盯盘" Width="100" Height="35" 
+                               Background="Green" Foreground="White" FontWeight="Bold" FontSize="11"
+                               Click="StartStopButton_Click" Margin="0,0,8,0"/>
+                        <Button Name="EditConfigButton" Content="编辑配置" Width="100" Height="35" 
+                               Background="Orange" Foreground="White" FontWeight="Bold" FontSize="11"
+                               Click="EditConfigButton_Click" Margin="0,0,8,0"/>
+                        <Button Name="RefreshButton" Content="刷新数据" Width="100" Height="35" 
+                               Background="Blue" Foreground="White" FontWeight="Bold" FontSize="11"
+                               Click="RefreshButton_Click" Margin="0,0,8,0"/>
+                        <Button Name="CloseButton" Content="关闭窗口" Width="100" Height="35" 
+                               Background="Gray" Foreground="White" FontWeight="Bold" FontSize="11"
+                               Click="CloseButton_Click"/>
+                    </StackPanel>
+                </Grid>
+                
+                <!-- 风险金信息栏 -->
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <TextBlock Grid.Column="0" Text="💰 风险金信息：" VerticalAlignment="Center" Margin="0,0,10,0" 
+                              FontWeight="Bold" Foreground="DarkBlue"/>
+                    
+                    <TextBlock Grid.Column="1" Text="账户权益：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Grid.Column="2" Name="AccountEquityText" Text="0.00 USDT" FontWeight="Bold" 
+                              VerticalAlignment="Center" Margin="0,0,20,0" Foreground="Green"/>
+                    
+                    <TextBlock Grid.Column="3" Text="风险次数：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Grid.Column="4" Name="RiskCapitalTimesText" Text="10" FontWeight="Bold" 
+                              VerticalAlignment="Center" Margin="0,0,20,0" Foreground="Blue"/>
+                    
+                    <TextBlock Grid.Column="5" Text="单倍风险金：" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock Grid.Column="6" Name="RiskCapitalAmountText" Text="0.00 USDT" FontWeight="Bold" 
+                              VerticalAlignment="Center" Margin="0,0,20,0" Foreground="Red"/>
+                    
+                    <Button Grid.Column="7" Name="RefreshRiskCapitalButton" Content="🔄 更新风险金" Width="100" Height="25" 
+                           Background="LightBlue" Foreground="DarkBlue" FontSize="10" 
+                           Click="RefreshRiskCapitalButton_Click"/>
+                </Grid>
+                
+
+            </StackPanel>
+        </Border>
+
+        <!-- 第二区域：合约配置区 -->
+        <Border Grid.Row="1" Background="White" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="15">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <TextBlock Grid.Row="0" Text="📋 合约配置区 - 保本、推仓、保盈配置与状态" FontSize="16" FontWeight="Bold" 
+                          Margin="0,0,0,10"/>
+                
+                <!-- 按照需求文档设计的合约配置表格 -->
+                <DataGrid Grid.Row="1" Name="ContractConfigDataGrid" AutoGenerateColumns="False" 
+                         IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                         SelectionMode="Single" GridLinesVisibility="All" 
+                         HeadersVisibility="Column" FontSize="11"
+                         MouseDoubleClick="ContractConfigDataGrid_MouseDoubleClick">
+                    <DataGrid.Columns>
+                        <!-- 基本信息 -->
+                        <DataGridTextColumn Header="合约名称" Binding="{Binding ContractName}" Width="100"/>
+                        <DataGridTextColumn Header="当前浮盈" Binding="{Binding CurrentPnl}" Width="100">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{Binding PnlColor}"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        
+                        <!-- 保本配置 -->
+                        <DataGridTextColumn Header="保本目标" Binding="{Binding BreakEvenTarget}" Width="80"/>
+                        <DataGridTextColumn Header="保本状态" Binding="{Binding BreakEvenStatus}" Width="80">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Center"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        
+                        <!-- 推仓和保盈列将动态生成 -->
+                        
+                        <!-- 更新时间 -->
+                        <DataGridTextColumn Header="更新时间" Binding="{Binding UpdateTime}" Width="120"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+
+        <!-- 第三区域：日志信息区 -->
+        <Border Grid.Row="2" Background="#F9F9F9" BorderBrush="#E0E0E0" BorderThickness="0" Padding="15">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <TextBlock Grid.Column="0" Text="📝 日志信息区" FontSize="16" FontWeight="Bold" 
+                              VerticalAlignment="Center"/>
+                    
+                    <TextBlock Grid.Column="1" Name="StatusInfoText" Text="系统就绪" 
+                              HorizontalAlignment="Center" VerticalAlignment="Center" 
+                              FontWeight="Bold" Foreground="DarkBlue"/>
+                    
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button Name="ViewHistoryButton" Content="查看历史" Width="80" Height="30" 
+                               Background="#4A90E2" Foreground="White" Margin="0,0,5,0"
+                               Click="ViewHistoryButton_Click"/>
+                        <Button Name="ClearLogButton" Content="清空日志" Width="80" Height="30" 
+                               Background="Gray" Foreground="White" 
+                               Click="ClearLogButton_Click"/>
+                    </StackPanel>
+                </Grid>
+                
+                <!-- 日志显示区 -->
+                <ScrollViewer Grid.Row="1" Name="LogScrollViewer" 
+                             VerticalScrollBarVisibility="Auto" 
+                             HorizontalScrollBarVisibility="Auto">
+                    <TextBox Name="LogTextBox" IsReadOnly="True" 
+                            TextWrapping="Wrap" VerticalAlignment="Stretch" 
+                            Background="White" BorderThickness="1" 
+                            FontFamily="Consolas" FontSize="11"
+                            Padding="5"/>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+    </Grid>
+</Window> 

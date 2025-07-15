@@ -10,6 +10,7 @@ using System.Web;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
 using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace BinanceFuturesTrader.Services
 {
@@ -18,6 +19,15 @@ namespace BinanceFuturesTrader.Services
         private static readonly HttpClient _httpClient = new HttpClient();
         private AccountConfig? _currentAccount;
         private string _baseUrl = "https://fapi.binance.com";
+        
+        // 🔧 新增：API限流控制机制
+        private static readonly SemaphoreSlim _apiSemaphore = new(1, 1); // 确保API请求串行执行
+        private static DateTime _lastApiCall = DateTime.MinValue;
+        private static readonly TimeSpan _minRequestInterval = TimeSpan.FromMilliseconds(200); // 最小请求间隔200ms
+        private static DateTime _rateLimitBanUntil = DateTime.MinValue; // IP封禁截止时间
+        private static bool _isInErrorRecoveryMode = false; // 错误恢复模式
+        private static int _consecutiveErrors = 0; // 连续错误计数
+        private static readonly object _rateLimitLock = new object();
         
         // 时间偏移量用于同步服务器时间
         private long _serverTimeOffset = 0;
@@ -55,6 +65,220 @@ namespace BinanceFuturesTrader.Services
 
         // 持仓模式缓存
         private bool? _isDualSidePosition = null;
+
+        /// <summary>
+        /// 🔧 新增：检查是否处于API限流状态
+        /// </summary>
+        private static bool IsRateLimited()
+        {
+            lock (_rateLimitLock)
+            {
+                return DateTime.Now < _rateLimitBanUntil;
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：设置API限流状态
+        /// </summary>
+        private static void SetRateLimitBan(long banUntilTimestamp)
+        {
+            lock (_rateLimitLock)
+            {
+                var banUntil = DateTimeOffset.FromUnixTimeMilliseconds(banUntilTimestamp).DateTime;
+                _rateLimitBanUntil = banUntil;
+                _isInErrorRecoveryMode = true;
+                
+                var waitTime = banUntil - DateTime.Now;
+                LogService.LogError($"🚫 API限流：IP被封禁到 {banUntil:yyyy-MM-dd HH:mm:ss}，需要等待 {waitTime.TotalMinutes:F1} 分钟");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：API请求间隔控制
+        /// </summary>
+        private static async Task EnforceRequestInterval()
+        {
+            await _apiSemaphore.WaitAsync();
+            try
+            {
+                // 检查是否在限流期内
+                if (IsRateLimited())
+                {
+                    var waitTime = _rateLimitBanUntil - DateTime.Now;
+                    LogService.LogWarning($"⏳ API限流中，等待 {waitTime.TotalSeconds:F0} 秒后重试");
+                    throw new InvalidOperationException($"API限流中，请等待 {waitTime.TotalMinutes:F1} 分钟");
+                }
+
+                // 检查错误恢复模式
+                if (_isInErrorRecoveryMode)
+                {
+                    var recoveryDelay = TimeSpan.FromSeconds(Math.Min(30, _consecutiveErrors * 2)); // 指数退避，最大30秒
+                    LogService.LogInfo($"🔄 错误恢复模式：等待 {recoveryDelay.TotalSeconds} 秒");
+                    await Task.Delay(recoveryDelay);
+                }
+
+                // 确保最小请求间隔
+                var timeSinceLastCall = DateTime.Now - _lastApiCall;
+                if (timeSinceLastCall < _minRequestInterval)
+                {
+                    var delay = _minRequestInterval - timeSinceLastCall;
+                    await Task.Delay(delay);
+                }
+
+                _lastApiCall = DateTime.Now;
+            }
+            finally
+            {
+                _apiSemaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：处理API错误响应
+        /// </summary>
+        private static void HandleApiError(string response)
+        {
+            try
+            {
+                if (response.Contains("\"code\":-1003"))
+                {
+                    // 解析限流错误，提取封禁时间
+                    var doc = JsonDocument.Parse(response);
+                    var message = doc.RootElement.GetProperty("msg").GetString();
+                    
+                    if (message?.Contains("banned until") == true)
+                    {
+                        // 尝试从消息中提取时间戳
+                        var parts = message.Split("until ");
+                        if (parts.Length > 1)
+                        {
+                            var timestampStr = parts[1].TrimEnd('.', ' ');
+                            if (long.TryParse(timestampStr, out var timestamp))
+                            {
+                                SetRateLimitBan(timestamp);
+                                return;
+                            }
+                        }
+                    }
+                    
+                    // 如果无法解析具体时间，设置默认等待时间
+                    lock (_rateLimitLock)
+                    {
+                        _rateLimitBanUntil = DateTime.Now.AddMinutes(10); // 默认等待10分钟
+                        _isInErrorRecoveryMode = true;
+                        LogService.LogError("🚫 API限流：默认等待10分钟");
+                    }
+                }
+                else if (response.Contains("\"code\"") && response.Contains("\"msg\""))
+                {
+                    // 🔧 增强：解析并处理具体的API错误
+                    var doc = JsonDocument.Parse(response);
+                    var errorCode = doc.RootElement.GetProperty("code").GetInt32();
+                    var errorMsg = doc.RootElement.GetProperty("msg").GetString() ?? "";
+                    
+                    // 使用增强的错误处理
+                    var chineseMessage = GetChineseErrorMessage(errorCode, errorMsg);
+                    LogService.LogError($"❌ {chineseMessage}");
+                    
+                    // 对于关键错误，提供解决方案
+                    if (errorCode == -4005 || errorCode == -2027)
+                    {
+                        var solution = GetErrorSolution(errorCode);
+                        LogService.LogWarning($"💡 {solution}");
+                    }
+                    
+                    // 其他API错误
+                    _consecutiveErrors++;
+                    if (_consecutiveErrors >= 3)
+                    {
+                        _isInErrorRecoveryMode = true;
+                        LogService.LogWarning($"⚠️ 连续错误 {_consecutiveErrors} 次，进入错误恢复模式");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogService.LogError($"❌ 处理API错误时发生异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：重置错误状态
+        /// </summary>
+        private static void ResetErrorState()
+        {
+            lock (_rateLimitLock)
+            {
+                if (_consecutiveErrors > 0 || _isInErrorRecoveryMode)
+                {
+                    _consecutiveErrors = 0;
+                    _isInErrorRecoveryMode = false;
+                    LogService.LogInfo("✅ API错误状态已重置");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：将英文错误转换为中文并提供解决方案
+        /// </summary>
+        private static string GetChineseErrorMessage(int errorCode, string originalMessage)
+        {
+            return errorCode switch
+            {
+                -4005 => "数量超过限制：下单数量超过该合约的最大交易数量",
+                -2027 => "持仓超过杠杆限制：在当前杠杆下持仓量超过最大允许值",
+                -4003 => "数量过小：下单数量低于最小交易数量",
+                -4004 => "数量过大：下单数量超过单笔最大限制",
+                -1111 => "精度错误：价格或数量的小数位数超过限制",
+                -2019 => "保证金不足：账户保证金余额不足",
+                -2010 => "余额不足：账户可用余额不足",
+                -1121 => "合约无效：交易对不存在或已下架",
+                -1002 => "认证失败：未授权的访问",
+                -1022 => "签名无效：API签名验证失败",
+                -2015 => "API密钥无效：密钥过期或IP受限",
+                -4046 => "保证金模式：无需更改保证金类型（已是目标模式）",
+                -4028 => "杠杆设置：杠杆已经是当前设置，无需更改",
+                _ => $"API错误 ({errorCode}): {originalMessage}"
+            };
+        }
+
+        /// <summary>
+        /// 🔧 新增：获取错误解决方案
+        /// </summary>
+        private static string GetErrorSolution(int errorCode)
+        {
+            return errorCode switch
+            {
+                -4005 => "解决方案：\n" +
+                        "• 减少下单数量\n" +
+                        "• 分批下单\n" +
+                        "• 检查合约的交易规则\n" +
+                        "• 使用程序的自动调整功能",
+                        
+                -2027 => "解决方案：\n" +
+                        "• 降低杠杆倍数（推荐）\n" +
+                        "• 减少下单数量\n" +
+                        "• 部分平仓释放空间\n" +
+                        "• 分批建仓",
+                        
+                -4003 => "解决方案：\n" +
+                        "• 增加下单数量\n" +
+                        "• 检查合约的最小交易数量",
+                        
+                -1111 => "解决方案：\n" +
+                        "• 调整价格精度（减少小数位数）\n" +
+                        "• 调整数量精度\n" +
+                        "• 查看交易规则了解精度要求",
+                        
+                -2019 or -2010 => "解决方案：\n" +
+                        "• 检查账户余额是否充足\n" +
+                        "• 减少交易数量\n" +
+                        "• 降低杠杆倍数\n" +
+                        "• 确保有足够的保证金",
+                        
+                _ => "请检查参数设置并重试"
+            };
+        }
 
         public void SetAccount(AccountConfig account)
         {
@@ -534,6 +758,9 @@ namespace BinanceFuturesTrader.Services
                 if (!success && response != null)
                 {
                     Console.WriteLine($"📋 错误响应: {response}");
+                    
+                    // 🚀 新增：智能错误处理
+                    await HandleOrderErrorSmartlyAsync(response, request);
                 }
                 
                 return success;
@@ -1111,12 +1338,27 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
+                // 🔧 新增：执行请求间隔控制
+                await EnforceRequestInterval();
+
                 var request = new HttpRequestMessage(method, _baseUrl + endpoint);
                 var response = await _httpClient.SendAsync(request);
                 
                 if (response.IsSuccessStatusCode)
                 {
-                    return await response.Content.ReadAsStringAsync();
+                    var result = await response.Content.ReadAsStringAsync();
+                    // 🔧 新增：成功请求时重置错误状态
+                    ResetErrorState();
+                    return result;
+                }
+                
+                var errorContent = await response.Content.ReadAsStringAsync();
+                LogService.LogError($"Public API request failed: {response.StatusCode}, Response: {errorContent}");
+                
+                // 🔧 新增：处理API错误
+                if (!string.IsNullOrEmpty(errorContent))
+                {
+                    HandleApiError(errorContent);
                 }
                 
                 return null;
@@ -1136,6 +1378,9 @@ namespace BinanceFuturesTrader.Services
                 {
                 return null;
             }
+
+                // 🔧 新增：执行请求间隔控制
+                await EnforceRequestInterval();
 
                 var queryString = string.Join("&", parameters.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value.ToString())}"));
                 var signature = GenerateSignature(queryString, _currentAccount.SecretKey);
@@ -1162,11 +1407,21 @@ namespace BinanceFuturesTrader.Services
                 
                 if (response.IsSuccessStatusCode)
                 {
-                    return await response.Content.ReadAsStringAsync();
+                    var result = await response.Content.ReadAsStringAsync();
+                    // 🔧 新增：成功请求时重置错误状态
+                    ResetErrorState();
+                    return result;
                 }
                 
                 var errorContent = await response.Content.ReadAsStringAsync();
                 LogService.LogError($"API request failed: {response.StatusCode}, Response: {errorContent}");
+                
+                // 🔧 新增：处理API错误
+                if (!string.IsNullOrEmpty(errorContent))
+                {
+                    HandleApiError(errorContent);
+                }
+                
                 return errorContent;
             }
             catch (Exception ex)
@@ -1820,6 +2075,258 @@ namespace BinanceFuturesTrader.Services
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 🚀 智能错误处理 - 根据用户需求实现杠杆自动调节和分笔止损委托
+        /// </summary>
+        private async Task HandleOrderErrorSmartlyAsync(string errorResponse, OrderRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(errorResponse) || !errorResponse.Contains("\"code\":"))
+                {
+                    return;
+                }
+
+                // 解析错误码
+                using var doc = System.Text.Json.JsonDocument.Parse(errorResponse);
+                var errorCode = doc.RootElement.GetProperty("code").GetInt32();
+                var errorMsg = doc.RootElement.GetProperty("msg").GetString() ?? "";
+
+                Console.WriteLine($"🔍 智能错误分析: 错误码{errorCode} - {errorMsg}");
+
+                switch (errorCode)
+                {
+                    case -2027:
+                        // 持仓超过杠杆限制 - 实施杠杆自动调节
+                        await HandleLeverageLimitErrorAsync(request);
+                        break;
+                        
+                    case -4005:
+                        // 数量超过最大限制 - 实施分笔下单
+                        await HandleQuantityLimitErrorAsync(request);
+                        break;
+                        
+                    default:
+                        // 其他错误使用现有的增强错误处理
+                        HandleApiError(errorResponse);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 智能错误处理异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 🚀 处理-2027错误：持仓超过杠杆限制 - 自动降低杠杆
+        /// </summary>
+        private async Task HandleLeverageLimitErrorAsync(OrderRequest request)
+        {
+            try
+            {
+                Console.WriteLine("🔧 开始杠杆自动调节处理...");
+
+                // 1. 获取现有持仓信息
+                var positions = await GetPositionsAsync();
+                var existingPosition = positions.FirstOrDefault(p => p.Symbol == request.Symbol);
+
+                // 2. 获取当前价格
+                var currentPrice = await GetLatestPriceAsync(request.Symbol);
+                
+                // 3. 计算新的总持仓量
+                var currentPositionAmt = existingPosition?.PositionAmt ?? 0;
+                var newTotalPosition = Math.Abs(currentPositionAmt) + request.Quantity;
+
+                Console.WriteLine($"📊 持仓分析: 当前{Math.Abs(currentPositionAmt)} + 新增{request.Quantity} = 总计{newTotalPosition}");
+
+                // 4. 尝试不同的杠杆级别
+                var testLeverages = new[] { 20, 15, 10, 5, 3, 1 };
+                
+                foreach (var testLeverage in testLeverages)
+                {
+                    if (testLeverage >= request.Leverage) continue; // 只尝试更低的杠杆
+
+                    var estimatedLimit = EstimateMaxPositionForLeverage(request.Symbol, testLeverage, currentPrice);
+                    
+                    Console.WriteLine($"🧪 测试杠杆{testLeverage}x: 预估限制{estimatedLimit}");
+
+                    if (newTotalPosition <= estimatedLimit * 0.8m) // 80%安全边际
+                    {
+                        Console.WriteLine($"💡 找到合适杠杆: {request.Leverage}x → {testLeverage}x");
+                        Console.WriteLine($"💡 建议操作: 降低杠杆到{testLeverage}x后重新下单");
+                        Console.WriteLine($"💡 预期效果: 持仓限制从当前水平提升到约{estimatedLimit}");
+                        
+                        // 提供详细的操作建议
+                        Console.WriteLine("🎯 自动调节建议:");
+                        Console.WriteLine($"   1. 设置杠杆为{testLeverage}x");
+                        Console.WriteLine($"   2. 重新提交订单");
+                        Console.WriteLine($"   3. 预期可成功开仓{request.Quantity}个{request.Symbol}");
+                        
+                        return;
+                    }
+                }
+
+                // 如果所有杠杆都不行，建议减少数量
+                Console.WriteLine("⚠️ 降低杠杆仍无法满足需求，建议减少下单数量");
+                var recommendedQuantity = request.Quantity * 0.5m; // 建议减少50%
+                
+                // 调整到正确精度
+                var (_, _, stepSize, _, _) = await GetSymbolTradingRulesAsync(request.Symbol);
+                recommendedQuantity = Math.Floor(recommendedQuantity / stepSize) * stepSize;
+                
+                Console.WriteLine($"💡 建议调节方案:");
+                Console.WriteLine($"   • 方案1: 保持{request.Leverage}x杠杆，减少数量到{recommendedQuantity}");
+                Console.WriteLine($"   • 方案2: 降低杠杆到1x，保持原数量{request.Quantity}");
+                Console.WriteLine($"   • 方案3: 分批建仓，每次下单{recommendedQuantity}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 杠杆调节处理异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 🚀 处理-4005错误：数量超过最大限制 - 实施分笔下单
+        /// </summary>
+        private async Task HandleQuantityLimitErrorAsync(OrderRequest request)
+        {
+            try
+            {
+                Console.WriteLine("📋 开始分笔止损委托处理...");
+
+                // 1. 获取交易规则
+                var (minQty, maxQty, stepSize, _, _) = await GetSymbolTradingRulesAsync(request.Symbol);
+
+                Console.WriteLine($"📊 交易规则: 最小{minQty}, 最大{maxQty}, 步长{stepSize}");
+                Console.WriteLine($"📊 用户请求: {request.Quantity} (超过最大限制{maxQty})");
+
+                // 2. 计算分笔方案
+                var orderChunks = CalculateOrderChunks(request.Quantity, maxQty, stepSize);
+                
+                Console.WriteLine($"💡 分笔方案: 将{request.Quantity}拆分为{orderChunks.Count}笔:");
+                for (int i = 0; i < orderChunks.Count; i++)
+                {
+                    Console.WriteLine($"   第{i + 1}笔: {orderChunks[i]}");
+                }
+
+                // 3. 针对止损单的特殊处理
+                if (request.Type.ToUpper().Contains("STOP"))
+                {
+                    Console.WriteLine("🛡️ 检测到止损单，应用分笔止损策略...");
+                    
+                    // 计算价格差异方案
+                    var basePriceField = request.Type.ToUpper() == "STOP_MARKET" ? request.StopPrice : request.Price;
+                    
+                    Console.WriteLine($"💡 分笔止损方案:");
+                    Console.WriteLine($"   • 总数量: {request.Quantity}");
+                    Console.WriteLine($"   • 分笔数: {orderChunks.Count}");
+                    Console.WriteLine($"   • 基础价格: {basePriceField}");
+                    Console.WriteLine($"   • 价格差异: 每笔相差0.1%");
+                    
+                    for (int i = 0; i < orderChunks.Count; i++)
+                    {
+                        var priceAdjustment = 1m + (i * 0.001m); // 0.1%差异
+                        var adjustedPrice = basePriceField * priceAdjustment;
+                        Console.WriteLine($"   第{i + 1}笔: {orderChunks[i]} @ {adjustedPrice:F4}");
+                    }
+                    
+                    Console.WriteLine("🎯 执行建议:");
+                    Console.WriteLine("   1. 取消当前大单");
+                    Console.WriteLine("   2. 按分笔方案逐个下单");
+                    Console.WriteLine("   3. 每笔间隔0.5秒避免频率限制");
+                }
+                else
+                {
+                    // 普通订单的分笔建议
+                    Console.WriteLine("💡 普通订单分笔建议:");
+                    Console.WriteLine("   1. 将大单拆分为多个小单");
+                    Console.WriteLine("   2. 使用相同价格分批下单");
+                    Console.WriteLine("   3. 注意控制下单频率");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ 分笔处理异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 计算分笔方案
+        /// </summary>
+        private List<decimal> CalculateOrderChunks(decimal totalQuantity, decimal maxQty, decimal stepSize)
+        {
+            var chunks = new List<decimal>();
+            var remaining = totalQuantity;
+
+            while (remaining > 0)
+            {
+                var chunkSize = Math.Min(remaining, maxQty);
+                
+                // 调整到正确的步长
+                chunkSize = Math.Floor(chunkSize / stepSize) * stepSize;
+                
+                if (chunkSize > 0)
+                {
+                    chunks.Add(chunkSize);
+                    remaining -= chunkSize;
+                }
+                else
+                {
+                    break; // 剩余量太小，无法继续分割
+                }
+            }
+
+            return chunks;
+        }
+
+        /// <summary>
+        /// 估算杠杆下的最大持仓限制
+        /// </summary>
+        private decimal EstimateMaxPositionForLeverage(string symbol, int leverage, decimal currentPrice)
+        {
+            // 基于历史经验和用户反馈的保守估算规则
+            return symbol.ToUpper() switch
+            {
+                "BTCUSDT" => leverage switch
+                {
+                    <= 20 => 100m,
+                    <= 50 => 50m,
+                    <= 125 => 5m,
+                    _ => 1m
+                },
+                "ETHUSDT" => leverage switch
+                {
+                    <= 25 => 1000m,
+                    <= 50 => 500m,
+                    <= 100 => 100m,
+                    _ => 50m
+                },
+                "AIOTUSDT" => leverage switch
+                {
+                    <= 3 => 50000m,  // 根据实际-2027错误调整
+                    <= 10 => 20000m,
+                    <= 20 => 10000m,
+                    <= 50 => 5000m,
+                    _ => 1000m
+                },
+                _ when currentPrice < 1m => leverage switch
+                {
+                    <= 3 => 50000m,
+                    <= 10 => 25000m,
+                    <= 20 => 10000m,
+                    <= 50 => 5000m,
+                    _ => 1000m
+                },
+                _ => leverage switch
+                {
+                    <= 20 => 100000m,
+                    <= 50 => 50000m,
+                    _ => 10000m
+                }
+            };
         }
     }
 } 

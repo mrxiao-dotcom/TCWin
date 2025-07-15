@@ -75,18 +75,18 @@ namespace BinanceFuturesTrader.Services
                 _ => "ℹ️"
             };
             
-            var logLevel = eventData.Priority >= EventPriority.High ? LogLevel.Error : LogLevel.Warning;
+            var logLevel = eventData.Priority >= EventPriority.High ? Microsoft.Extensions.Logging.LogLevel.Error : Microsoft.Extensions.Logging.LogLevel.Warning;
             
-            _logger.Log(logLevel, $"{priority} 错误事件: {eventData.ErrorType} - {eventData.ErrorMessage}");
+            _logger.Log(logLevel, new EventId(), $"{priority} 错误事件: {eventData.ErrorType} - {eventData.ErrorMessage}", null, (state, ex) => state.ToString());
             
             if (!string.IsNullOrEmpty(eventData.Symbol))
             {
-                _logger.Log(logLevel, $"   📍 相关合约: {eventData.Symbol}");
+                _logger.Log(logLevel, new EventId(), $"   📍 相关合约: {eventData.Symbol}", null, (state, ex) => state.ToString());
             }
             
             if (!string.IsNullOrEmpty(eventData.Operation))
             {
-                _logger.Log(logLevel, $"   🔧 相关操作: {eventData.Operation}");
+                _logger.Log(logLevel, new EventId(), $"   🔧 相关操作: {eventData.Operation}", null, (state, ex) => state.ToString());
             }
             
             if (eventData.RequiresIntervention)

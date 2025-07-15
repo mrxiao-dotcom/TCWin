@@ -35,6 +35,33 @@ namespace BinanceFuturesTrader.ViewModels
         private bool _isOperationInProgress = false;
         
         /// <summary>
+        /// 处理自动盯盘按钮点击命令 - 总是打开管理面板
+        /// </summary>
+        [RelayCommand]
+        private async Task HandleAutoMonitorButtonAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 自动盯盘按钮被点击");
+                
+                if (SelectedAccount == null)
+                {
+                    MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // 🔧 修改：无论运行状态如何，都打开自动盯盘管理面板
+                _logger.LogInformation("🚀 打开自动盯盘管理面板");
+                await OpenAutoMonitorDashboardAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理自动盯盘按钮点击时发生错误");
+                MessageBox.Show($"操作失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
         /// 切换自动监控命令
         /// </summary>
         [RelayCommand]
@@ -132,7 +159,7 @@ namespace BinanceFuturesTrader.ViewModels
                 LogService.LogError(exceptionInfo);
                 
                 // 异常时恢复按钮状态
-                UpdateAutoMonitorUI(false, "操作异常", "盯盘参数配置", "#27AE60", true);
+                UpdateAutoMonitorUI(false, "操作异常", "自动盯盘", "#27AE60", true);
                 MessageBox.Show($"操作失败：{ex.Message}\n\n详细信息已记录到日志文件", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -149,7 +176,7 @@ namespace BinanceFuturesTrader.ViewModels
         /// 配置自动盯盘参数命令（只保存配置，不启动）
         /// </summary>
         [RelayCommand]
-        private async Task ConfigureAutoMonitorAsync()
+        private Task ConfigureAutoMonitorAsync()
         {
             try
             {
@@ -162,7 +189,7 @@ namespace BinanceFuturesTrader.ViewModels
                 {
                     _logger.LogWarning("没有选择账户，无法配置自动盯盘");
                     MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 // 获取账户信息用于生成智能默认配置
@@ -192,13 +219,24 @@ namespace BinanceFuturesTrader.ViewModels
                 if (result != true || configDialog.ConfigResult == null)
                 {
                     _logger.LogInformation("用户取消了配置或配置结果为空");
-                    return; // 用户取消了配置
+                    return Task.CompletedTask; // 用户取消了配置
                 }
 
                 // 🎯 关键修改：只保存配置，不启动服务
                 _currentAutoMonitorConfig = configDialog.ConfigResult;
                 _accountAutoMonitorConfigs[SelectedAccount.Name] = _currentAutoMonitorConfig;
                 _logger.LogInformation($"✅ 配置已保存到账户 {SelectedAccount.Name}: {_currentAutoMonitorConfig.Name}");
+                
+                // 🔧 新增：持久化配置到文件
+                try
+                {
+                    _configPersistenceService.SaveSingleAccountConfig(SelectedAccount.Name, _currentAutoMonitorConfig);
+                    _logger.LogInformation($"💾 配置已持久化到文件: {SelectedAccount.Name}");
+                }
+                catch (Exception saveEx)
+                {
+                    _logger.LogError(saveEx, $"❌ 配置持久化失败: {SelectedAccount.Name}");
+                }
 
                 // 显示保存成功的提示
                 var configDetails = $"配置名称：{_currentAutoMonitorConfig.Name}\n" +
@@ -212,6 +250,9 @@ namespace BinanceFuturesTrader.ViewModels
 
                 // 通知监控面板刷新数据（如果已打开）
                 NotifyAutoMonitorDashboardRefresh();
+                
+                // 🎯 新增：通知配置同步管理器处理配置变化
+                NotifyConfigurationSyncManager(_currentAutoMonitorConfig);
             }
             catch (Exception ex)
             {
@@ -219,6 +260,8 @@ namespace BinanceFuturesTrader.ViewModels
                 LogService.LogError("配置自动盯盘参数异常", ex);
                 MessageBox.Show($"配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            
+            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -404,7 +447,7 @@ namespace BinanceFuturesTrader.ViewModels
                         _logger.LogError($"配置验证失败:\n{errorDetails}");
                         
                         // 🔧 修复：配置验证失败时恢复按钮状态
-                        UpdateAutoMonitorUI(false, "配置验证失败", "盯盘参数配置", "#27AE60", true);
+                        UpdateAutoMonitorUI(false, "配置验证失败", "自动盯盘", "#27AE60", true);
                         
                         MessageBox.Show($"配置验证失败，无法启动自动监控：\n\n{errorDetails}", 
                             "配置错误", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -425,7 +468,7 @@ namespace BinanceFuturesTrader.ViewModels
                     _logger.LogError(validateEx, "配置验证时发生异常");
                     
                     // 🔧 修复：配置验证异常时恢复按钮状态
-                    UpdateAutoMonitorUI(false, "验证异常", "盯盘参数配置", "#27AE60", true);
+                    UpdateAutoMonitorUI(false, "验证异常", "自动盯盘", "#27AE60", true);
                     
                     MessageBox.Show($"配置验证失败：{validateEx.Message}", 
                         "验证错误", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -530,7 +573,7 @@ namespace BinanceFuturesTrader.ViewModels
                     
                     // 启动失败后恢复按钮正常状态
                     _logger.LogInformation("🎛️ 恢复UI状态为未运行...");
-                    UpdateAutoMonitorUI(false, "自动盯盘启动失败", "盯盘参数配置", "#27AE60", true);
+                    UpdateAutoMonitorUI(false, "自动盯盘启动失败", "自动盯盘", "#27AE60", true);
                     
                     // 构建错误消息
                     var errorMessage = "自动监控启动失败\n\n建议操作：\n• 检查网络连接和API密钥\n• 确认已选择正确的交易账户\n• 重新配置自动盯盘参数";
@@ -570,7 +613,7 @@ namespace BinanceFuturesTrader.ViewModels
                 // 启动异常时恢复按钮状态
                 _logger.LogInformation("🎛️ 顶层异常处理：恢复UI状态...");
                 LogService.LogInfo("顶层异常处理：恢复UI状态");
-                UpdateAutoMonitorUI(false, "启动异常", "盯盘参数配置", "#27AE60", true);
+                UpdateAutoMonitorUI(false, "启动异常", "自动盯盘", "#27AE60", true);
                 
                 MessageBox.Show($"启动失败：{ex.Message}\n\n详细信息已记录到日志文件:\n{LogService.GetLogFilePath()}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -688,7 +731,7 @@ namespace BinanceFuturesTrader.ViewModels
                 // 只有在确认停止完成后才更新按钮状态
                 _logger.LogInformation("🎛️ 更新UI状态为已停止...");
                 LogService.LogInfo("🎛️ 更新UI状态为已停止...");
-                UpdateAutoMonitorUI(false, "自动盯盘已停止", "盯盘参数配置", "#27AE60", true);
+                UpdateAutoMonitorUI(false, "自动盯盘已停止", "自动盯盘", "#27AE60", true);
                 _logger.LogInformation("✅ UI状态恢复完成");
                 LogService.LogInfo("✅ UI状态恢复完成");
                 
@@ -721,7 +764,7 @@ namespace BinanceFuturesTrader.ViewModels
                 // 基础异常处理：恢复按钮状态
                 _logger.LogInformation("🎛️ 异常处理：恢复UI状态...");
                 LogService.LogInfo("停止异常处理：恢复UI状态");
-                UpdateAutoMonitorUI(false, "停止异常", "盯盘参数配置", "#27AE60", true);
+                UpdateAutoMonitorUI(false, "停止异常", "自动盯盘", "#27AE60", true);
                 MessageBox.Show($"停止失败：{ex.Message}\n\n详细信息已记录到日志文件", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -731,11 +774,14 @@ namespace BinanceFuturesTrader.ViewModels
         /// </summary>
         private void UpdateAutoMonitorUI(bool isRunning, string statusMessage, string buttonText, string buttonColor, bool? buttonEnabled = null)
         {
+            // 🔧 优化按钮文本显示，根据运行状态自动添加状态信息
+            string finalButtonText = GetButtonTextWithStatus(buttonText, isRunning);
+            
             // 🔧 增强日志：记录UI状态更新
             var beforeUpdate = $"🎛️ UI状态更新前:\n" +
                 $"  • IsAutoMonitorRunning: {IsAutoMonitorRunning} → {isRunning}\n" +
                 $"  • AutoMonitorStatusMessage: {AutoMonitorStatusMessage} → {statusMessage}\n" +
-                $"  • AutoMonitorButtonText: {AutoMonitorButtonText} → {buttonText}\n" +
+                $"  • AutoMonitorButtonText: {AutoMonitorButtonText} → {finalButtonText}\n" +
                 $"  • AutoMonitorButtonColor: {AutoMonitorButtonColor} → {buttonColor}\n" +
                 $"  • IsAutoMonitorButtonEnabled: {IsAutoMonitorButtonEnabled} → {(buttonEnabled?.ToString() ?? "不变")}";
             
@@ -743,8 +789,9 @@ namespace BinanceFuturesTrader.ViewModels
             LogService.LogInfo(beforeUpdate);
             
             IsAutoMonitorRunning = isRunning;
-            AutoMonitorStatusMessage = statusMessage;
-            AutoMonitorButtonText = buttonText;
+            // 设置状态消息和按钮提示 - 无论运行状态如何都打开管理面板
+            AutoMonitorStatusMessage = isRunning ? "点击打开自动盯盘管理面板" : "点击打开自动盯盘配置和监控面板";
+            AutoMonitorButtonText = finalButtonText;
             AutoMonitorButtonColor = buttonColor;
             
             // 如果提供了buttonEnabled参数，则更新按钮启用状态
@@ -756,6 +803,28 @@ namespace BinanceFuturesTrader.ViewModels
             var afterUpdate = $"✅ UI状态更新完成 - 时间: {DateTime.Now:HH:mm:ss.fff}";
             _logger.LogInformation(afterUpdate);
             LogService.LogInfo(afterUpdate);
+        }
+
+        /// <summary>
+        /// 🔧 修改：根据运行状态生成按钮文本 - 总是打开管理面板
+        /// </summary>
+        private string GetButtonTextWithStatus(string baseText, bool isRunning)
+        {
+            // 处理特殊的操作状态文本（如"正在启动服务"等）
+            if (baseText.Contains("正在"))
+            {
+                return baseText; // 保持原状态文本
+            }
+            
+            // 🔧 修改：无论运行状态如何，都表示打开管理面板的功能
+            if (isRunning)
+            {
+                return "盯盘管理";
+            }
+            else
+            {
+                return "自动盯盘";
+            }
         }
 
         /// <summary>
@@ -787,7 +856,7 @@ namespace BinanceFuturesTrader.ViewModels
                     _logger.LogWarning(unexpectedStopMsg);
                     LogService.LogWarning(unexpectedStopMsg);
                     
-                    UpdateAutoMonitorUI(false, "已停止", "盯盘参数配置", "#27AE60", true);
+                    UpdateAutoMonitorUI(false, "已停止", "自动盯盘", "#27AE60", true);
                     
                     var afterChangeMsg = "✅ 意外停止后UI状态已更新";
                     _logger.LogInformation(afterChangeMsg);
@@ -824,15 +893,128 @@ namespace BinanceFuturesTrader.ViewModels
             });
         }
 
+
+
         /// <summary>
-        /// 查看监控命令
+        /// 启动持仓变化监听集成
         /// </summary>
-        [RelayCommand]
-        private async Task ViewMonitorStatusAsync()
+        private async Task StartPositionChangeMonitoringIntegrationAsync(Views.AutoMonitor.AutoMonitorDashboard_Refactored dashboard)
         {
             try
             {
-                _logger.LogInformation("🖥️ 查看监控按钮被点击，准备打开监控面板");
+                _logger.LogInformation("🔄 开始集成持仓变化监听...");
+                
+                // 获取监控面板的控制器
+                var controller = dashboard.GetController();
+                if (controller == null)
+                {
+                    _logger.LogWarning("⚠️ 无法获取监控面板控制器，跳过持仓变化监听集成");
+                    return;
+                }
+                
+                // 启动持仓变化监听
+                controller.StartPositionChangeMonitoring();
+                
+                // 如果已经在运行监控，同时启动带持仓同步的监控
+                if (_autoMonitorService?.IsRunning == true)
+                {
+                    _logger.LogInformation("🔄 当前监控服务正在运行，启动持仓同步监控...");
+                    await controller.StartMonitoringWithPositionSyncAsync();
+                }
+                
+                _logger.LogInformation("✅ 持仓变化监听集成成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 持仓变化监听集成失败");
+                // 不中断整个流程，仅记录错误
+            }
+        }
+
+        /// <summary>
+        /// 打开自动盯盘配置界面命令
+        /// </summary>
+        [RelayCommand]
+        private async Task OpenAutoMonitorConfigAsync()
+        {
+            try
+            {
+                var operationTimestamp = DateTime.Now;
+                var statusInfo = $"🔧 自动盯盘配置按钮被点击 - 时间: {operationTimestamp:HH:mm:ss.fff}";
+                _logger.LogInformation(statusInfo);
+                LogService.LogInfo(statusInfo);
+
+                if (SelectedAccount == null)
+                {
+                    _logger.LogWarning("没有选择账户，无法配置自动盯盘");
+                    MessageBox.Show("请先选择账户", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // 获取账户信息用于生成智能默认配置
+                var accountEquity = AccountInfo?.TotalEquity ?? 1000m;
+                var riskCapitalTimes = SelectedAccount.RiskCapitalTimes;
+                
+                // 打开配置对话框（使用智能默认配置）
+                _logger.LogInformation("准备创建配置对话框...");
+                var configDialog = new AutoMonitorConfigDialog(accountEquity, riskCapitalTimes);
+                _logger.LogInformation($"配置对话框创建成功（权益{accountEquity:F0}U，风险金倍数{riskCapitalTimes}）");
+                
+                // 从当前账户的配置中加载设置
+                if (_accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var accountConfig))
+                {
+                    _logger.LogInformation($"从账户 {SelectedAccount.Name} 加载现有配置...");
+                    configDialog.SetConfig(accountConfig);
+                }
+                else
+                {
+                    _logger.LogInformation($"账户 {SelectedAccount.Name} 没有现有配置，使用智能默认配置");
+                }
+
+                _logger.LogInformation("准备显示配置对话框...");
+                var result = configDialog.ShowDialog();
+                _logger.LogInformation($"配置对话框返回结果: {result}");
+                
+                if (result != true || configDialog.ConfigResult == null)
+                {
+                    _logger.LogInformation("用户取消了配置或配置结果为空");
+                    return; // 用户取消了配置
+                }
+
+                // 保存配置
+                _currentAutoMonitorConfig = configDialog.ConfigResult;
+                _accountAutoMonitorConfigs[SelectedAccount.Name] = _currentAutoMonitorConfig;
+                
+                // 更新UI状态
+                var configName = _currentAutoMonitorConfig?.Name ?? "无名称";
+                var successMsg = $"✅ 配置\"{configName}\"已保存成功";
+                _logger.LogInformation(successMsg);
+                LogService.LogInfo(successMsg);
+                
+                StatusMessage = $"自动盯盘配置已保存：{configName}";
+                MessageBox.Show($"配置已保存：{configName}", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                var exceptionInfo = $"❌ 打开自动盯盘配置界面时发生异常: {ex.GetType().Name}\n消息: {ex.Message}";
+                _logger.LogError(ex, "❌ 打开自动盯盘配置界面时发生异常");
+                LogService.LogError("打开配置界面异常", ex);
+                
+                MessageBox.Show($"打开配置界面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 打开自动盯盘监控界面命令
+        /// </summary>
+        [RelayCommand]
+        private async Task OpenAutoMonitorDashboardAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🖥️ 自动盯盘监控按钮被点击，准备打开监控面板");
                 
                 if (SelectedAccount == null)
                 {
@@ -840,7 +1022,7 @@ namespace BinanceFuturesTrader.ViewModels
                     return;
                 }
 
-                // 🔧 修复：统一服务实例获取逻辑，与启动逻辑保持一致
+                // 🔧 优先使用现有的AutoMonitorService，如果没有则创建新的
                 if (_autoMonitorService == null)
                 {
                     _logger.LogInformation("💡 监控服务未初始化，创建新实例用于监控面板...");
@@ -850,34 +1032,34 @@ namespace BinanceFuturesTrader.ViewModels
                     _logger.LogInformation("✅ 监控服务实例创建完成");
                 }
 
-                // 🔗 使用正在运行的服务中的状态管理器，确保数据一致性
-                _logger.LogInformation("🔗 使用正在运行的服务中的状态管理器");
-
-                // 创建并显示监控面板（传入MainViewModel引用以获取配置）
-                var monitorDashboard = new AutoMonitorDashboard(
-                    _autoMonitorService, 
+                // 🆕 创建符合需求文档的自动盯盘配置窗口
+                _logger.LogInformation("🏗️ 创建符合需求文档的自动盯盘配置窗口...");
+                var configWindow = new Views.AutoMonitorConfigWindowSimple(
+                    _autoMonitorService,
                     _logger,
-                    this);
+                    this,
+                    _binanceService);
 
-                // 🔧 修复：设置主窗口为监控窗口的Owner，确保主窗口关闭时监控窗口也会关闭
+                // 🔧 设置主窗口为配置窗口的Owner
                 if (Application.Current?.MainWindow != null)
                 {
-                    monitorDashboard.Owner = Application.Current.MainWindow;
-                    _logger.LogInformation("✅ 监控窗口已设置主窗口为Owner");
+                    configWindow.Owner = Application.Current.MainWindow;
+                    _logger.LogInformation("✅ 配置窗口已设置主窗口为Owner");
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ 无法获取主窗口引用，监控窗口可能不会跟随主窗口关闭");
+                    _logger.LogWarning("⚠️ 无法获取主窗口引用，配置窗口可能不会跟随主窗口关闭");
                 }
 
-                _logger.LogInformation("🖥️ 监控面板创建成功，使用简化模式");
-                monitorDashboard.Show();
+                _logger.LogInformation("🖥️ 自动盯盘配置窗口创建成功，符合需求文档的三个区域结构");
+                
+                configWindow.Show();
 
                 await Task.CompletedTask;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "打开监控面板时发生错误");
+                _logger.LogError(ex, "❌ 打开监控面板时发生异常");
                 MessageBox.Show($"打开监控面板失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -1502,6 +1684,8 @@ namespace BinanceFuturesTrader.ViewModels
                 MessageBox.Show($"调试失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
+
     }
 }
 

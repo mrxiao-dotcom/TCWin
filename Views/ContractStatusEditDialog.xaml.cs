@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using BinanceFuturesTrader.Models;
 using Microsoft.Extensions.Logging;
+using System.Reflection;
 
 namespace BinanceFuturesTrader.Views
 {
@@ -291,7 +292,7 @@ namespace BinanceFuturesTrader.Views
             var actionColumn = new DataGridTemplateColumn
             {
                 Header = "操作",
-                Width = 100
+                Width = 140
             };
             
             var actionTemplate = new DataTemplate();
@@ -300,7 +301,7 @@ namespace BinanceFuturesTrader.Views
             actionButtonFactory.SetBinding(Button.BackgroundProperty, new System.Windows.Data.Binding("ToggleButtonColor"));
             actionButtonFactory.SetBinding(Button.TagProperty, new System.Windows.Data.Binding());
             actionButtonFactory.SetBinding(Button.IsEnabledProperty, new System.Windows.Data.Binding("CanToggle"));
-            actionButtonFactory.SetValue(Button.WidthProperty, 90.0);
+            actionButtonFactory.SetValue(Button.WidthProperty, 120.0);
             actionButtonFactory.SetValue(Button.HeightProperty, 28.0);
             actionButtonFactory.SetValue(Button.ForegroundProperty, Brushes.White);
             actionButtonFactory.SetValue(Button.FontSizeProperty, 10.0);
@@ -481,7 +482,18 @@ namespace BinanceFuturesTrader.Views
                 });
             }
 
-            _allStatusGrid.ItemsSource = AllStatusItems;
+            // 🔧 修复：在UI线程中安全绑定数据
+            if (System.Windows.Application.Current?.Dispatcher.CheckAccess() == true)
+            {
+                _allStatusGrid.ItemsSource = AllStatusItems;
+            }
+            else
+            {
+                System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    _allStatusGrid.ItemsSource = AllStatusItems;
+                });
+            }
         }
 
         private void ToggleStatusButton_Click(object sender, RoutedEventArgs e)
@@ -571,6 +583,10 @@ namespace BinanceFuturesTrader.Views
                 {
                     _logger.LogInformation($"🔄 更新触发价格 - {item.TypeText} {item.TierText}: {condition.TriggerPrice:F2} → {item.TriggerPrice:F2}");
                     condition.TriggerPrice = item.TriggerPrice;
+                    
+                    // 🔧 关键修复：触发数值属性更新通知
+                    condition.OnPropertyChanged(nameof(condition.TriggerPrice));
+                    condition.OnPropertyChanged(nameof(condition.DisplayTriggerPrice));
                 }
 
                 // 更新保盈金额（仅止盈条件）
@@ -578,6 +594,10 @@ namespace BinanceFuturesTrader.Views
                 {
                     _logger.LogInformation($"🔄 更新保盈金额 - {item.TypeText} {item.TierText}: {condition.KeepValue:F2} → {item.KeepValue:F2}");
                     condition.KeepValue = item.KeepValue;
+                    
+                    // 🔧 关键修复：触发数值属性更新通知
+                    condition.OnPropertyChanged(nameof(condition.KeepValue));
+                    condition.OnPropertyChanged(nameof(condition.DisplayKeepValue));
                 }
 
                 // 更新状态
@@ -587,6 +607,242 @@ namespace BinanceFuturesTrader.Views
                     condition.Status = item.Status;
                     condition.LastExecutionTime = item.Status == TriggerExecutionStatus.Executed ? DateTime.Now : null;
                 }
+            }
+            
+            // 🔧 关键修复：强制触发所有状态显示属性的更新
+            TriggerAllStatusPropertyChanges();
+            
+            // 🔧 新增：将状态变更同步到后台服务（如果服务可用）
+            SyncChangesToBackendService();
+        }
+
+        /// <summary>
+        /// 将状态变更同步到后台服务
+        /// </summary>
+        private void SyncChangesToBackendService()
+        {
+            try
+            {
+                if (_autoMonitorService == null)
+                {
+                    _logger.LogInformation("⚠️ 后台服务不可用，跳过同步");
+                    return;
+                }
+
+                _logger.LogInformation($"🔄 开始同步状态变更到后台服务 - 合约: {_contract.Symbol}_{_contract.PositionSide}");
+
+                // 使用反射获取AutoMonitorService的UnifiedStateManager
+                var serviceType = _autoMonitorService.GetType();
+                _logger.LogInformation($"🔧 服务类型: {serviceType.Name}");
+                
+                var unifiedStateManagerProperty = serviceType.GetProperty("UnifiedStateManager");
+                
+                if (unifiedStateManagerProperty == null)
+                {
+                    _logger.LogWarning("⚠️ 无法获取UnifiedStateManager属性");
+                    return;
+                }
+
+                var unifiedStateManager = unifiedStateManagerProperty.GetValue(_autoMonitorService);
+                if (unifiedStateManager == null)
+                {
+                    _logger.LogWarning("⚠️ UnifiedStateManager为空");
+                    return;
+                }
+
+                _logger.LogInformation($"✅ 成功获取UnifiedStateManager: {unifiedStateManager.GetType().Name}");
+
+                // 遍历所有修改的条件，同步到后台服务
+                foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
+                {
+                    var condition = item.OriginalCondition;
+                    
+                    _logger.LogInformation($"🔍 处理条件: {item.TypeText} {item.TierText} - 状态: {condition.Status}");
+                    
+                    // 如果状态被修改为已执行，记录到状态管理器
+                    if (condition.Status == TriggerExecutionStatus.Executed)
+                    {
+                        var executionType = condition.Type switch
+                        {
+                            TriggerConditionType.BreakEven => ExecutionType.BreakEven,
+                            TriggerConditionType.AddPosition => ExecutionType.AddPosition,
+                            TriggerConditionType.ProfitProtection => ExecutionType.ProfitProtection,
+                            _ => ExecutionType.BreakEven
+                        };
+
+                        _logger.LogInformation($"📝 准备记录执行状态:");
+                        _logger.LogInformation($"  - Symbol: {_contract.Symbol}");
+                        _logger.LogInformation($"  - PositionSide: {_contract.PositionSide}");
+                        _logger.LogInformation($"  - ExecutionType: {executionType}");
+                        _logger.LogInformation($"  - TierIndex: {condition.TierIndex}");
+                        _logger.LogInformation($"  - TriggerPrice: {condition.TriggerPrice}");
+
+                        // 使用反射调用RecordExecution方法
+                        var recordExecutionMethod = unifiedStateManager.GetType().GetMethod("RecordExecution");
+                        if (recordExecutionMethod != null)
+                        {
+                            try
+                            {
+                                recordExecutionMethod.Invoke(unifiedStateManager, new object[]
+                                {
+                                    _contract.Symbol,
+                                    _contract.PositionSide,
+                                    executionType,
+                                    condition.TierIndex,
+                                    condition.TriggerPrice, // 使用触发价格作为触发浮盈
+                                    true, // 成功
+                                    "手动设置", // 消息
+                                    true // autoSave
+                                });
+
+                                _logger.LogInformation($"✅ 已同步状态到后台服务: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
+                                
+                                // 🔧 新增：验证状态是否正确保存
+                                var isExecutedMethod = unifiedStateManager.GetType().GetMethod("IsExecuted");
+                                if (isExecutedMethod != null)
+                                {
+                                    try
+                                    {
+                                        var isExecuted = (bool)isExecutedMethod.Invoke(unifiedStateManager, new object[]
+                                        {
+                                            _contract.Symbol,
+                                            _contract.PositionSide,
+                                            executionType,
+                                            condition.TierIndex
+                                        });
+                                        
+                                        _logger.LogInformation($"🔍 验证状态保存结果: {isExecuted}");
+                                        
+                                        if (!isExecuted)
+                                        {
+                                            _logger.LogError($"❌ 状态保存失败！IsExecuted返回false");
+                                        }
+                                    }
+                                    catch (Exception verifyEx)
+                                    {
+                                        _logger.LogError(verifyEx, $"❌ 验证状态保存时发生异常");
+                                    }
+                                }
+                            }
+                            catch (Exception invokeEx)
+                            {
+                                _logger.LogError(invokeEx, $"❌ 调用RecordExecution失败: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogError($"❌ 无法获取RecordExecution方法");
+                        }
+                    }
+                    else if (condition.Status == TriggerExecutionStatus.NotTriggered)
+                    {
+                        _logger.LogInformation($"🔄 重置状态为未触发: {item.TypeText}{item.TierText}");
+                        
+                        // 如果状态被重置为未触发，清理状态管理器中的记录
+                        var clearContractStatesMethod = _autoMonitorService.GetType().GetMethod("ClearContractStates");
+                        if (clearContractStatesMethod != null)
+                        {
+                            try
+                            {
+                                clearContractStatesMethod.Invoke(_autoMonitorService, new object[]
+                                {
+                                    _contract.Symbol,
+                                    _contract.PositionSide,
+                                    "手动重置"
+                                });
+
+                                _logger.LogInformation($"✅ 已清理后台状态: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
+                            }
+                            catch (Exception clearEx)
+                            {
+                                _logger.LogError(clearEx, $"❌ 清理后台状态失败: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogError($"❌ 无法获取ClearContractStates方法");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 同步状态到后台服务失败");
+                // 不抛出异常，只记录错误
+            }
+        }
+
+        /// <summary>
+        /// 触发所有状态显示属性的变化通知
+        /// </summary>
+        private void TriggerAllStatusPropertyChanges()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 触发所有状态显示属性更新");
+                
+                // 🔧 在UI线程中安全执行属性更新
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    // 触发合约模型的核心属性更新
+                    _contract.OnPropertyChanged(nameof(_contract.TriggerConditions));
+                    
+                    // 触发保本相关属性更新
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenDisplay));
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenStatusDisplay));
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenStatusColor));
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenTriggerDisplay));
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenStatusIcon));
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenStatusIconColor));
+                    
+                    // 触发推仓相关属性更新（0-9档）
+                    for (int i = 0; i < 10; i++)
+                    {
+                        _contract.OnPropertyChanged($"AddPositionTier{i}Display");
+                        _contract.OnPropertyChanged($"AddPositionTier{i}Status");
+                        _contract.OnPropertyChanged($"AddPositionTier{i}StatusColor");
+                    }
+                    
+                    // 触发止盈相关属性更新（0-9档）
+                    for (int i = 0; i < 10; i++)
+                    {
+                        _contract.OnPropertyChanged($"ProfitProtectionTier{i}Display");
+                        _contract.OnPropertyChanged($"ProfitProtectionTier{i}Status");
+                        _contract.OnPropertyChanged($"ProfitProtectionTier{i}StatusColor");
+                    }
+                    
+                    // 触发统计相关属性更新
+                    _contract.OnPropertyChanged(nameof(_contract.ExecutedCount));
+                    _contract.OnPropertyChanged(nameof(_contract.TotalCount));
+                    _contract.OnPropertyChanged(nameof(_contract.ExecutionProgress));
+                    _contract.OnPropertyChanged(nameof(_contract.ExecutedAddPositionCount));
+                    _contract.OnPropertyChanged(nameof(_contract.TotalAddPositionCount));
+                    _contract.OnPropertyChanged(nameof(_contract.ExecutedProfitCount));
+                    _contract.OnPropertyChanged(nameof(_contract.TotalProfitCount));
+                    
+                    // 触发进度显示属性更新
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionProgressDisplay));
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionStatusIcon));
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionStatusIconColor));
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionProgressColor));
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionProgressIcon));
+                    _contract.OnPropertyChanged(nameof(_contract.AddPositionProgressText));
+                    
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProtectionProgressDisplay));
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProtectionStatusIcon));
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProtectionStatusIconColor));
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProgressColor));
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProgressIcon));
+                    _contract.OnPropertyChanged(nameof(_contract.ProfitProgressText));
+                    
+                    _contract.OnPropertyChanged(nameof(_contract.BreakEvenProgressColor));
+                    
+                    _logger.LogInformation("✅ 所有状态显示属性更新完成");
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 触发状态属性更新失败");
             }
         }
 

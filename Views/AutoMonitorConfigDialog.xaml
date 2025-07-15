@@ -111,6 +111,7 @@
                                 <DataGridTextColumn Header="触发盈利值(USDT)" Binding="{Binding TriggerProfitAmount}" Width="120"/>
                                 <DataGridTextColumn Header="风险金倍数" Binding="{Binding RiskCapitalMultiplier}" Width="100"/>
                                 <DataGridTextColumn Header="止损比例(%)" Binding="{Binding StopLossPercentage}" Width="100"/>
+                                <DataGridTextColumn Header="保盈金额(USDT)" Binding="{Binding ProfitProtectionAmount}" Width="110"/>
                                 <DataGridCheckBoxColumn Header="启用" Binding="{Binding IsEnabled}" Width="60"/>
                                 <DataGridTextColumn Header="说明" Binding="{Binding Description}" Width="*" IsReadOnly="True"/>
                             </DataGrid.Columns>

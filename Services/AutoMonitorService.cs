@@ -42,6 +42,9 @@ namespace BinanceFuturesTrader.Services
         // 🔍 新增：配置验证服务
         private readonly IConfigValidationService _configValidationService;
         
+        // 🚀 新增：智能下单服务，提高自动盯盘下单成功率
+        private readonly SmartOrderService _smartOrderService;
+        
         // 🛡️ 扫描计数器，用于定期清理
         private int _scanCount = 0;
         
@@ -50,8 +53,8 @@ namespace BinanceFuturesTrader.Services
         private AutoMonitorConfig? _config;
         private readonly object _lockObject = new();
         
-        // 🔧 新增：执行操作锁，防止并发执行导致的集合访问冲突
-        private readonly object _executionLock = new();
+        // 🔧 修复：使用SemaphoreSlim替代Monitor，提供更安全的并发控制
+        private readonly SemaphoreSlim _executionSemaphore = new(1, 1);
         
         // 🔧 新增：持仓数据缓存锁，防止数据读取冲突
         private readonly object _positionDataLock = new();
@@ -74,6 +77,7 @@ namespace BinanceFuturesTrader.Services
         // 事件定义
         public event EventHandler<MonitorStatusChangedEventArgs>? MonitorStatusChanged;
         public event EventHandler<ExecutionResultEventArgs>? ExecutionCompleted;
+        public event EventHandler<WorkLogEventArgs>? WorkLogAdded;
 
         public AutoMonitorService(
             IBinanceService binanceService, 
@@ -119,6 +123,11 @@ namespace BinanceFuturesTrader.Services
                 .CreateLogger<ConfigValidationService>();
             _configValidationService = new ConfigValidationService(configValidationLogger);
             
+            // 🚀 新增：初始化智能下单服务
+            var smartOrderLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole())
+                .CreateLogger<SmartOrderService>();
+            _smartOrderService = new SmartOrderService(_binanceService, smartOrderLogger);
+            
             // 🔌 订阅事件
             SetupEventSubscriptions();
         }
@@ -130,17 +139,28 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         public async Task<bool> StartMonitoringAsync(AutoMonitorConfig config)
         {
-            if (config == null) throw new ArgumentNullException(nameof(config));
+            _logger.LogCritical("🔍 [STARTUP-01] 开始执行 StartMonitoringAsync 方法");
+            
+            if (config == null) 
+            {
+                _logger.LogCritical("❌ [STARTUP-02] 配置为空，抛出异常");
+                throw new ArgumentNullException(nameof(config));
+            }
+
+            _logger.LogCritical($"🔍 [STARTUP-03] 配置验证通过，配置名称: {config.Name}");
 
             Timer? oldTimerToDispose = null;
             bool wasRunning = false;
             
+            _logger.LogCritical("🔍 [STARTUP-04] 开始获取锁并检查当前状态");
+            
             lock (_lockObject)
             {
+                _logger.LogCritical("🔍 [STARTUP-05] 已获取锁，检查运行状态");
                 wasRunning = _isRunning;
                 if (_isRunning) 
                 {
-                    _logger.LogWarning("⚠️ 自动监控已在运行中，先停止再重新启动");
+                    _logger.LogCritical("⚠️ [STARTUP-06] 自动监控已在运行中，先停止再重新启动");
                     // 🔧 修复：强制重置状态，但Timer处理移到lock外部
                     _isRunning = false;
                     oldTimerToDispose = _scanTimer;
@@ -150,46 +170,62 @@ namespace BinanceFuturesTrader.Services
                 // 🔧 修复：延迟设置运行状态，确保初始化成功后再设置
                 _config = config;
                 // _isRunning = true; // 移到初始化成功后设置
+                _logger.LogCritical("🔍 [STARTUP-07] 锁内状态设置完成，准备释放锁");
             }
+            
+            _logger.LogCritical("🔍 [STARTUP-08] 已释放锁，开始处理旧定时器清理");
             
             // 🔧 修复：在lock外部处理旧Timer的清理，避免并发问题
             if (oldTimerToDispose != null)
             {
+                _logger.LogCritical("🔍 [STARTUP-09] 开始清理旧定时器");
                 oldTimerToDispose.Dispose();
                 await Task.Delay(200); // 增加等待时间，确保完全清理
-                _logger.LogInformation("⏰ 旧的扫描定时器已清理完成");
+                _logger.LogCritical("🔍 [STARTUP-10] 旧的扫描定时器已清理完成");
             }
             
             // 🔧 修复：如果是重启，额外等待确保状态完全重置
             if (wasRunning)
             {
+                _logger.LogCritical("🔍 [STARTUP-11] 检测到重启，等待状态完全重置...");
                 await Task.Delay(300);
-                _logger.LogInformation("🔄 等待服务状态完全重置...");
+                _logger.LogCritical("🔍 [STARTUP-12] 状态重置等待完成");
             }
 
             try
             {
+                _logger.LogCritical("🔍 [STARTUP-13] 进入主启动流程try块");
                 _logger.LogInformation("🚀 启动自动监控服务...");
+                AddWorkLog("INFO", "🚀 正在启动自动监控服务...");
                 
                 // 🔍 新增：详细的配置验证日志
+                _logger.LogCritical("🔍 [STARTUP-14] 开始配置验证阶段");
                 _logger.LogInformation("🔍 开始验证配置...");
                 _logger.LogInformation($"📝 配置名称: {config.Name ?? "未命名"}");
                 _logger.LogInformation($"⏱️ 扫描间隔: {config.ScanIntervalSeconds}秒");
                 _logger.LogInformation($"🔧 配置验证服务状态: {(_configValidationService != null ? "已初始化" : "未初始化")}");
                 
+                AddWorkLog("INFO", $"📝 验证配置: {config.Name ?? "未命名"} (间隔: {config.ScanIntervalSeconds}秒)");
+                
                 ConfigValidationResult? validationResult = null;
                 try
                 {
+                    _logger.LogCritical("🔍 [STARTUP-15] 开始调用配置验证服务");
                     validationResult = await _configValidationService.ValidateAsync(config, ValidationMode.Strict, true);
+                    _logger.LogCritical($"🔍 [STARTUP-16] 配置验证服务调用完成，结果: {validationResult?.IsValid}");
                     _logger.LogInformation($"✅ 配置验证服务调用成功，结果: {validationResult?.IsValid}");
+                    AddWorkLog("INFO", $"✅ 配置验证完成: {(validationResult?.IsValid == true ? "通过" : "失败")}");
                 }
                 catch (Exception validationEx)
                 {
+                    _logger.LogCritical(validationEx, "🔍 [STARTUP-17] 配置验证服务调用异常");
                     _logger.LogError(validationEx, "❌ 配置验证服务调用失败");
+                    AddWorkLog("WARN", "⚠️ 配置验证服务异常，切换到基础验证模式");
                     
                     // 🔧 验证服务失败时使用基础验证
                     _logger.LogWarning("⚠️ 切换到基础配置验证模式");
                     validationResult = PerformBasicConfigValidation(config);
+                    _logger.LogCritical("🔍 [STARTUP-18] 基础配置验证完成");
                 }
                 
                 if (validationResult == null)
@@ -254,30 +290,41 @@ namespace BinanceFuturesTrader.Services
                 _logger.LogInformation($"✅ 配置验证通过: {validationResult.Summary}");
                 
                 // 🚌 启动事件总线（重试机制）
+                _logger.LogCritical("🔍 [STARTUP-19] 开始事件总线启动阶段");
                 _logger.LogInformation("🚌 开始启动事件总线...");
                 _logger.LogInformation($"🔧 事件总线状态: {(_eventBus != null ? "已初始化" : "未初始化")}");
                 
                 bool eventBusStarted = false;
+                AddWorkLog("INFO", "🚌 正在启动事件总线...");
                 for (int retryCount = 0; retryCount < 3; retryCount++)
                 {
                     try
                     {
+                        _logger.LogCritical($"🔍 [STARTUP-20] 事件总线启动尝试 {retryCount + 1}/3");
                         _logger.LogInformation($"🔄 事件总线启动尝试 {retryCount + 1}/3");
+                        AddWorkLog("INFO", $"🔄 事件总线启动尝试 {retryCount + 1}/3");
                         
                         // 🔧 修复：确保事件总线在启动前已停止
+                        _logger.LogCritical("🔍 [STARTUP-21] 停止事件总线...");
                         _logger.LogDebug("⏹️ 停止事件总线...");
                         await _eventBus.StopAsync();
+                        _logger.LogCritical("🔍 [STARTUP-22] 事件总线停止完成");
                         await Task.Delay(50); // 短暂等待确保完全停止
                         
+                        _logger.LogCritical("🔍 [STARTUP-23] 启动事件总线...");
                         _logger.LogDebug("▶️ 启动事件总线...");
                         await _eventBus.StartAsync();
+                        _logger.LogCritical("🔍 [STARTUP-24] 事件总线启动完成");
                         eventBusStarted = true;
                         _logger.LogInformation($"✅ 事件总线启动成功 (第{retryCount + 1}次尝试)");
+                        AddWorkLog("INFO", $"✅ 事件总线启动成功 (第{retryCount + 1}次尝试)");
                         break;
                     }
                     catch (Exception busEx)
                     {
+                        _logger.LogCritical(busEx, $"🔍 [STARTUP-25] 事件总线启动异常 (第{retryCount + 1}次尝试)");
                         _logger.LogWarning(busEx, $"❌ 事件总线启动失败 (第{retryCount + 1}次尝试): {busEx.Message}");
+                        AddWorkLog("WARN", $"❌ 事件总线启动失败 (第{retryCount + 1}次尝试): {busEx.Message}");
                         if (retryCount < 2)
                         {
                             var waitTime = 200 * (retryCount + 1);
@@ -291,6 +338,7 @@ namespace BinanceFuturesTrader.Services
                 {
                     _logger.LogError("❌ 事件总线启动最终失败，已尝试3次");
                     _logger.LogError("💡 可能原因: 资源占用、权限不足、系统负载过高");
+                    AddWorkLog("ERROR", "❌ 事件总线启动最终失败，已尝试3次");
                     
                     // 🔧 修复：事件总线启动失败时重置状态
                     lock (_lockObject) 
@@ -309,19 +357,27 @@ namespace BinanceFuturesTrader.Services
                 }
                 
                 // 🔧 修复：初始化持仓档案失败不应该阻止服务启动
+                _logger.LogCritical("🔍 [STARTUP-26] 开始持仓档案初始化阶段");
                 _logger.LogInformation("📊 开始初始化持仓档案...");
                 _logger.LogInformation($"🔧 Binance服务状态: {(_binanceService != null ? "已初始化" : "未初始化")}");
                 _logger.LogInformation($"💾 持久化服务状态: {(_persistenceService != null ? "已初始化" : "未初始化")}");
                 
+                AddWorkLog("INFO", "📊 正在初始化持仓档案...");
+                
                 try
                 {
+                    _logger.LogCritical("🔍 [STARTUP-27] 开始调用 InitializePositionProfilesAsync");
                     await InitializePositionProfilesAsync();
+                    _logger.LogCritical($"🔍 [STARTUP-28] InitializePositionProfilesAsync 完成，档案数: {_positionProfiles.Count}");
                     _logger.LogInformation($"✅ 持仓档案初始化完成，当前档案数: {_positionProfiles.Count}");
+                    AddWorkLog("INFO", $"✅ 持仓档案初始化完成，档案数: {_positionProfiles.Count}");
                 }
                 catch (Exception initEx)
                 {
+                    _logger.LogCritical(initEx, "🔍 [STARTUP-29] InitializePositionProfilesAsync 异常");
                     _logger.LogError(initEx, $"❌ 初始化持仓档案失败: {initEx.Message}");
                     _logger.LogWarning("⚠️ 继续启动监控服务，将在首次扫描时逐个恢复持仓状态");
+                    AddWorkLog("WARN", $"⚠️ 持仓档案初始化失败: {initEx.Message}");
                     
                     // 🔧 修复：记录初始化失败的详细信息
                     if (initEx.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
@@ -349,28 +405,93 @@ namespace BinanceFuturesTrader.Services
                 }
                 
                 // 🔧 修复：在创建Timer前设置运行状态
+                _logger.LogCritical("🔍 [STARTUP-30] 开始定时器创建阶段");
                 _logger.LogInformation("⏰ 准备创建扫描定时器...");
+                AddWorkLog("INFO", "⏰ 正在创建扫描定时器...");
                 
+                _logger.LogCritical("🔍 [STARTUP-31] 获取锁设置运行状态");
                 lock (_lockObject)
                 {
                     _isRunning = true;
+                    _logger.LogCritical("🔍 [STARTUP-32] 服务运行状态已设置为true");
                     _logger.LogInformation("🔧 服务运行状态已设置为true");
                 }
                 
                 var intervalMs = _config.ScanIntervalSeconds * 1000;
+                
+                // 🔧 修复：确保最小间隔为10秒，防止扫描重叠
+                if (intervalMs < 10000) // 小于10秒
+                {
+                    intervalMs = 10000; // 强制设置为10秒
+                    _logger.LogWarning($"⚠️ 扫描间隔过短，已调整为10秒以防止扫描重叠");
+                    AddWorkLog("WARN", $"⚠️ 扫描间隔过短，已调整为10秒");
+                }
+                
+                _logger.LogCritical($"🔍 [STARTUP-33] 定时器配置: 间隔 {_config.ScanIntervalSeconds}秒 ({intervalMs}ms)");
                 _logger.LogInformation($"📝 定时器配置: 间隔 {_config.ScanIntervalSeconds}秒 ({intervalMs}ms)");
                 
                 try
                 {
+                    _logger.LogCritical("🔍 [STARTUP-34] 开始创建Timer实例...");
                     _logger.LogDebug("🔧 正在创建Timer实例...");
-                    _scanTimer = new Timer(async _ => await ScanPositionsAsync(), null, 0, intervalMs);
+                    
+                    // 🔧 关键修复：使用同步回调，避免async/await在Timer中导致的死锁
+                    _scanTimer = new Timer(_ => 
+                    {
+                        // 🔧 在Timer回调中使用Task.Run确保异步执行不阻塞
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                // 🔧 增强：定时器触发时检查服务状态
+                                bool serviceIsRunning;
+                                lock (_lockObject)
+                                {
+                                    serviceIsRunning = _isRunning;
+                                }
+                                
+                                if (!serviceIsRunning)
+                                {
+                                    _logger.LogDebug("⏰ 定时器触发但服务未运行，跳过扫描");
+                                    return;
+                                }
+                                
+                                await ScanPositionsAsync();
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "❌ 定时器回调中执行扫描时发生错误");
+                                AddWorkLog("ERROR", $"❌ 定时器扫描错误: {ex.Message}");
+                                
+                                // 🔧 增强：记录详细的错误信息
+                                if (ex.Message.Contains("synchronization"))
+                                {
+                                    _logger.LogError($"🔍 定时器同步错误: {ex.GetType().Name} - {ex.Message}");
+                                    _logger.LogError($"🔍 线程信息: ID={Thread.CurrentThread.ManagedThreadId}, IsBackground={Thread.CurrentThread.IsBackground}");
+                                }
+                            }
+                        });
+                    }, null, intervalMs, intervalMs); // 🔧 修复：延迟启动，避免立即触发
+                    
+                    _logger.LogCritical("🔍 [STARTUP-35] Timer实例创建完成");
                     _logger.LogInformation($"✅ 扫描定时器创建成功，间隔: {_config.ScanIntervalSeconds}秒");
                     _logger.LogInformation($"🔧 定时器状态: {(_scanTimer != null ? "已创建" : "创建失败")}");
+                    AddWorkLog("INFO", $"✅ 扫描定时器创建成功，间隔: {_config.ScanIntervalSeconds}秒");
+
+                    // 🔧 新增：记录定时器详细信息
+                    var nextScanTime = DateTime.Now.AddSeconds(_config.ScanIntervalSeconds);
+                    _logger.LogInformation($"⏰ 首次扫描时间: {nextScanTime:HH:mm:ss}");
+                    AddWorkLog("INFO", $"⏰ 定时器已启动，首次扫描: {nextScanTime:HH:mm:ss}");
+                    
+                    _logger.LogCritical("🔍 [STARTUP-36] 定时器创建成功，准备开始工作");
+                    _logger.LogInformation("🔧 定时器已创建，准备开始工作");
                 }
                 catch (Exception timerEx)
                 {
+                    _logger.LogCritical(timerEx, "🔍 [STARTUP-37] 定时器创建异常");
                     _logger.LogError(timerEx, $"❌ 创建扫描定时器失败: {timerEx.Message}");
                     _logger.LogError($"💡 定时器参数: 间隔={intervalMs}ms, 回调={nameof(ScanPositionsAsync)}");
+                    AddWorkLog("ERROR", $"❌ 创建扫描定时器失败: {timerEx.Message}");
                     
                     // 🔧 定时器创建失败时重置状态
                     lock (_lockObject) 
@@ -390,10 +511,12 @@ namespace BinanceFuturesTrader.Services
                 }
                 
                 // 🚌 发布监控状态变更事件
+                _logger.LogCritical("🔍 [STARTUP-38] 开始事件发布阶段");
                 _logger.LogInformation("📢 发布监控状态变更事件...");
                 
                 try
                 {
+                    _logger.LogCritical("🔍 [STARTUP-39] 发布监控状态变更事件");
                     await _eventBus.PublishAsync(new MonitorStatusChangedEvent
                     {
                         Source = "AutoMonitorService",
@@ -402,23 +525,28 @@ namespace BinanceFuturesTrader.Services
                         Config = _config,
                         ActiveContractCount = _positionProfiles.Count
                     });
+                    _logger.LogCritical("🔍 [STARTUP-40] 监控状态变更事件发布完成");
                     _logger.LogInformation("✅ 状态变更事件发布成功");
                 }
                 catch (Exception eventEx)
                 {
+                    _logger.LogCritical(eventEx, "🔍 [STARTUP-41] 监控状态变更事件发布异常");
                     _logger.LogWarning(eventEx, $"⚠️ 状态变更事件发布失败，但不影响服务启动: {eventEx.Message}");
                 }
                 
                 try
                 {
+                    _logger.LogCritical("🔍 [STARTUP-42] 触发本地状态变更事件");
                     OnMonitorStatusChanged(new MonitorStatusChangedEventArgs { 
                         IsRunning = true, 
                         Message = $"自动监控已启动 - 扫描间隔{_config.ScanIntervalSeconds}秒" 
                     });
+                    _logger.LogCritical("🔍 [STARTUP-43] 本地状态变更事件触发完成");
                     _logger.LogInformation("✅ 本地状态变更事件触发成功");
                 }
                 catch (Exception localEventEx)
                 {
+                    _logger.LogCritical(localEventEx, "🔍 [STARTUP-44] 本地状态变更事件触发异常");
                     _logger.LogWarning(localEventEx, $"⚠️ 本地状态变更事件触发失败: {localEventEx.Message}");
                 }
                 
@@ -428,6 +556,8 @@ namespace BinanceFuturesTrader.Services
                 if (_positionProfiles.Any())
                 {
                     _logger.LogInformation($"✅ 启动成功 - 配置: {_config.Name}, 间隔: {_config.ScanIntervalSeconds}秒, 监控{_positionProfiles.Count}个持仓");
+                    AddWorkLog("INFO", $"🎉 启动成功！配置: {_config.Name}, 间隔: {_config.ScanIntervalSeconds}秒");
+                    AddWorkLog("INFO", $"📊 当前监控 {_positionProfiles.Count} 个持仓");
                     foreach (var profile in _positionProfiles.Take(3))
                     {
                         _logger.LogInformation($"   📍 {profile.Key}");
@@ -441,6 +571,8 @@ namespace BinanceFuturesTrader.Services
                 {
                     _logger.LogInformation($"✅ 启动成功 - 配置: {_config.Name}, 间隔: {_config.ScanIntervalSeconds}秒");
                     _logger.LogInformation($"💤 当前无持仓，系统将等待新持仓并自动开始监控");
+                    AddWorkLog("INFO", $"🎉 启动成功！配置: {_config.Name}, 间隔: {_config.ScanIntervalSeconds}秒");
+                    AddWorkLog("INFO", "💤 当前无持仓，等待新持仓开始监控");
                 }
                 
                 // 🔧 记录服务最终状态
@@ -459,11 +591,27 @@ namespace BinanceFuturesTrader.Services
                 _logger.LogInformation($"   • EventBus: 已启动");
                 _logger.LogInformation($"   • PositionProfiles: {_positionProfiles.Count}个");
                 
+                // 🔧 新增：启动完成后的系统状态报告
+                AddWorkLog("INFO", "🎉 自动盯盘系统已启动！");
+                AddWorkLog("INFO", $"📊 系统状态: 运行中 | 配置: {finalConfigName}");
+                AddWorkLog("INFO", $"⏰ 扫描间隔: {_config.ScanIntervalSeconds}秒");
+                AddWorkLog("INFO", $"🔧 定时器状态: {(_scanTimer != null ? "正常运行" : "异常")}");
+                AddWorkLog("INFO", $"📈 监控档案: {_positionProfiles.Count}个");
+                
+                // 🔧 新增：记录系统开始工作的时间
+                var startTime = DateTime.Now;
+                _logger.LogInformation($"🚀 系统开始工作时间: {startTime:yyyy-MM-dd HH:mm:ss}");
+                AddWorkLog("INFO", $"🚀 系统开始工作: {startTime:HH:mm:ss}");
+                
+                _logger.LogCritical("🔍 [STARTUP-45] 启动流程即将完成");
                 _logger.LogInformation("🚀 自动监控服务启动流程完成，返回true");
+                _logger.LogCritical("🔍 [STARTUP-46] 返回 true，启动成功");
                 return true;
             }
             catch (Exception ex)
             {
+                _logger.LogCritical(ex, "🔍 [STARTUP-ERROR] 启动流程发生异常");
+                
                 lock (_lockObject) 
                 { 
                     _isRunning = false; 
@@ -598,123 +746,185 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         private async Task InitializePositionProfilesAsync()
         {
-            var positions = await _binanceService.GetPositionsAsync();
-            if (positions == null) 
+            _logger.LogCritical("🔍 [POSITION-01] 开始 InitializePositionProfilesAsync");
+            _logger.LogInformation("📊 开始获取持仓数据...");
+            
+            try
             {
-                _logger.LogWarning("⚠️ API返回的持仓数据为空，自动盯盘将等待持仓数据");
-                return;
-            }
-
-            lock (_lockObject)
-            {
-                // 🔧 修复：先获取当前真实的活跃持仓
-                var activePositions = positions.Where(p => 
-                    Math.Abs(p.PositionAmt) > 0.001m &&     // 🔧 提高数量阈值，过滤掉极小持仓
-                    !string.IsNullOrEmpty(p.Symbol) &&      // 合约名称过滤：确保合约名称有效
-                    p.Symbol.EndsWith("USDT") &&            // 🔧 新增：只处理USDT合约
-                    p.MarkPrice > 0 &&                      // 标记价格过滤：确保价格有效
-                    p.EntryPrice > 0 &&                     // 开仓价格过滤：确保开仓价有效
-                    p.UnrealizedProfit != 0                 // 🔧 新增：确保有实际盈亏数据
-                ).ToList();
-
-                _logger.LogInformation($"📊 当前活跃持仓: {activePositions.Count}个");
+                _logger.LogCritical("🔍 [POSITION-02] 调用 _binanceService.GetPositionsAsync()");
                 
-                // 🔧 关键修复：没有持仓时也正常初始化，只是提示等待状态
-                if (!activePositions.Any())
+                // 🔧 添加超时控制，防止API调用无限等待
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                
+                var positions = await _binanceService.GetPositionsAsync();
+                
+                _logger.LogCritical($"🔍 [POSITION-03] GetPositionsAsync 完成，结果: {(positions == null ? "null" : $"{positions.Count()}个")}");
+                
+                if (positions == null) 
                 {
-                    _logger.LogInformation("💤 当前暂无活跃持仓，自动盯盘已启动并处于等待状态");
-                    _logger.LogInformation("📝 当有新持仓时，系统将自动开始监控");
+                    _logger.LogCritical("🔍 [POSITION-04] 持仓数据为空，提前返回");
+                    _logger.LogWarning("⚠️ API返回的持仓数据为空，自动盯盘将等待持仓数据");
+                    return;
+                }
+                
+                await ProcessPositionsData(positions);
+            }
+            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+            {
+                _logger.LogCritical("🔍 [POSITION-ERROR] GetPositionsAsync 超时（30秒）");
+                _logger.LogError("❌ 获取持仓数据超时，请检查网络连接和API配置");
+                throw new InvalidOperationException("获取持仓数据超时，请检查网络连接");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogCritical("🔍 [POSITION-ERROR] API认证失败");
+                _logger.LogError($"❌ API认证失败: {ex.Message}");
+                throw new InvalidOperationException("API认证失败，请检查API Key配置和IP白名单");
+            }
+            catch (Exception ex) when (ex.Message.Contains("2015") || ex.Message.Contains("Invalid API-key"))
+            {
+                _logger.LogCritical("🔍 [POSITION-ERROR] API权限不足或密钥无效");
+                _logger.LogError($"❌ API认证错误: {ex.Message}");
+                throw new InvalidOperationException("API认证失败，请检查API Key配置、权限设置和IP白名单");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "🔍 [POSITION-ERROR] 获取持仓数据异常");
+                _logger.LogError(ex, $"❌ 获取持仓数据失败: {ex.Message}");
+                throw new InvalidOperationException($"获取持仓数据失败: {ex.Message}", ex);
+            }
+        }
+
+        private async Task ProcessPositionsData(IEnumerable<dynamic> positions)
+        {
+            _logger.LogCritical("🔍 [POSITION-05] 开始处理持仓数据");
+            _logger.LogInformation("🔍 开始过滤活跃持仓...");
+            
+            // 🔧 关键修复：将持仓过滤移到lock外部，减少锁持有时间
+            var activePositions = positions.Where(p => 
+                Math.Abs(p.PositionAmt) > 0.001m &&     // 🔧 提高数量阈值，过滤掉极小持仓
+                !string.IsNullOrEmpty(p.Symbol) &&      // 合约名称过滤：确保合约名称有效
+                p.Symbol.EndsWith("USDT") &&            // 🔧 新增：只处理USDT合约
+                p.MarkPrice > 0 &&                      // 标记价格过滤：确保价格有效
+                p.EntryPrice > 0 &&                     // 开仓价格过滤：确保开仓价有效
+                p.UnrealizedProfit != 0                 // 🔧 新增：确保有实际盈亏数据
+            ).ToList();
+
+            _logger.LogInformation($"📊 当前活跃持仓: {activePositions.Count}个");
+            
+            // 🔧 关键修复：没有持仓时也正常初始化，只是提示等待状态
+            if (!activePositions.Any())
+            {
+                _logger.LogInformation("💤 当前暂无活跃持仓，自动盯盘已启动并处于等待状态");
+                _logger.LogInformation("📝 当有新持仓时，系统将自动开始监控");
+                
+                lock (_lockObject)
+                {
                     _positionProfiles.Clear();
                     _executionHistory.Clear();
-                    return; // 正常返回，不报错
                 }
-                
-                foreach (var pos in activePositions)
-                {
-                    _logger.LogInformation($"   📍 {pos.Symbol} {pos.PositionSideString}: {pos.PositionAmt:F6} (浮盈: {pos.UnrealizedProfit:F2}U)");
-                }
+                return; // 正常返回，不报错
+            }
+            
+            foreach (var pos in activePositions)
+            {
+                _logger.LogInformation($"   📍 {pos.Symbol} {pos.PositionSideString}: {pos.PositionAmt:F6} (浮盈: {pos.UnrealizedProfit:F2}U)");
+            }
 
-                // 🔧 修复：先加载持久化的状态，但只恢复当前真实存在的持仓档案
-                _positionProfiles.Clear();
-                var persistedProfiles = _persistenceService.LoadPositionProfiles();
-                
-                _logger.LogInformation($"📖 从持久化存储加载了 {persistedProfiles.Count} 个历史档案");
+            // 🔧 关键修复：将持久化数据加载移到lock外部，提升性能
+            _logger.LogInformation("📖 开始加载持久化数据...");
+            var persistedProfiles = await Task.Run(() => _persistenceService.LoadPositionProfiles());
+            var persistedHistory = await Task.Run(() => _persistenceService.LoadExecutionHistory());
+            
+            _logger.LogInformation($"📖 从持久化存储加载了 {persistedProfiles.Count} 个历史档案");
 
-                // 🔧 关键修复：只为当前真实存在的活跃持仓恢复档案
-                foreach (var position in activePositions)
+            // 🔧 关键修复：预处理数据，减少lock内部的复杂操作
+            var newPositionProfiles = new Dictionary<string, PositionProfile>();
+            var invalidProfileKeys = new List<string>();
+            
+            // 🔧 关键修复：只为当前真实存在的活跃持仓恢复档案
+            foreach (var position in activePositions)
+            {
+                var key = GetPositionKey(position.Symbol, position.PositionSideString);
+                
+                // 如果持久化存储中有该持仓的档案，则使用持久化的数据（保留执行状态）
+                if (persistedProfiles.ContainsKey(key))
                 {
-                    var key = GetPositionKey(position.Symbol, position.PositionSideString);
+                    var persistedProfile = persistedProfiles[key];
+                    // 更新实时数据，但保留执行状态
+                    persistedProfile.InitialQuantity = Math.Abs(position.PositionAmt);
+                    persistedProfile.InitialEntryPrice = position.EntryPrice;
+                    persistedProfile.LastUpdateTime = DateTime.Now;
+                    persistedProfile.IsActive = true;
                     
-                    // 如果持久化存储中有该持仓的档案，则使用持久化的数据（保留执行状态）
-                    if (persistedProfiles.ContainsKey(key))
-                    {
-                        var persistedProfile = persistedProfiles[key];
-                        // 更新实时数据，但保留执行状态
-                        persistedProfile.InitialQuantity = Math.Abs(position.PositionAmt);
-                        persistedProfile.InitialEntryPrice = position.EntryPrice;
-                        persistedProfile.LastUpdateTime = DateTime.Now;
-                        persistedProfile.IsActive = true;
-                        
-                        _positionProfiles[key] = persistedProfile;
-                        _logger.LogInformation($"🔄 恢复持仓档案: {key} - 触发记录: {persistedProfile.TriggerRecords.Count}");
-                    }
-                    else
-                    {
-                        // 新建档案
-                        _positionProfiles[key] = new PositionProfile
-                        {
-                            Symbol = position.Symbol,
-                            PositionSide = position.PositionSideString,
-                            InitialQuantity = Math.Abs(position.PositionAmt),
-                            InitialEntryPrice = position.EntryPrice,
-                            CreateTime = DateTime.Now,
-                            LastUpdateTime = DateTime.Now,
-                            IsActive = true
-                        };
-                        _logger.LogInformation($"📝 新建档案: {key}, 数量: {position.PositionAmt:F6}, 入场价: {position.EntryPrice:F4}");
-                        
-                        // 🔧 新增：为新持仓清理历史状态，避免重复执行
-                        CleanupHistoryForNewPosition(position.Symbol, position.PositionSideString);
-                    }
+                    newPositionProfiles[key] = persistedProfile;
+                    _logger.LogInformation($"🔄 恢复持仓档案: {key} - 触发记录: {persistedProfile.TriggerRecords.Count}");
                 }
-
-                // 🔧 新增：检查并清理无效的历史档案
-                var invalidProfiles = persistedProfiles.Keys.Except(_positionProfiles.Keys).ToList();
-                if (invalidProfiles.Any())
+                else
                 {
-                    _logger.LogWarning($"🗑️ 发现{invalidProfiles.Count}个无效的历史档案（无对应活跃持仓）:");
-                    foreach (var invalidKey in invalidProfiles)
+                    // 新建档案
+                    newPositionProfiles[key] = new PositionProfile
                     {
-                        var parts = invalidKey.Split('_');
-                        if (parts.Length == 2)
-                        {
-                            var symbol = parts[0];
-                            var positionSide = parts[1];
-                            _logger.LogWarning($"   ❌ {invalidKey} - 该合约当前无活跃持仓，已跳过恢复");
-                            
-                            // 清理无效档案的执行历史
-                            _persistenceService.CleanupContractHistory(symbol, positionSide, "无活跃持仓");
-                        }
+                        Symbol = position.Symbol,
+                        PositionSide = position.PositionSideString,
+                        InitialQuantity = Math.Abs(position.PositionAmt),
+                        InitialEntryPrice = position.EntryPrice,
+                        CreateTime = DateTime.Now,
+                        LastUpdateTime = DateTime.Now,
+                        IsActive = true
+                    };
+                    _logger.LogInformation($"📝 新建档案: {key}, 数量: {position.PositionAmt:F6}, 入场价: {position.EntryPrice:F4}");
+                    
+                    // 🔧 新增：为新持仓清理历史状态，避免重复执行
+                    CleanupHistoryForNewPosition(position.Symbol, position.PositionSideString);
+                }
+            }
+
+            // 🔧 新增：检查并清理无效的历史档案
+            invalidProfileKeys = persistedProfiles.Keys.Except(newPositionProfiles.Keys).ToList();
+            if (invalidProfileKeys.Any())
+            {
+                _logger.LogWarning($"🗑️ 发现{invalidProfileKeys.Count}个无效的历史档案（无对应活跃持仓）:");
+                foreach (var invalidKey in invalidProfileKeys)
+                {
+                    var parts = invalidKey.Split('_');
+                    if (parts.Length == 2)
+                    {
+                        var symbol = parts[0];
+                        var positionSide = parts[1];
+                        _logger.LogWarning($"   ❌ {invalidKey} - 该合约当前无活跃持仓，已跳过恢复");
+                        
+                        // 🔧 异步清理无效档案的执行历史
+                        _ = Task.Run(() => _persistenceService.CleanupContractHistory(symbol, positionSide, "无活跃持仓"));
                     }
                 }
-                
-                // 🔧 新增：加载执行历史，但只保留当前活跃持仓的记录
-                var persistedHistory = _persistenceService.LoadExecutionHistory();
-                var activeSymbols = activePositions.Select(p => p.Symbol).ToHashSet();
-                var validHistory = persistedHistory.Where(h => activeSymbols.Contains(h.Symbol)).ToList();
+            }
+            
+            // 🔧 新增：预处理执行历史，只保留当前活跃持仓的记录
+            var activeSymbols = activePositions.Select(p => p.Symbol).ToHashSet();
+            var validHistory = persistedHistory.Where(h => activeSymbols.Contains(h.Symbol)).ToList();
+            
+            if (persistedHistory.Count != validHistory.Count)
+            {
+                var removedCount = persistedHistory.Count - validHistory.Count;
+                _logger.LogInformation($"🗑️ 过滤执行历史: 移除{removedCount}条无效记录，保留{validHistory.Count}条有效记录");
+            }
+            
+            // 🔧 关键修复：最小化lock操作，只进行数据替换
+            lock (_lockObject)
+            {
+                _positionProfiles.Clear();
+                foreach (var kvp in newPositionProfiles)
+                {
+                    _positionProfiles[kvp.Key] = kvp.Value;
+                }
                 
                 _executionHistory.Clear();
                 _executionHistory.AddRange(validHistory);
-                
-                if (persistedHistory.Count != validHistory.Count)
-                {
-                    var removedCount = persistedHistory.Count - validHistory.Count;
-                    _logger.LogInformation($"🗑️ 过滤执行历史: 移除{removedCount}条无效记录，保留{validHistory.Count}条有效记录");
-                }
-                
-                _logger.LogInformation($"📊 初始化完成 - 持仓档案: {_positionProfiles.Count}个, 执行历史: {_executionHistory.Count}条");
-                _logger.LogInformation($"✅ 所有档案均对应当前活跃持仓，无无效档案");
             }
+            
+            _logger.LogInformation($"📊 初始化完成 - 持仓档案: {newPositionProfiles.Count}个, 执行历史: {validHistory.Count}条");
+            _logger.LogInformation($"✅ 所有档案均对应当前活跃持仓，无无效档案");
         }
 
         /// <summary>
@@ -722,7 +932,37 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         private async Task ScanPositionsAsync()
         {
-            if (!_isRunning || _config == null) return;
+            // 🔧 新增：记录定时器触发信息
+            _logger.LogDebug("⏰ 定时器触发扫描方法");
+            AddWorkLog("INFO", "⏰ 定时器触发，开始扫描");
+
+            // 🔧 新增：详细的状态检查和日志记录
+            bool isRunning;
+            AutoMonitorConfig? config;
+            lock (_lockObject)
+            {
+                isRunning = _isRunning;
+                config = _config;
+            }
+
+            _logger.LogDebug($"🔧 扫描状态检查: IsRunning={isRunning}, Config={config?.Name ?? "NULL"}");
+
+            if (!isRunning)
+            {
+                _logger.LogWarning("❌ 扫描被跳过: 服务未运行");
+                AddWorkLog("WARN", "❌ 扫描被跳过: 服务未运行");
+                return;
+            }
+
+            if (config == null)
+            {
+                _logger.LogWarning("❌ 扫描被跳过: 配置为空");
+                AddWorkLog("WARN", "❌ 扫描被跳过: 配置为空");
+                return;
+            }
+
+            _logger.LogDebug($"✅ 状态检查通过，开始扫描 (配置: {config.Name})");
+            AddWorkLog("INFO", $"✅ 状态检查通过，开始扫描 (配置: {config.Name})");
 
             // 🛡️ 增加扫描计数并定期清理过期的冷却期记录（每20次扫描清理一次）
             _scanCount++;
@@ -731,73 +971,182 @@ namespace BinanceFuturesTrader.Services
                 _cooldownManager.CleanupExpiredRecords();
             }
 
+            // 🔧 新增：记录扫描计数
+            _logger.LogDebug($"🔢 扫描计数: {_scanCount}");
+
+            // 🔧 修复：使用SemaphoreSlim替代Monitor，提供更安全的并发控制
+            var semaphoreEntered = false;
             try
             {
-                // 🔧 修复：添加执行锁，防止并发扫描导致的集合访问冲突
-                if (!Monitor.TryEnter(_executionLock, TimeSpan.FromSeconds(1)))
+                // 尝试获取信号量，超时时间设置为2秒
+                semaphoreEntered = await _executionSemaphore.WaitAsync(TimeSpan.FromSeconds(2));
+                if (!semaphoreEntered)
                 {
                     _logger.LogWarning("⚠️ 自动盯盘扫描繁忙，跳过本次扫描以避免并发冲突");
+                    AddWorkLog("WARN", "⚠️ 扫描繁忙，跳过本次扫描");
                     return;
                 }
 
+                _logger.LogInformation("🔄 开始扫描持仓...");
+                AddWorkLog("INFO", "🔄 开始扫描持仓...");
+
+                // 🔧 关键修复：为API调用添加超时控制，防止运行期间卡死
+                IEnumerable<dynamic>? positions = null;
                 try
                 {
-                    _logger.LogInformation("🔄 开始扫描持仓...");
-
-                    // 🔧 修复：获取持仓数据（不能在lock中await）
-                    var positions = await _binanceService.GetPositionsAsync();
-                    if (positions == null || !positions.Any())
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var positionsTask = _binanceService.GetPositionsAsync();
+                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(15), timeoutCts.Token);
+                    
+                    var completedTask = await Task.WhenAny(positionsTask, timeoutTask);
+                    
+                    if (completedTask == timeoutTask)
                     {
-                        _logger.LogDebug("📊 当前无持仓数据，继续等待...");
-                        return; // 🔧 修复：没有持仓时继续运行，不停止扫描
+                        _logger.LogWarning("⚠️ 获取持仓数据超时(15秒)，跳过本次扫描");
+                        AddWorkLog("WARN", "⚠️ 获取持仓数据超时，跳过本次扫描");
+                        return;
                     }
-
-                    // 🔧 修复：过滤活跃持仓
-                    var activePositions = positions.Where(p => 
-                        Math.Abs(p.PositionAmt) > 0.001m &&
-                        !string.IsNullOrEmpty(p.Symbol) &&
-                        p.Symbol.EndsWith("USDT") &&
-                        p.MarkPrice > 0 &&
-                        p.EntryPrice > 0 &&
-                        p.UnrealizedProfit != 0
-                    ).ToList();
-
-                    if (!activePositions.Any())
-                    {
-                        // 🔧 重要修复：没有活跃持仓时清理历史档案，但继续运行等待新持仓
-                        lock (_lockObject)
-                        {
-                            if (_positionProfiles.Any())
-                            {
-                                _logger.LogInformation("🗑️ 检测到所有持仓已平仓，清理历史档案");
-                                CleanupClosedPositions(new List<PositionInfo>());
-                            }
-                        }
-                        
-                        _logger.LogDebug("💤 当前无活跃持仓，继续等待新持仓...");
-                        return; // 继续运行，等待持仓出现
-                    }
-
-                    // 🔧 修复：先清理已关闭的持仓，使用过滤后的活跃持仓列表
-                    CleanupClosedPositions(activePositions);
-
-                    var positionCount = activePositions.Count;
-                    _logger.LogDebug($"🔄 开始处理 {positionCount} 个活跃持仓");
-
-                    // 🔧 修复：并行处理所有活跃持仓，提高效率
-                    var processingTasks = activePositions.Select(ProcessPositionAsync).ToArray();
-                    await Task.WhenAll(processingTasks);
-
-                    _logger.LogDebug($"✅ 扫描完成，已处理 {positionCount} 个持仓");
+                    
+                    positions = await positionsTask;
+                    timeoutCts.Cancel(); // 取消超时任务
                 }
-                finally
+                catch (TaskCanceledException)
                 {
-                    Monitor.Exit(_executionLock);
+                    _logger.LogWarning("⚠️ 获取持仓数据被取消，跳过本次扫描");
+                    AddWorkLog("WARN", "⚠️ 获取持仓数据被取消，跳过本次扫描");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "❌ 获取持仓数据异常，跳过本次扫描");
+                    AddWorkLog("ERROR", $"❌ 获取持仓数据异常: {ex.Message}");
+                    return;
+                }
+                
+                if (positions == null || !positions.Any())
+                {
+                    _logger.LogDebug("📊 当前无持仓数据，继续等待...");
+                    AddWorkLog("INFO", "📊 当前无持仓数据，继续等待...");
+                    return; // 🔧 修复：没有持仓时继续运行，不停止扫描
+                }
+
+                // 🔧 修复：过滤活跃持仓并转换为PositionInfo类型
+                var activePositions = positions.Where(p => 
+                    Math.Abs(p.PositionAmt) > 0.001m &&
+                    !string.IsNullOrEmpty(p.Symbol) &&
+                    p.Symbol.EndsWith("USDT") &&
+                    p.MarkPrice > 0 &&
+                    p.EntryPrice > 0 &&
+                    p.UnrealizedProfit != 0
+                ).Select(p => new PositionInfo
+                {
+                    Symbol = p.Symbol,
+                    PositionAmt = p.PositionAmt,
+                    EntryPrice = p.EntryPrice,
+                    MarkPrice = p.MarkPrice,
+                    UnrealizedProfit = p.UnrealizedProfit,
+                    PositionSide = p.PositionSide,
+                    PositionSideString = p.PositionSideString,
+                    Leverage = p.Leverage,
+                    MarginType = p.MarginType,
+                    IsolatedMargin = p.IsolatedMargin,
+                    UpdateTime = p.UpdateTime
+                }).ToList();
+
+                if (!activePositions.Any())
+                {
+                    // 🔧 重要修复：没有活跃持仓时清理历史档案，但继续运行等待新持仓
+                    lock (_lockObject)
+                    {
+                        if (_positionProfiles.Any())
+                        {
+                            _logger.LogInformation("🗑️ 检测到所有持仓已平仓，清理历史档案");
+                            AddWorkLog("INFO", "🗑️ 检测到所有持仓已平仓，清理历史档案");
+                            CleanupClosedPositions(new List<PositionInfo>());
+                        }
+                    }
+                    
+                    _logger.LogDebug("💤 当前无活跃持仓，继续等待新持仓...");
+                    AddWorkLog("INFO", "💤 当前无活跃持仓，继续等待新持仓...");
+                    return; // 继续运行，等待持仓出现
+                }
+
+                // 🔧 修复：先清理已关闭的持仓，使用过滤后的活跃持仓列表
+                CleanupClosedPositions(activePositions);
+
+                var positionCount = activePositions.Count;
+                _logger.LogDebug($"🔄 开始处理 {positionCount} 个活跃持仓");
+                AddWorkLog("INFO", $"🔄 开始处理 {positionCount} 个活跃持仓");
+
+                // 🔧 关键修复：避免过度并行，限制同时处理的持仓数量
+                const int maxConcurrency = 3; // 最多同时处理3个持仓
+                var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+                
+                var processingTasks = activePositions.Select(async position =>
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        await ProcessPositionAsync(position);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                }).ToArray();
+                
+                // 🔧 添加整体超时控制，防止所有处理任务卡死
+                using var overallTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var allTasksTask = Task.WhenAll(processingTasks);
+                var overallTimeoutTask = Task.Delay(TimeSpan.FromSeconds(30), overallTimeoutCts.Token);
+                
+                var completedOverallTask = await Task.WhenAny(allTasksTask, overallTimeoutTask);
+                
+                if (completedOverallTask == overallTimeoutTask)
+                {
+                    _logger.LogWarning("⚠️ 持仓处理整体超时(30秒)，部分处理可能未完成");
+                    AddWorkLog("WARN", "⚠️ 持仓处理整体超时，部分处理可能未完成");
+                }
+                else
+                {
+                    overallTimeoutCts.Cancel();
+                    await allTasksTask; // 等待所有任务完成
+                    _logger.LogDebug($"✅ 扫描完成，已处理 {positionCount} 个持仓");
+                    AddWorkLog("INFO", $"✅ 扫描完成，已处理 {positionCount} 个持仓");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "❌ 扫描持仓时发生严重错误");
+                AddWorkLog("ERROR", $"❌ 扫描持仓时发生严重错误: {ex.Message}");
+                
+                // 🔧 增强错误诊断：记录详细的错误信息
+                if (ex.Message.Contains("synchronization method"))
+                {
+                    _logger.LogError($"🔍 同步错误详情: semaphoreEntered={semaphoreEntered}, 线程ID={Thread.CurrentThread.ManagedThreadId}");
+                    _logger.LogError($"🔍 错误堆栈: {ex.StackTrace}");
+                }
+            }
+            finally
+            {
+                // 🔧 关键修复：使用SemaphoreSlim的Release方法，无需手动状态检查
+                try
+                {
+                    if (semaphoreEntered)
+                    {
+                        _executionSemaphore.Release();
+                        _logger.LogDebug($"🔓 成功释放扫描信号量，线程ID={Thread.CurrentThread.ManagedThreadId}");
+                    }
+                    else
+                    {
+                        _logger.LogDebug($"🔍 未获取到信号量，无需释放，线程ID={Thread.CurrentThread.ManagedThreadId}");
+                    }
+                }
+                catch (Exception finallyEx)
+                {
+                    _logger.LogError(finallyEx, $"❌ 释放扫描信号量时发生错误: semaphoreEntered={semaphoreEntered}, 线程ID={Thread.CurrentThread.ManagedThreadId}");
+                    AddWorkLog("ERROR", $"❌ 释放扫描信号量错误: {finallyEx.Message}");
+                }
             }
         }
 
@@ -1277,7 +1626,7 @@ namespace BinanceFuturesTrader.Services
                 
                 _logger.LogInformation($"💰 保本止损计算: 成本价={entryPrice:F4}, 缓冲={bufferPercentage * 100:F2}%, 止损价={stopPrice:F4}");
 
-                // 🛡️ 使用止损单管理器安全创建保本止损订单
+                // 🔧 关键修复：为止损单创建API添加超时控制
                 var stopLossRequest = new OrderRequest
                 {
                     Symbol = position.Symbol,
@@ -1290,8 +1639,30 @@ namespace BinanceFuturesTrader.Services
                     WorkingType = "CONTRACT_PRICE"
                 };
 
-                var success = await _stopOrderManager.CreateStopOrderSafelyAsync(
-                    position.Symbol, stopLossRequest, StopOrderType.BreakEven);
+                bool success = false;
+                try
+                {
+                    using var stopTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var stopTask = _stopOrderManager.CreateStopOrderSafelyAsync(
+                        position.Symbol, stopLossRequest, StopOrderType.BreakEven);
+                    var stopTimeoutTask = Task.Delay(TimeSpan.FromSeconds(15), stopTimeoutCts.Token);
+                    
+                    var completedStopTask = await Task.WhenAny(stopTask, stopTimeoutTask);
+                    
+                    if (completedStopTask == stopTimeoutTask)
+                    {
+                        _logger.LogError($"⚠️ 保本止损单创建超时(15秒): {position.Symbol}");
+                        return false;
+                    }
+                    
+                    success = await stopTask;
+                    stopTimeoutCts.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 保本止损单创建异常: {position.Symbol}");
+                    return false;
+                }
                 
                 if (success)
                 {
@@ -1330,9 +1701,36 @@ namespace BinanceFuturesTrader.Services
                 var riskMultiplier = stage.RiskMultiplier;  // 风险倍数（例如：1.0倍）
                 var stopLossRatio = stage.StopLossRatio;    // 止损比例（例如：0.10 = 10%）
                 
-                // 3. 获取最新价格
-                var latestPrice = await _binanceService.GetLatestPriceAsync(position.Symbol);
-                if (latestPrice <= 0) return false;
+                // 🔧 关键修复：为获取最新价格API添加超时控制
+                decimal latestPrice = 0;
+                try
+                {
+                    using var priceTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var priceTask = _binanceService.GetLatestPriceAsync(position.Symbol);
+                    var priceTimeoutTask = Task.Delay(TimeSpan.FromSeconds(10), priceTimeoutCts.Token);
+                    
+                    var completedPriceTask = await Task.WhenAny(priceTask, priceTimeoutTask);
+                    
+                    if (completedPriceTask == priceTimeoutTask)
+                    {
+                        _logger.LogError($"⚠️ 获取最新价格超时(10秒): {position.Symbol}");
+                        return false;
+                    }
+                    
+                    latestPrice = await priceTask;
+                    priceTimeoutCts.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 获取最新价格失败: {position.Symbol}");
+                    return false;
+                }
+                
+                if (latestPrice <= 0)
+                {
+                    _logger.LogError($"❌ 获取到的价格无效: {position.Symbol}, 价格: {latestPrice}");
+                    return false;
+                }
                 
                 // 4. 计算加仓货值 = 风险倍数 * 单笔风险金 / 止损比例
                 var addPositionValue = riskMultiplier * singleRiskCapital / stopLossRatio;
@@ -1342,24 +1740,39 @@ namespace BinanceFuturesTrader.Services
                 
                 _logger.LogInformation($"💰 推仓计算: 账户权益={accountEquity:F2}U, 风险次数={riskTimes}, 单笔风险金={singleRiskCapital:F2}U, 风险倍数={riskMultiplier:F1}, 止损比例={stopLossRatio * 100:F1}%, 推仓货值={addPositionValue:F2}U, 合约单价={latestPrice:F4}, 推仓数量={addQuantity:F8}");
 
-                // 5. 检查交易规则和精度
+                // 🔧 关键修复：为获取交易规则API添加超时控制
                 try
                 {
-                    var (minQty, maxQty, stepSize, tickSize, maxLeverage) = await _binanceService.GetSymbolTradingRulesAsync(position.Symbol);
+                    using var rulesTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var rulesTask = _binanceService.GetSymbolTradingRulesAsync(position.Symbol);
+                    var rulesTimeoutTask = Task.Delay(TimeSpan.FromSeconds(10), rulesTimeoutCts.Token);
                     
-                    // 调整数量到正确的精度
-                    addQuantity = Math.Floor(addQuantity / stepSize) * stepSize;
+                    var completedRulesTask = await Task.WhenAny(rulesTask, rulesTimeoutTask);
                     
-                    if (addQuantity < minQty)
+                    if (completedRulesTask == rulesTimeoutTask)
                     {
-                        _logger.LogWarning($"❌ 计算的推仓数量 {addQuantity:F6} 小于最小交易数量 {minQty:F6}");
-                        return false;
+                        _logger.LogWarning($"⚠️ 获取交易规则超时(10秒): {position.Symbol}，使用默认精度");
+                        addQuantity = Math.Round(addQuantity, 6);
                     }
-                    
-                    if (addQuantity > maxQty)
+                    else
                     {
-                        _logger.LogWarning($"❌ 计算的推仓数量 {addQuantity:F6} 超过最大交易数量 {maxQty:F6}");
-                        return false;
+                        var (minQty, maxQty, stepSize, tickSize, maxLeverage) = await rulesTask;
+                        rulesTimeoutCts.Cancel();
+                        
+                        // 调整数量到正确的精度
+                        addQuantity = Math.Floor(addQuantity / stepSize) * stepSize;
+                        
+                        if (addQuantity < minQty)
+                        {
+                            _logger.LogWarning($"❌ 计算的推仓数量 {addQuantity:F6} 小于最小交易数量 {minQty:F6}");
+                            return false;
+                        }
+                        
+                        if (addQuantity > maxQty)
+                        {
+                            _logger.LogWarning($"❌ 计算的推仓数量 {addQuantity:F6} 超过最大交易数量 {maxQty:F6}");
+                            return false;
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -1371,7 +1784,7 @@ namespace BinanceFuturesTrader.Services
                 // 6. 确定加仓方向（与当前持仓方向一致）
                 var addPositionSide = position.PositionAmt > 0 ? "BUY" : "SELL";
                 
-                // 7. 执行加仓下单
+                // 7. 🔧 关键修复：为推仓下单API添加超时控制
                 var addOrderRequest = new OrderRequest
                 {
                     Symbol = position.Symbol,
@@ -1382,7 +1795,52 @@ namespace BinanceFuturesTrader.Services
                     PositionSide = position.PositionSideString
                 };
 
-                var addOrderSuccess = await _binanceService.PlaceOrderAsync(addOrderRequest);
+                bool addOrderSuccess = false;
+                try
+                {
+                    // 🚀 修复：使用智能下单服务，提高自动盯盘成功率
+                    _logger.LogInformation($"🚀 推仓下单切换到智能下单服务: {position.Symbol}");
+                    
+                    using var orderTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // 增加超时时间给智能重试
+                    var smartOrderTask = _smartOrderService.PlaceSmartOrderAsync(addOrderRequest);
+                    var orderTimeoutTask = Task.Delay(TimeSpan.FromSeconds(30), orderTimeoutCts.Token);
+                    
+                    var completedOrderTask = await Task.WhenAny(smartOrderTask, orderTimeoutTask);
+                    
+                    if (completedOrderTask == orderTimeoutTask)
+                    {
+                        _logger.LogError($"⚠️ 推仓智能下单超时(30秒): {position.Symbol}");
+                        return false;
+                    }
+                    
+                    var smartOrderResult = await smartOrderTask;
+                    addOrderSuccess = smartOrderResult.IsSuccess;
+                    orderTimeoutCts.Cancel();
+                    
+                    // 记录智能下单的详细信息
+                    if (smartOrderResult.IsSuccess)
+                    {
+                        _logger.LogInformation($"✅ 推仓智能下单成功: {position.Symbol}");
+                        foreach (var action in smartOrderResult.Actions)
+                        {
+                            _logger.LogInformation($"   {action}");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogError($"❌ 推仓智能下单失败: {position.Symbol} - {smartOrderResult.ErrorMessage}");
+                        foreach (var action in smartOrderResult.Actions)
+                        {
+                            _logger.LogWarning($"   {action}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 推仓智能下单异常: {position.Symbol}");
+                    return false;
+                }
+                
                 if (!addOrderSuccess)
                 {
                     _logger.LogError($"❌ 推仓下单失败: {position.Symbol}");
@@ -1394,9 +1852,32 @@ namespace BinanceFuturesTrader.Services
                 // 8. 等待订单执行
                 await Task.Delay(2000);
                 
-                // 9. 获取更新后的持仓信息（验证推仓是否真正生效）
+                // 9. 🔧 关键修复：为获取更新后持仓信息API添加超时控制
                 var originalPositionAmt = Math.Abs(position.PositionAmt);
-                var updatedPositions = await _binanceService.GetPositionsAsync();
+                IEnumerable<dynamic>? updatedPositions = null;
+                try
+                {
+                    using var positionsTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var positionsTask = _binanceService.GetPositionsAsync();
+                    var positionsTimeoutTask = Task.Delay(TimeSpan.FromSeconds(10), positionsTimeoutCts.Token);
+                    
+                    var completedPositionsTask = await Task.WhenAny(positionsTask, positionsTimeoutTask);
+                    
+                    if (completedPositionsTask == positionsTimeoutTask)
+                    {
+                        _logger.LogError($"⚠️ 获取更新后持仓信息超时(10秒): {position.Symbol}");
+                        return false;
+                    }
+                    
+                    updatedPositions = await positionsTask;
+                    positionsTimeoutCts.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 获取更新后持仓信息失败: {position.Symbol}");
+                    return false;
+                }
+                
                 var updatedPosition = updatedPositions?.FirstOrDefault(p => 
                     p.Symbol == position.Symbol && Math.Abs(p.PositionAmt) > 0);
 
@@ -1422,18 +1903,27 @@ namespace BinanceFuturesTrader.Services
                     _logger.LogInformation($"✅ 推仓数量验证通过: {position.Symbol} 持仓成功增加{positionIncrease:F6}");
                 }
 
-                // 10. 设置保本止损
+                // 10. 设置带保盈金额的止损
                 var stopQuantity = Math.Abs(updatedPosition.PositionAmt);
                 var entryPrice = updatedPosition.EntryPrice; // 这是加仓后的最新成本价
+                var profitProtectionAmount = stage.ProfitProtectionAmount; // 保盈金额
                 
-                // 使用很小的百分比缓冲（0.05%），确保真正保本而不会被轻易触发
-                var bufferPercentage = 0.0005m; // 0.05%
-                var newStopPrice = updatedPosition.PositionAmt > 0 
-                    ? entryPrice * (1 + bufferPercentage)  // 多头：成本价 + 0.05%
-                    : entryPrice * (1 - bufferPercentage); // 空头：成本价 - 0.05%
+                // 🔧 关键修改：根据保盈金额调整止损价格
+                // 计算公式：
+                // 多头：止损价 = 成本价 + (保盈金额 / 持仓数量)
+                // 空头：止损价 = 成本价 - (保盈金额 / 持仓数量)
+                decimal newStopPrice;
+                if (updatedPosition.PositionAmt > 0) // 多头
+                {
+                    newStopPrice = entryPrice + (profitProtectionAmount / stopQuantity);
+                }
+                else // 空头
+                {
+                    newStopPrice = entryPrice - (profitProtectionAmount / stopQuantity);
+                }
                 newStopPrice = Math.Round(newStopPrice, 4);
                 
-                _logger.LogInformation($"💰 保本止损计算: 成本价={entryPrice:F4}, 缓冲={bufferPercentage * 100:F2}%, 止损价={newStopPrice:F4}");
+                _logger.LogInformation($"💰 带保盈金额的止损计算: 成本价={entryPrice:F4}, 保盈金额={profitProtectionAmount:F2}U, 持仓数量={stopQuantity:F6}, 止损价={newStopPrice:F4}");
 
                 var stopOrderSide = updatedPosition.PositionAmt > 0 ? "SELL" : "BUY";
                 var stopOrderRequest = new OrderRequest
@@ -1449,9 +1939,33 @@ namespace BinanceFuturesTrader.Services
                     WorkingType = "CONTRACT_PRICE"
                 };
 
-                // 🛡️ 使用止损单管理器安全创建保本止损订单
-                var stopSuccess = await _stopOrderManager.CreateStopOrderSafelyAsync(
-                    position.Symbol, stopOrderRequest, StopOrderType.AddPosition);
+                // 🔧 关键修复：为止损单创建API添加超时控制
+                bool stopSuccess = false;
+                try
+                {
+                    using var stopTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var stopTask = _stopOrderManager.CreateStopOrderSafelyAsync(
+                        position.Symbol, stopOrderRequest, StopOrderType.AddPosition);
+                    var stopTimeoutTask = Task.Delay(TimeSpan.FromSeconds(15), stopTimeoutCts.Token);
+                    
+                    var completedStopTask = await Task.WhenAny(stopTask, stopTimeoutTask);
+                    
+                    if (completedStopTask == stopTimeoutTask)
+                    {
+                        _logger.LogWarning($"⚠️ 止损单创建超时(15秒): {position.Symbol}");
+                        stopSuccess = false;
+                    }
+                    else
+                    {
+                        stopSuccess = await stopTask;
+                        stopTimeoutCts.Cancel();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, $"❌ 止损单创建失败: {position.Symbol}");
+                    stopSuccess = false;
+                }
                 
                 if (stopSuccess)
                 {
@@ -1522,7 +2036,7 @@ namespace BinanceFuturesTrader.Services
 
                 _logger.LogInformation($"🔍 止损价验证通过: {protectionPrice:F4}");
 
-                // 创建保盈止损订单
+                // 🔧 关键修复：为保盈止损单创建API添加超时控制
                 var side = isLong ? "SELL" : "BUY";
                 var stopLossRequest = new OrderRequest
                 {
@@ -1536,8 +2050,30 @@ namespace BinanceFuturesTrader.Services
                     WorkingType = "CONTRACT_PRICE"
                 };
 
-                var success = await _stopOrderManager.CreateStopOrderSafelyAsync(
-                    position.Symbol, stopLossRequest, StopOrderType.ProfitProtection);
+                bool success = false;
+                try
+                {
+                    using var stopTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var stopTask = _stopOrderManager.CreateStopOrderSafelyAsync(
+                        position.Symbol, stopLossRequest, StopOrderType.ProfitProtection);
+                    var stopTimeoutTask = Task.Delay(TimeSpan.FromSeconds(15), stopTimeoutCts.Token);
+                    
+                    var completedStopTask = await Task.WhenAny(stopTask, stopTimeoutTask);
+                    
+                    if (completedStopTask == stopTimeoutTask)
+                    {
+                        _logger.LogError($"⚠️ 保盈止损单创建超时(15秒): {position.Symbol}");
+                        return false;
+                    }
+                    
+                    success = await stopTask;
+                    stopTimeoutCts.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 保盈止损单创建异常: {position.Symbol}");
+                    return false;
+                }
                 
                 if (success)
                 {
@@ -1668,47 +2204,99 @@ namespace BinanceFuturesTrader.Services
         {
             lock (_lockObject)
             {
+                // 🔧 增强诊断：记录清理前的状态
+                var totalProfilesBefore = _positionProfiles.Count;
+                var activeCount = activePositions.Count;
+                
+                _logger.LogInformation($"🔍 档案清理诊断 - 清理前档案数: {totalProfilesBefore}, 活跃持仓数: {activeCount}");
+                
                 var activeKeys = activePositions.Select(p => GetPositionKey(p.Symbol, p.PositionSideString)).ToHashSet();
                 var keysToRemove = _positionProfiles.Keys.Where(k => !activeKeys.Contains(k)).ToList();
                 
+                // 🔧 详细诊断：输出所有档案和活跃持仓的对比
+                _logger.LogInformation($"🔍 档案清理详情:");
+                _logger.LogInformation($"  📋 活跃持仓键值: [{string.Join(", ", activeKeys)}]");
+                _logger.LogInformation($"  📂 现有档案键值: [{string.Join(", ", _positionProfiles.Keys)}]");
+                _logger.LogInformation($"  🗑️ 待清理档案: [{string.Join(", ", keysToRemove)}]");
+                
                 // 🔧 增强：记录清理的档案信息并检测重新开仓情况
                 var cleanupResults = new List<string>();
+                var actuallyRemoved = 0;
                 
                 foreach (var key in keysToRemove)
                 {
-                    var profile = _positionProfiles[key];
-                    var triggerCount = profile.TriggerRecords.Count;
-                    
-                    if (triggerCount > 0)
+                    if (_positionProfiles.TryGetValue(key, out var profile))
                     {
-                        cleanupResults.Add($"🗑️ 清理已平仓档案: {key} (清理{triggerCount}个触发记录)");
-                        _logger.LogInformation($"🗑️ 清理已平仓档案: {key} - 清理触发记录: {triggerCount}个");
+                        var triggerCount = profile.TriggerRecords.Count;
                         
-                        // 记录清理历史，用于检测重新开仓
-                        var cleanupHistory = new ExecutionHistory
+                        if (triggerCount > 0)
                         {
-                            Symbol = profile.Symbol,
-                            PositionSide = profile.PositionSide,
-                            ExecutionType = "状态清理",
-                            ExecutionTime = DateTime.Now,
-                            TriggerPnl = 0,
-                            IsSuccess = true,
-                            Details = $"平仓后清理历史状态，共清理{triggerCount}个触发记录"
-                        };
-                        _executionHistory.Add(cleanupHistory);
+                            cleanupResults.Add($"🗑️ 清理已平仓档案: {key} (清理{triggerCount}个触发记录)");
+                            _logger.LogInformation($"🗑️ 清理已平仓档案: {key} - 清理触发记录: {triggerCount}个");
+                            
+                            // 记录清理历史，用于检测重新开仓
+                            var cleanupHistory = new ExecutionHistory
+                            {
+                                Symbol = profile.Symbol,
+                                PositionSide = profile.PositionSide,
+                                ExecutionType = "状态清理",
+                                ExecutionTime = DateTime.Now,
+                                TriggerPnl = 0,
+                                IsSuccess = true,
+                                Details = $"平仓后清理历史状态，共清理{triggerCount}个触发记录"
+                            };
+                            _executionHistory.Add(cleanupHistory);
+                        }
+                        else
+                        {
+                            _logger.LogDebug($"🗑️ 清理已平仓档案: {key} (无触发记录)");
+                        }
+                        
+                        // 🔧 关键：实际移除档案
+                        var removeSuccess = _positionProfiles.Remove(key);
+                        if (removeSuccess)
+                        {
+                            actuallyRemoved++;
+                            _logger.LogInformation($"✅ 成功移除档案: {key}");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"⚠️ 移除档案失败: {key}");
+                        }
+                        
+                        // 🛡️ 清理该合约的所有冷却期记录
+                        _cooldownManager.ClearContractCooldowns(profile.Symbol, profile.PositionSide);
+                        
+                        // 🔄 清理统一状态管理器中的该合约状态
+                        _unifiedStateManager.ClearContractStates(profile.Symbol, profile.PositionSide, "平仓清理");
                     }
                     else
                     {
-                        _logger.LogDebug($"🗑️ 清理已平仓档案: {key} (无触发记录)");
+                        _logger.LogWarning($"⚠️ 尝试清理不存在的档案: {key}");
                     }
+                }
+                
+                // 🔧 诊断：记录清理后的状态
+                var totalProfilesAfter = _positionProfiles.Count;
+                _logger.LogInformation($"🔍 档案清理结果 - 清理后档案数: {totalProfilesAfter}, 实际移除: {actuallyRemoved}/{keysToRemove.Count}");
+                
+                // 🔧 关键诊断：如果档案数量与活跃持仓数量不匹配，输出详细信息
+                if (totalProfilesAfter != activeCount)
+                {
+                    _logger.LogWarning($"⚠️ 档案数量不匹配! 档案数: {totalProfilesAfter}, 活跃持仓数: {activeCount}");
+                    _logger.LogWarning($"   剩余档案: [{string.Join(", ", _positionProfiles.Keys)}]");
+                    _logger.LogWarning($"   活跃持仓: [{string.Join(", ", activeKeys)}]");
                     
-                    _positionProfiles.Remove(key);
-                    
-                    // 🛡️ 清理该合约的所有冷却期记录
-                    _cooldownManager.ClearContractCooldowns(profile.Symbol, profile.PositionSide);
-                    
-                    // 🔄 清理统一状态管理器中的该合约状态
-                    _unifiedStateManager.ClearContractStates(profile.Symbol, profile.PositionSide, "平仓清理");
+                    // 🔧 进一步诊断：检查是否有档案的key格式异常
+                    foreach (var profileKey in _positionProfiles.Keys)
+                    {
+                        if (!activeKeys.Contains(profileKey))
+                        {
+                            var profile = _positionProfiles[profileKey];
+                            var expectedKey = GetPositionKey(profile.Symbol, profile.PositionSide);
+                            _logger.LogWarning($"   异常档案: {profileKey} (预期: {expectedKey})");
+                        }
+                    }
                 }
                 
                 // 🔧 新增：检测重新开仓的合约并清理历史状态
@@ -1745,33 +2333,31 @@ namespace BinanceFuturesTrader.Services
                                 Details = $"检测到重新开仓，清理{historicalRecords.Count}条历史执行记录"
                             };
                             _executionHistory.Add(reopenCleanupHistory);
-                            
-                            cleanupResults.Add($"🔄 重新开仓清理: {newKey} (清理{historicalRecords.Count}条历史记录)");
                         }
                     }
                 }
                 
-                // 🔧 增强：如果有清理动作，保存到持久化存储
-                if (keysToRemove.Any() || newPositionKeys.Any())
+                // 🔧 保存到持久化存储
+                try
                 {
-                    try
-                    {
-                        _persistenceService.SavePositionProfiles(_positionProfiles);
-                        _persistenceService.SaveExecutionHistory(_executionHistory);
-                        
-                        if (cleanupResults.Any())
-                        {
-                            _logger.LogInformation($"💾 历史状态清理完成，已保存到持久化存储:");
-                            foreach (var result in cleanupResults)
-                            {
-                                _logger.LogInformation($"   {result}");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ 保存清理结果到持久化存储失败");
-                    }
+                    _persistenceService.SavePositionProfiles(_positionProfiles);
+                    _persistenceService.SaveExecutionHistory(_executionHistory);
+                    _logger.LogDebug($"💾 档案清理结果已保存到持久化存储");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "💾 保存档案清理结果到持久化存储失败");
+                }
+                
+                // 📊 输出清理汇总
+                if (actuallyRemoved > 0)
+                {
+                    _logger.LogInformation($"🧹 档案清理完成: 移除 {actuallyRemoved} 个已平仓档案，剩余 {totalProfilesAfter} 个活跃档案");
+                    AddWorkLog("INFO", $"🧹 档案清理完成: 移除 {actuallyRemoved} 个已平仓档案");
+                }
+                else if (keysToRemove.Any())
+                {
+                    _logger.LogWarning($"⚠️ 档案清理异常: 发现 {keysToRemove.Count} 个待清理档案，但实际移除 0 个");
                 }
             }
         }
@@ -2131,6 +2717,29 @@ namespace BinanceFuturesTrader.Services
 
         protected virtual void OnMonitorStatusChanged(MonitorStatusChangedEventArgs e) => MonitorStatusChanged?.Invoke(this, e);
         protected virtual void OnExecutionCompleted(ExecutionResultEventArgs e) => ExecutionCompleted?.Invoke(this, e);
+        protected virtual void OnWorkLogAdded(WorkLogEventArgs e) => WorkLogAdded?.Invoke(this, e);
+
+        /// <summary>
+        /// 添加工作日志记录
+        /// </summary>
+        private void AddWorkLog(string level, string message)
+        {
+            try
+            {
+                var workLogEvent = new WorkLogEventArgs
+                {
+                    Level = level,
+                    Message = message,
+                    Time = DateTime.Now
+                };
+                
+                OnWorkLogAdded(workLogEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "发布工作日志时发生错误: {Message}", message);
+            }
+        }
 
         /// <summary>
         /// 释放资源
@@ -2149,6 +2758,7 @@ namespace BinanceFuturesTrader.Services
             finally
             {
                 _scanTimer?.Dispose();
+                _executionSemaphore?.Dispose(); // 🔧 释放执行信号量资源
                 _stopOrderManager?.Dispose(); // 🛡️ 释放止损单管理器资源
                 _cooldownManager?.Dispose(); // 🛡️ 释放冷却期管理器资源
                 _unifiedStateManager?.Dispose(); // 🔄 释放统一状态管理器资源
@@ -2190,7 +2800,9 @@ namespace BinanceFuturesTrader.Services
             
             try
             {
-                lock (_executionLock)
+                // 🔧 修复：使用SemaphoreSlim保护执行历史的访问
+                await _executionSemaphore.WaitAsync();
+                try
                 {
                     var recentHistory = _executionHistory
                         .OrderByDescending(h => h.ExecutionTime)
@@ -2210,6 +2822,10 @@ namespace BinanceFuturesTrader.Services
                             ErrorMessage = history.ErrorMessage
                         });
                     }
+                }
+                finally
+                {
+                    _executionSemaphore.Release();
                 }
             }
             catch (Exception ex)
@@ -2245,9 +2861,15 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                lock (_executionLock)
+                // 🔧 修复：使用SemaphoreSlim保护执行历史的访问（同步方式）
+                _executionSemaphore.Wait();
+                try
                 {
                     return _executionHistory.Count;
+                }
+                finally
+                {
+                    _executionSemaphore.Release();
                 }
             }
             catch
@@ -2318,5 +2940,12 @@ namespace BinanceFuturesTrader.Services
         public bool IsSuccess { get; set; }
         public string Message { get; set; } = "";
         public decimal PnlAtExecution { get; set; }
+    }
+
+    public class WorkLogEventArgs : EventArgs
+    {
+        public string Level { get; set; } = "";
+        public string Message { get; set; } = "";
+        public DateTime Time { get; set; } = DateTime.Now;
     }
 } 

@@ -594,14 +594,22 @@
                               Foreground="Gray" Margin="5,0"/>
                     
                     <!-- 第四组：自动监控功能 -->
-                    <Button Content="盯盘参数配置" Command="{Binding ConfigureAutoMonitorCommand}"
-                           Width="100" Height="28" FontSize="11" FontWeight="Bold"
-                           Background="#4A90E2" Foreground="White"
-                           ToolTip="配置自动盯盘参数：保本、推仓、止盈等设置"/>
-                    <Button Content="自动盯盘" Command="{Binding ViewMonitorStatusCommand}"
-                           Background="#2ECC71" Foreground="White" FontWeight="Bold"
-                           Width="80" Height="28" FontSize="11"
-                           ToolTip="打开自动盯盘控制面板，管理触发条件和执行状态"/>
+                    <Button Content="{Binding AutoMonitorButtonText}" Command="{Binding HandleAutoMonitorButtonCommand}"
+                           Width="80" Height="28" FontSize="12" FontWeight="Bold"
+                           Foreground="White"
+                           ToolTip="{Binding AutoMonitorStatusMessage}">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+                                <Setter Property="Background" Value="#2ECC71"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsAutoMonitorRunning}" Value="True">
+                                        <Setter Property="Background" Value="#E74C3C"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+
                     <Button Content="🔍调试" Command="{Binding DebugAutoMonitorStatusCommand}"
                            Background="#FF6B35" Foreground="White" FontWeight="Bold"
                            Width="60" Height="28" FontSize="10" Margin="5,0,0,0"

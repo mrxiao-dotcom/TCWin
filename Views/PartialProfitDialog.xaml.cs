@@ -776,10 +776,15 @@ namespace BinanceFuturesTrader.Views
                     
                     if (indexProperty != null && ratioProperty != null)
                     {
-                        var index = (int)indexProperty.GetValue(button.Tag);
-                        var ratio = (decimal)ratioProperty.GetValue(button.Tag);
+                        var indexValue = indexProperty.GetValue(button.Tag);
+                        var ratioValue = ratioProperty.GetValue(button.Tag);
                         
-                        if (index < _splitOrders.Count)
+                        if (indexValue != null && ratioValue != null)
+                        {
+                            var index = (int)indexValue;
+                            var ratio = (decimal)ratioValue;
+                            
+                            if (index < _splitOrders.Count)
                         {
                             var order = _splitOrders[index];
                             order.TargetProfit = Math.Round(order.CurrentProfit * ratio, 2);
@@ -792,6 +797,7 @@ namespace BinanceFuturesTrader.Views
                         }
                     }
                 }
+            }
             }
             catch (Exception ex)
             {

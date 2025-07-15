@@ -31,6 +31,9 @@ namespace BinanceFuturesTrader.ViewModels
         private readonly ILogger<MainViewModel> _logger;
         private readonly IServiceProvider _serviceProvider;
         private AutoMonitorService? _autoMonitorService;
+        
+        // 🔧 新增配置持久化服务
+        private readonly AutoMonitorConfigPersistenceService _configPersistenceService;
         #endregion
 
         #region 定时器
@@ -105,7 +108,7 @@ namespace BinanceFuturesTrader.ViewModels
         private bool _isAutoMonitorRunning = false;
 
         [ObservableProperty]
-        private string _autoMonitorButtonText = "盯盘参数配置";
+        private string _autoMonitorButtonText = "自动盯盘";
 
         [ObservableProperty]
         private string _autoMonitorButtonColor = "#4A90E2";
@@ -126,6 +129,17 @@ namespace BinanceFuturesTrader.ViewModels
         public AutoMonitorConfig? CurrentAutoMonitorConfig => _currentAutoMonitorConfig;
         
         /// <summary>
+        /// 设置当前自动监控配置
+        /// </summary>
+        /// <param name="config">配置对象</param>
+        public void SetCurrentAutoMonitorConfig(AutoMonitorConfig? config)
+        {
+            _currentAutoMonitorConfig = config;
+            OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+            _logger?.LogInformation($"已设置当前自动监控配置: {config?.Name ?? "null"}");
+        }
+        
+        /// <summary>
         /// 获取账户自动监控配置字典
         /// </summary>
         public IReadOnlyDictionary<string, AutoMonitorConfig> GetAccountAutoMonitorConfigs() 
@@ -141,6 +155,7 @@ namespace BinanceFuturesTrader.ViewModels
 
         #region 监控界面刷新事件
         public event EventHandler? AutoMonitorDashboardRefreshRequested;
+        public event EventHandler<ConfigurationSyncEventArgs>? ConfigurationSyncRequested;
 
         /// <summary>
         /// 通知监控界面刷新数据
@@ -157,6 +172,39 @@ namespace BinanceFuturesTrader.ViewModels
                 _logger.LogError(ex, "❌ 通知监控界面刷新时发生错误");
             }
         }
+
+        /// <summary>
+        /// 通知配置同步管理器处理配置变化
+        /// </summary>
+        protected void NotifyConfigurationSyncManager(AutoMonitorConfig config)
+        {
+            try
+            {
+                if (config == null) return;
+                
+                _logger.LogInformation($"通知配置同步管理器处理配置变化：{config.Name}");
+                
+                // 计算推仓和止盈阶梯数
+                var addPositionTiers = config.AddPositionConfig.IsEnabled ? 
+                    config.AddPositionConfig.Tiers.Count : 0;
+                var profitProtectionTiers = config.ProfitProtectionConfig.IsEnabled ? 
+                    config.ProfitProtectionConfig.Tiers.Count : 0;
+                
+                // 触发配置同步事件
+                ConfigurationSyncRequested?.Invoke(this, new ConfigurationSyncEventArgs
+                {
+                    AddPositionTierCount = addPositionTiers,
+                    ProfitProtectionTierCount = profitProtectionTiers,
+                    Config = config
+                });
+                
+                _logger.LogInformation($"配置同步事件已触发：推仓{addPositionTiers}阶梯，止盈{profitProtectionTiers}阶梯");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "通知配置同步管理器时发生异常");
+            }
+        }
         #endregion
 
         #region 构造函数
@@ -170,7 +218,8 @@ namespace BinanceFuturesTrader.ViewModels
             TradingSettingsService tradingSettingsService,
             RecentContractsService recentContractsService,
             ILogger<MainViewModel> logger,
-            IServiceProvider serviceProvider)
+            IServiceProvider serviceProvider,
+            AutoMonitorConfigPersistenceService configPersistenceService)
         {
             _binanceService = binanceService;
             _calculationService = calculationService;
@@ -179,14 +228,15 @@ namespace BinanceFuturesTrader.ViewModels
             _recentContractsService = recentContractsService;
             _logger = logger;
             _serviceProvider = serviceProvider;
+            _configPersistenceService = configPersistenceService;
             
-            // 初始化定时器
+            // 🔧 修改：适度优化定时器频率，保持实用性
             _priceTimer = new DispatcherTimer();
-            _priceTimer.Interval = TimeSpan.FromSeconds(2);
+            _priceTimer.Interval = TimeSpan.FromSeconds(5); // 调整到5秒
             _priceTimer.Tick += PriceTimer_Tick;
 
             _accountTimer = new DispatcherTimer();
-            _accountTimer.Interval = TimeSpan.FromSeconds(5);
+            _accountTimer.Interval = TimeSpan.FromSeconds(5); // 调整到5秒
             _accountTimer.Tick += AccountTimer_Tick;
 
             // 加载初始数据
@@ -205,6 +255,9 @@ namespace BinanceFuturesTrader.ViewModels
                 LoadAccounts();
                 LoadTradingSettings();
                 LoadRecentContracts();
+                
+                // 🔧 新增：加载自动盯盘配置
+                LoadAutoMonitorConfigs();
                 
                 _isInitializing = false;
                 
@@ -432,6 +485,36 @@ namespace BinanceFuturesTrader.ViewModels
                 _logger.LogError(ex, "保存最近合约失败");
             }
         }
+
+        /// <summary>
+        /// 🔧 新增：加载自动盯盘配置
+        /// </summary>
+        private void LoadAutoMonitorConfigs()
+        {
+            try
+            {
+                var configs = _configPersistenceService.LoadAccountConfigs();
+                _accountAutoMonitorConfigs.Clear();
+                
+                foreach (var kvp in configs)
+                {
+                    _accountAutoMonitorConfigs[kvp.Key] = kvp.Value;
+                }
+                
+                _logger.LogInformation($"💾 已加载 {configs.Count} 个账户的自动盯盘配置");
+                
+                // 如果当前有选中的账户，尝试加载对应的配置
+                if (SelectedAccount != null && _accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var currentConfig))
+                {
+                    _currentAutoMonitorConfig = currentConfig;
+                    _logger.LogInformation($"📋 已为当前账户 '{SelectedAccount.Name}' 加载配置: {currentConfig.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 加载自动盯盘配置失败");
+            }
+        }
         #endregion
 
         #region 定时器事件处理
@@ -557,7 +640,7 @@ namespace BinanceFuturesTrader.ViewModels
                             continue;
                             
                         // 关闭监控窗口和其他子窗口
-                        if (window is Views.AutoMonitorDashboard || 
+                        if (window is Views.AutoMonitor.AutoMonitorDashboard_Refactored || 
                             window.Owner == Application.Current.MainWindow)
                         {
                             childWindows.Add(window);
@@ -670,5 +753,26 @@ namespace BinanceFuturesTrader.ViewModels
             }
         }
         #endregion
+    }
+
+    /// <summary>
+    /// 配置同步事件参数
+    /// </summary>
+    public class ConfigurationSyncEventArgs : EventArgs
+    {
+        /// <summary>
+        /// 推仓阶梯数
+        /// </summary>
+        public int AddPositionTierCount { get; set; }
+
+        /// <summary>
+        /// 止盈阶梯数
+        /// </summary>
+        public int ProfitProtectionTierCount { get; set; }
+
+        /// <summary>
+        /// 配置对象
+        /// </summary>
+        public AutoMonitorConfig Config { get; set; }
     }
 } 

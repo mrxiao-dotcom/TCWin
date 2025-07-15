@@ -19,7 +19,7 @@ namespace BinanceFuturesTrader
             services.AddLogging(builder =>
             {
                 builder.AddConsole();
-                builder.SetMinimumLevel(LogLevel.Information);
+                                    builder.SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information);
             });
 
             // 注册服务（单例模式）
@@ -38,11 +38,16 @@ namespace BinanceFuturesTrader
             services.AddSingleton<IConfigValidationService, ConfigValidationService>();
             services.AddSingleton<AutoMonitorService>();
             services.AddSingleton<AutoMonitorPersistenceService>();
+            services.AddSingleton<AutoMonitorConfigPersistenceService>();
             
             // 注册事件处理器
             services.AddSingleton<LoggingEventHandler>();
             services.AddSingleton<UIUpdateEventHandler>();
             services.AddSingleton<StatisticsEventHandler>();
+            
+            // 🔧 Phase 9: 注册增强错误处理服务
+            services.AddSingleton<AutoMonitorErrorHandler>();
+            services.AddSingleton<EnhancedErrorHandler>();
 
             // 注册ViewModel（瞬态模式，每次创建新实例）
             services.AddTransient<MainViewModel>();

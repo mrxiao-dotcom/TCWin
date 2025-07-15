@@ -10,11 +10,11 @@ none
 false
 TRACE;RELEASE;NET;NET6_0;NETCOREAPP
 D:\CSharpProjects\TCWin\App.xaml
-12-459884835
+151348809548
 
-61-1731981364
+94230136424
 228-404541334
-MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\AutoMonitorConfigDialog.xaml;Views\AutoMonitorDashboard.xaml;Views\ClearAllConfirmationDialog.xaml;Views\ExecutionHistoryWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\OrderHistoryWindow.xaml;Views\PartialProfitDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;Views\TriggerConditionEditDialog.xaml;
+MainWindow.xaml;Views\AccountConfigWindow.xaml;Views\AutoMonitorConfigDialog.xaml;Views\AutoMonitorConfigWindowSimple.xaml;Views\AutoMonitorDashboard.xaml;Views\AutoMonitorViewWindow.xaml;Views\BaseConfigEditorWindow.xaml;Views\ClearAllConfirmationDialog.xaml;Views\ExecutionHistoryWindow.xaml;Views\OrderConfirmationDialog.xaml;Views\OrderHistoryWindow.xaml;Views\PartialProfitDialog.xaml;Views\ProfitProtectionDialog.xaml;Views\TrailingStopConfigWindow.xaml;Views\TriggerConditionEditDialog.xaml;
 
-False
+True
 

@@ -15,6 +15,7 @@ namespace BinanceFuturesTrader.Services
     {
         private readonly IBinanceService _binanceService;
         private readonly ILogger _logger;
+        private readonly SmartOrderService _smartOrderService;
         
         // 🔒 止损单操作信号量，确保同一时间只能有一个止损单操作
         private readonly SemaphoreSlim _stopOrderSemaphore = new(1, 1);
@@ -36,11 +37,16 @@ namespace BinanceFuturesTrader.Services
             _binanceService = binanceService ?? throw new ArgumentNullException(nameof(binanceService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             
+            // 🚀 初始化智能下单服务，提高止损单成功率
+            var smartOrderLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole())
+                .CreateLogger<SmartOrderService>();
+            _smartOrderService = new SmartOrderService(_binanceService, smartOrderLogger);
+            
             // 启动定时刷新（每30秒）
             _refreshTimer = new Timer(async _ => await RefreshStopOrderCacheAsync(), 
                 null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
             
-            _logger.LogInformation("🛡️ 止损单管理器已启动");
+            _logger.LogInformation("🛡️ 止损单管理器已启动（含智能下单功能）");
         }
 
         /// <summary>
@@ -86,8 +92,46 @@ namespace BinanceFuturesTrader.Services
                     }
                 }
                 
-                // 5. 创建新的止损单
-                var success = await _binanceService.PlaceOrderAsync(orderRequest);
+                // 5. 使用智能下单服务创建止损单
+                _logger.LogInformation($"🚀 使用智能下单服务创建止损单: {symbol}");
+                
+                // 根据止损单类型选择合适的下单方式
+                SmartOrderResult smartResult;
+                if (orderRequest.Type?.Contains("STOP") == true && orderRequest.Quantity > 0)
+                {
+                    // 使用智能分笔止损功能
+                    smartResult = await _smartOrderService.PlaceSmartStopLossAsync(
+                        symbol, 
+                        orderRequest.Quantity, 
+                        orderRequest.StopPrice, 
+                        orderRequest.Side, 
+                        orderRequest.ReduceOnly);
+                }
+                else
+                {
+                    // 使用普通智能下单
+                    smartResult = await _smartOrderService.PlaceSmartOrderAsync(orderRequest);
+                }
+                
+                var success = smartResult.IsSuccess;
+                
+                // 记录智能下单的详细信息
+                if (smartResult.IsSuccess)
+                {
+                    _logger.LogInformation($"✅ 智能止损单创建成功: {symbol} @{orderRequest.StopPrice:F4}, 类型: {stopOrderType}");
+                    foreach (var action in smartResult.Actions)
+                    {
+                        _logger.LogInformation($"   {action}");
+                    }
+                }
+                else
+                {
+                    _logger.LogError($"❌ 智能止损单创建失败: {symbol} - {smartResult.ErrorMessage}");
+                    foreach (var action in smartResult.Actions)
+                    {
+                        _logger.LogWarning($"   {action}");
+                    }
+                }
                 
                 if (success)
                 {
@@ -114,13 +158,10 @@ namespace BinanceFuturesTrader.Services
                     // 7. 更新统计信息
                     Statistics.TotalCreated++;
                     Statistics.LastCreateTime = DateTime.Now;
-                    
-                    _logger.LogInformation($"✅ 止损单创建成功: {symbol} @{orderRequest.StopPrice:F4}, 类型: {stopOrderType}");
                 }
                 else
                 {
                     Statistics.CreateFailures++;
-                    _logger.LogError($"❌ 止损单创建失败: {symbol}");
                 }
                 
                 return success;

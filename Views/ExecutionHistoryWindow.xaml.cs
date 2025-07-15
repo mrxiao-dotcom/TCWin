@@ -9,6 +9,7 @@ using System.Windows.Data;
 using Microsoft.Extensions.Logging;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
+using BinanceFuturesTrader.Views.AutoMonitor.Models;
 
 namespace BinanceFuturesTrader.Views
 {

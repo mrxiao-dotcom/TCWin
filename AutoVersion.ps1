@@ -1,215 +1,275 @@
-# ===================================================================
-# 自动版本管理脚本 - AutoVersion.ps1
-# 功能：自动升级版本号，维护版本历史记录
-# 作者：Trading Tools Team
-# ===================================================================
+# ============================================================================
+# Auto Version Upgrade Tool (AutoVersion.ps1)
+# Function: Automatically upgrade BinanceFuturesTrader project version numbers
+# Author: Trading Tools Team
+# Created: 2025-01-25
+# ============================================================================
 
 param(
-    [string]$ProjectFile = "BinanceFuturesTrader.csproj",
     [string]$VersionType = "patch",  # major, minor, patch
-    [string]$UpdateMessage = "",     # 可选的更新说明
-    [switch]$Interactive = $false    # 是否交互式输入更新内容
+    [string]$ProjectFile = "BinanceFuturesTrader.csproj",
+    [switch]$Preview,                # Preview mode, don't actually modify files
+    [switch]$Help                    # Show help information
 )
 
-# 颜色输出函数
+# Color output function
 function Write-ColorText {
-    param($Text, $Color = "White")
-    Write-Host $Text -ForegroundColor $Color
-}
-
-function Write-Success { param($Text) Write-ColorText "✅ $Text" "Green" }
-function Write-Info { param($Text) Write-ColorText "ℹ️ $Text" "Cyan" }
-function Write-Warning { param($Text) Write-ColorText "⚠️ $Text" "Yellow" }
-function Write-Error { param($Text) Write-ColorText "❌ $Text" "Red" }
-
-# 检查项目文件是否存在
-if (-not (Test-Path $ProjectFile)) {
-    Write-Error "Project file not found: $ProjectFile"
-    exit 1
-}
-
-Write-Info "Starting auto version management..."
-Write-Info "Project file: $ProjectFile"
-
-# 读取当前版本号
-$projectContent = Get-Content $ProjectFile -Raw
-$versionPattern = '<Version>([0-9]+)\.([0-9]+)\.?([0-9]*)</Version>'
-$assemblyVersionPattern = '<AssemblyVersion>([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)</AssemblyVersion>'
-
-$versionMatch = [regex]::Match($projectContent, $versionPattern)
-$assemblyMatch = [regex]::Match($projectContent, $assemblyVersionPattern)
-
-if (-not $versionMatch.Success) {
-    Write-Error "Cannot find version number in project file"
-    exit 1
-}
-
-# 解析当前版本
-$currentMajor = [int]$versionMatch.Groups[1].Value
-$currentMinor = [int]$versionMatch.Groups[2].Value
-$currentPatch = if ($versionMatch.Groups[3].Value) { [int]$versionMatch.Groups[3].Value } else { 0 }
-
-Write-Info "Current Version: $currentMajor.$currentMinor.$currentPatch"
-
-# 计算新版本号
-switch ($VersionType.ToLower()) {
-    "major" {
-        $newMajor = $currentMajor + 1
-        $newMinor = 0
-        $newPatch = 0
-    }
-    "minor" {
-        $newMajor = $currentMajor
-        $newMinor = $currentMinor + 1
-        $newPatch = 0
-    }
-    default {  # patch
-        $newMajor = $currentMajor
-        $newMinor = $currentMinor
-        $newPatch = $currentPatch + 1
-    }
-}
-
-$newVersion = "$newMajor.$newMinor.$newPatch"
-$newAssemblyVersion = "$newMajor.$newMinor.$newPatch.0"
-$newFileVersion = $newAssemblyVersion
-
-Write-Success "New version: $newVersion"
-
-# 交互式输入更新内容
-if ($Interactive -and -not $UpdateMessage) {
-    Write-ColorText "`n📝 Please enter update content:" "Yellow"
-    Write-ColorText "💡 Tip: You can input multiple lines, press Enter twice to finish" "Gray"
+    param(
+        [string]$Text,
+        [string]$Color = "White"
+    )
     
-    $updates = @()
-    $emptyLineCount = 0
+    $originalColor = $Host.UI.RawUI.ForegroundColor
+    try {
+        $Host.UI.RawUI.ForegroundColor = $Color
+        Write-Host $Text
+    } finally {
+        $Host.UI.RawUI.ForegroundColor = $originalColor
+    }
+}
+
+# Show help information
+function Show-Help {
+    Write-ColorText "Binance Futures Trader Version Upgrade Tool" "Cyan"
+    Write-Host ""
+    Write-Host "Usage:"
+    Write-Host "  .\AutoVersion.ps1 [Options]"
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -VersionType <type>    Version upgrade type:"
+    Write-Host "                         * major  - Major version (x.0.0)"
+    Write-Host "                         * minor  - Minor version (x.y.0)"
+    Write-Host "                         * patch  - Patch version (x.y.z) [default]"
+    Write-Host "  -ProjectFile <file>    Project file path [default: BinanceFuturesTrader.csproj]"
+    Write-Host "  -Preview              Preview mode, don't actually modify files"
+    Write-Host "  -Help                 Show this help information"
+    Write-Host ""
+    Write-Host "Examples:"
+    Write-Host "  .\AutoVersion.ps1                    # Upgrade patch version"
+    Write-Host "  .\AutoVersion.ps1 -VersionType minor # Upgrade minor version"
+    Write-Host "  .\AutoVersion.ps1 -Preview           # Preview upgrade results"
+    Write-Host ""
+}
+
+# Version class
+class Version {
+    [int]$Major
+    [int]$Minor
+    [int]$Patch
+    [int]$Build
     
-    while ($true) {
-        $line = Read-Host
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            $emptyLineCount++
-            if ($emptyLineCount -ge 2) { break }
-        } else {
-            $emptyLineCount = 0
-            if ($line.Trim() -ne "") {
-                $updates += "- $($line.Trim())"
+    Version([string]$versionString) {
+        $parts = $versionString.Split('.')
+        $this.Major = [int]$parts[0]
+        $this.Minor = if ($parts.Length -gt 1) { [int]$parts[1] } else { 0 }
+        $this.Patch = if ($parts.Length -gt 2) { [int]$parts[2] } else { 0 }
+        $this.Build = if ($parts.Length -gt 3) { [int]$parts[3] } else { 0 }
+    }
+    
+    [string] ToString() {
+        return "$($this.Major).$($this.Minor).$($this.Patch)"
+    }
+    
+    [string] ToAssemblyString() {
+        return "$($this.Major).$($this.Minor).$($this.Patch).$($this.Build)"
+    }
+    
+    [void] UpgradeMajor() {
+        $this.Major++
+        $this.Minor = 0
+        $this.Patch = 0
+    }
+    
+    [void] UpgradeMinor() {
+        $this.Minor++
+        $this.Patch = 0
+    }
+    
+    [void] UpgradePatch() {
+        $this.Patch++
+    }
+}
+
+# Read current version number
+function Get-CurrentVersion {
+    param([string]$ProjectPath)
+    
+    if (-not (Test-Path $ProjectPath)) {
+        throw "Project file does not exist: $ProjectPath"
+    }
+    
+    $content = Get-Content $ProjectPath -Raw -Encoding UTF8
+    
+    # Extract version information
+    $versionMatch = [regex]::Match($content, '<Version>([\d\.]+)</Version>')
+    $assemblyVersionMatch = [regex]::Match($content, '<AssemblyVersion>([\d\.]+)</AssemblyVersion>')
+    $fileVersionMatch = [regex]::Match($content, '<FileVersion>([\d\.]+)</FileVersion>')
+    
+    if (-not $versionMatch.Success) {
+        throw "Cannot find version information in project file"
+    }
+    
+    return @{
+        Version = $versionMatch.Groups[1].Value
+        AssemblyVersion = if ($assemblyVersionMatch.Success) { $assemblyVersionMatch.Groups[1].Value } else { $versionMatch.Groups[1].Value + ".0" }
+        FileVersion = if ($fileVersionMatch.Success) { $fileVersionMatch.Groups[1].Value } else { $versionMatch.Groups[1].Value + ".0" }
+    }
+}
+
+# Update version numbers in project file
+function Update-ProjectVersion {
+    param(
+        [string]$ProjectPath,
+        [Version]$NewVersion,
+        [bool]$DryRun = $false
+    )
+    
+    $content = Get-Content $ProjectPath -Raw -Encoding UTF8
+    $originalContent = $content
+    
+    # Update various version tags
+    $content = $content -replace '<Version>[\d\.]+</Version>', "<Version>$($NewVersion.ToString())</Version>"
+    $content = $content -replace '<AssemblyVersion>[\d\.]+</AssemblyVersion>', "<AssemblyVersion>$($NewVersion.ToAssemblyString())</AssemblyVersion>"
+    $content = $content -replace '<FileVersion>[\d\.]+</FileVersion>', "<FileVersion>$($NewVersion.ToAssemblyString())</FileVersion>"
+    
+    if ($DryRun) {
+        Write-ColorText "Preview Mode - The following changes will be made:" "Yellow"
+        Write-Host ""
+        Write-ColorText "File: $ProjectPath" "Gray"
+        
+        # Show change differences
+        $originalLines = $originalContent -split "`r?`n"
+        $newLines = $content -split "`r?`n"
+        
+        for ($i = 0; $i -lt $originalLines.Length; $i++) {
+            if ($originalLines[$i] -ne $newLines[$i]) {
+                Write-ColorText "- $($originalLines[$i])" "Red"
+                Write-ColorText "+ $($newLines[$i])" "Green"
             }
         }
+        Write-Host ""
+    } else {
+        # Actually write to file
+        [System.IO.File]::WriteAllText($ProjectPath, $content, [System.Text.Encoding]::UTF8)
+        Write-ColorText "Updated project file: $ProjectPath" "Green"
+    }
+}
+
+# Generate changelog entry
+function Generate-ChangelogEntry {
+    param([Version]$NewVersion, [string]$VersionType)
+    
+    $date = Get-Date -Format "yyyy-MM-dd"
+    $changeType = switch ($VersionType) {
+        "major" { "Major Update" }
+        "minor" { "Feature Update" }
+        "patch" { "Bug Fixes" }
+        default { "Version Update" }
     }
     
-    $UpdateMessage = $updates -join "`n"
-}
+    $entry = @"
 
-# 如果没有提供更新内容，使用默认内容
-if (-not $UpdateMessage) {
-    $UpdateMessage = "- Version update and code optimization"
-}
+## [$($NewVersion.ToString())] - $date
 
-# 更新项目文件中的版本号
-$newContent = $projectContent
-$newContent = $newContent -replace '<Version>[^<]+</Version>', "<Version>$newVersion</Version>"
-$newContent = $newContent -replace '<AssemblyVersion>[^<]+</AssemblyVersion>', "<AssemblyVersion>$newAssemblyVersion</AssemblyVersion>"
-$newContent = $newContent -replace '<FileVersion>[^<]+</FileVersion>', "<FileVersion>$newFileVersion</FileVersion>"
+### $changeType
+- Automatic version upgrade
+- Version type: $VersionType
 
-# 保存项目文件
-Set-Content $ProjectFile $newContent -Encoding UTF8
-Write-Success "Project file updated"
-
-# 更新版本历史文件
-$versionHistoryFile = "VERSION_HISTORY.md"
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-$versionEntry = @"
-
-## Version $newVersion
-**Release Date:** $timestamp  
-**Update Type:** $($VersionType.ToUpper())
-
-### 🚀 Update Content
-$UpdateMessage
-
-### 📊 Technical Info
-$("- AssemblyVersion: " + $newAssemblyVersion)
-$("- FileVersion: " + $newFileVersion)
-$("- BuildTime: " + $timestamp)
-
----
 "@
-
-# 如果版本历史文件不存在，创建它
-if (-not (Test-Path $versionHistoryFile)) {
-    $header = @"
-# 📋 Version History
-
-This file records all version update history of **Binance Futures Trader**.
-
----
-"@
-    Set-Content $versionHistoryFile $header -Encoding UTF8
-}
-
-# 将新版本信息插入到文件开头（在标题后）
-$existingContent = Get-Content $versionHistoryFile -Raw
-$headerEnd = $existingContent.IndexOf("---")
-if ($headerEnd -ge 0) {
-    $beforeHeader = $existingContent.Substring(0, $headerEnd + 3)
-    $afterHeader = $existingContent.Substring($headerEnd + 3)
-    $newHistoryContent = $beforeHeader + $versionEntry + $afterHeader
-} else {
-    $newHistoryContent = $existingContent + $versionEntry
-}
-
-Set-Content $versionHistoryFile $newHistoryContent -Encoding UTF8
-Write-Success "Version history updated: $versionHistoryFile"
-
-# 创建版本标签文件（供其他脚本使用）
-$versionInfoFile = "version.json"
-$versionInfo = @{
-    version = $newVersion
-    assemblyVersion = $newAssemblyVersion
-    fileVersion = $newFileVersion
-    releaseDate = $timestamp
-    updateType = $VersionType
-    updateMessage = $UpdateMessage
-    previousVersion = "$currentMajor.$currentMinor.$currentPatch"
-} | ConvertTo-Json -Depth 3
-
-Set-Content $versionInfoFile $versionInfo -Encoding UTF8
-Write-Success "Version info saved: $versionInfoFile"
-
-# 输出摘要
-Write-ColorText "`n🎉 Version upgrade completed!" "Green"
-Write-ColorText "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Gray"
-Write-ColorText "📦 Version: $currentMajor.$currentMinor.$currentPatch → $newVersion" "White"
-Write-ColorText "🏷️ Type: $($VersionType.ToUpper())" "White"
-Write-ColorText "📝 File: $ProjectFile" "White"
-Write-ColorText "📚 History: $versionHistoryFile" "White"
-Write-ColorText "ℹ️ Info: $versionInfoFile" "White"
-Write-ColorText "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Gray"
-
-# 询问是否立即编译
-$buildChoice = Read-Host "`n🔨 Build project now? (Y/n)"
-if ($buildChoice -ne "n" -and $buildChoice -ne "N") {
-    Write-Info "Starting build..."
-    & dotnet build $ProjectFile --configuration Release
     
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Build successful! New version ready 🚀"
-        
-        # 显示编译后的文件信息
-        $outputPath = "bin/Release/net6.0-windows"
-        if (Test-Path "$outputPath/BinanceFuturesTrader.exe") {
-            $fileInfo = Get-Item "$outputPath/BinanceFuturesTrader.exe"
-            $fileVersion = (Get-ItemProperty $fileInfo.FullName).VersionInfo.FileVersion
-            Write-Info "Output file: $($fileInfo.FullName)"
-            Write-Info "File version: $fileVersion"
-            Write-Info "File size: $([math]::Round($fileInfo.Length / 1KB, 2)) KB"
+    return $entry
+}
+
+# Main function
+function Main {
+    try {
+        # Show help
+        if ($Help) {
+            Show-Help
+            return
         }
-    } else {
-        Write-Error "Build failed, please check code"
+        
+        Write-ColorText "Binance Futures Trader Version Upgrade Tool" "Cyan"
+        Write-Host ""
+        
+        # Validate parameters
+        if ($VersionType -notmatch "^(major|minor|patch)$") {
+            Write-ColorText "Error: Invalid version type '$VersionType'. Please use major, minor, or patch." "Red"
+            Write-ColorText "Use -Help parameter for detailed help." "Yellow"
+            return
+        }
+        
+        # Check project file
+        if (-not (Test-Path $ProjectFile)) {
+            Write-ColorText "Error: Cannot find project file '$ProjectFile'" "Red"
+            return
+        }
+        
+        # Read current version
+        Write-ColorText "Reading current version information..." "Blue"
+        $currentVersionInfo = Get-CurrentVersion -ProjectPath $ProjectFile
+        $currentVersion = [Version]::new($currentVersionInfo.Version)
+        
+        Write-Host "Current version information:"
+        Write-Host "  * Version: $($currentVersionInfo.Version)"
+        Write-Host "  * AssemblyVersion: $($currentVersionInfo.AssemblyVersion)"
+        Write-Host "  * FileVersion: $($currentVersionInfo.FileVersion)"
+        Write-Host ""
+        
+        # Upgrade version number
+        $newVersion = [Version]::new($currentVersion.ToString())
+        switch ($VersionType) {
+            "major" { $newVersion.UpgradeMajor() }
+            "minor" { $newVersion.UpgradeMinor() }
+            "patch" { $newVersion.UpgradePatch() }
+        }
+        
+        # Show upgrade plan
+        Write-ColorText "Version upgrade plan:" "Blue"
+        Write-Host "  Upgrade type: $VersionType"
+        Write-ColorText "  Current version: $($currentVersion.ToString())" "Yellow"
+        Write-ColorText "  New version: $($newVersion.ToString())" "Green"
+        Write-Host ""
+        
+        if ($Preview) {
+            Write-ColorText "Preview mode enabled, files will not be actually modified" "Yellow"
+            Write-Host ""
+        }
+        
+        # Update project file
+        Write-ColorText "Updating project file..." "Blue"
+        Update-ProjectVersion -ProjectPath $ProjectFile -NewVersion $newVersion -DryRun $Preview
+        
+        # Generate changelog suggestion
+        if (-not $Preview) {
+            $changelogEntry = Generate-ChangelogEntry -NewVersion $newVersion -VersionType $VersionType
+            Write-Host ""
+            Write-ColorText "Suggested changelog entry:" "Blue"
+            Write-ColorText $changelogEntry "Gray"
+        }
+        
+        # Completion message
+        Write-Host ""
+        if ($Preview) {
+            Write-ColorText "Preview completed! Run without -Preview parameter to actually execute the upgrade." "Yellow"
+        } else {
+            Write-ColorText "Version upgrade completed!" "Green"
+            Write-Host ""
+            Write-ColorText "Next steps:" "Blue"
+            Write-Host "  1. Check the updated project file"
+            Write-Host "  2. Update CHANGELOG.md file"
+            Write-Host "  3. Commit version changes to version control"
+            Write-Host "  4. Create version tag: git tag v$($newVersion.ToString())"
+        }
+        
+    } catch {
+        Write-ColorText "Error: $($_.Exception.Message)" "Red"
+        if ($_.Exception.InnerException) {
+            Write-ColorText "Details: $($_.Exception.InnerException.Message)" "Red"
+        }
         exit 1
     }
-} else {
-    Write-Info "Version updated, please build manually"
 }
 
-Write-Success "Version management completed!" 
+# Run main function
+Main 

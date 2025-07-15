@@ -73,7 +73,7 @@ namespace BinanceFuturesTrader.Models
                 Name = $"智能配置（权益{accountEquity:F0}U）",
                 BreakEvenConfig = new AutoBreakEvenConfig
                 {
-                    TriggerProfitAmount = Math.Round(riskCapital * 0.1m, 0, MidpointRounding.AwayFromZero) // 四舍五入取整
+                    TriggerProfitAmount = Math.Round(riskCapital * 1.0m, 0, MidpointRounding.AwayFromZero) // 🔧 修改为1倍风险金
                 },
                 AddPositionConfig = new AutoAddPositionConfig
                 {
@@ -177,6 +177,13 @@ namespace BinanceFuturesTrader.Models
         public decimal StopLossRatio { get; set; }
         
         /// <summary>
+        /// 保盈金额（USDT）
+        /// 设置范围：负数（最小负一倍风险金）到正数（最大为当前推仓阶梯触发值）
+        /// 0表示保本止损，负数表示允许亏损，正数表示保护盈利
+        /// </summary>
+        public decimal ProfitProtectionAmount { get; set; } = 0m;
+        
+        /// <summary>
         /// 是否已触发
         /// </summary>
         public bool IsTriggered { get; set; } = false;
@@ -189,7 +196,7 @@ namespace BinanceFuturesTrader.Models
         /// <summary>
         /// 描述
         /// </summary>
-        public string Description => $"阶梯{TierIndex}: 盈利{TriggerProfitAmount:F2}U → 推仓{RiskMultiplier:F1}倍风险金, 止损{StopLossRatio * 100:F1}%";
+        public string Description => $"阶梯{TierIndex}: 盈利{TriggerProfitAmount:F2}U → 推仓{RiskMultiplier:F1}倍风险金, 止损{StopLossRatio * 100:F1}%, 保盈{ProfitProtectionAmount:F0}U";
     }
 
     /// <summary>
