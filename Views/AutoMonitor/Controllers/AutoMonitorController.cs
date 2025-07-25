@@ -60,47 +60,38 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
         {
             try
             {
-                _logger.LogInformation("🚀 开始启动自动盯盘监控");
-                await _loggingService.LogOperationAsync("🚀 正在启动自动盯盘监控...");
+                await _loggingService.LogOperationAsync("🚀 启动盯盘");
                 _uiStateModel.SetLoadingState();
 
-                await _loggingService.LogOperationAsync("🔧 检查配置...");
                 if (!await _configurationController.LoadConfigurationAsync())
                 {
-                    _logger.LogError("❌ 配置验证失败，无法启动监控");
                     await _loggingService.LogOperationAsync("❌ 配置验证失败，无法启动监控");
                     _uiStateModel.SetErrorState();
                     return false;
                 }
-                await _loggingService.LogOperationAsync("✅ 配置验证成功");
 
-                await _loggingService.LogOperationAsync("📊 正在加载合约配置...");
                 var loadResult = await LoadContractConfigurationsFromPositionsAsync();
                 if (!loadResult)
                 {
-                    _logger.LogError("❌ 加载合约配置失败，无法启动监控");
                     await _loggingService.LogOperationAsync("❌ 加载合约配置失败，无法启动监控");
                     _uiStateModel.SetErrorState();
                     return false;
                 }
 
-                await _loggingService.LogOperationAsync($"✅ 成功加载 {_dataModel.ContractMonitors.Count} 个合约配置");
-                await _loggingService.LogOperationAsync("🔄 初始化监控数据...");
+                await _loggingService.LogOperationAsync($"✅ 加载完毕 - {_dataModel.ContractMonitors.Count} 个合约配置");
                 await RefreshDataAsync();
 
                 var autoMonitorConfig = _mainViewModel?.CurrentAutoMonitorConfig;
                 if (autoMonitorConfig != null && _autoMonitorService != null)
                 {
-                    await _loggingService.LogOperationAsync("🔗 启动底层监控服务...");
+                    await _loggingService.LogOperationAsync($"📊 加载名称: {autoMonitorConfig.Name}");
                     var serviceStarted = await _autoMonitorService.StartMonitoringAsync(autoMonitorConfig);
                     if (!serviceStarted)
                     {
-                        _logger.LogError("❌ 启动底层监控服务失败");
                         await _loggingService.LogOperationAsync("❌ 启动底层监控服务失败");
                         _uiStateModel.SetErrorState();
                         return false;
                     }
-                    await _loggingService.LogOperationAsync("✅ 底层监控服务启动成功");
                 }
 
                 var startTime = DateTime.Now;
@@ -111,83 +102,17 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                 _dataModel.ScanCountdownDisplay = $"下次扫描: {nextScanTime:HH:mm:ss}";
                 _uiStateModel.SetMonitoringState();
 
-                await _loggingService.LogOperationAsync("⏰ 启动定时器...");
                 _timerController.StartAllTimers();
-                await _loggingService.LogOperationAsync("🔄 开始监控循环...");
                 StartMonitoringLoop();
 
-                await _loggingService.LogOperationAsync("🎉 ====== 监控启动成功 ======");
-                await _loggingService.LogOperationAsync($"📊 监控合约数量: {_dataModel.ContractMonitors.Count}");
-                await _loggingService.LogOperationAsync($"⏰ 扫描间隔: {_dataModel.ScanIntervalSeconds}秒");
-                await _loggingService.LogOperationAsync($"🔄 下次扫描时间: {nextScanTime:yyyy-MM-dd HH:mm:ss}");
-                await _loggingService.LogOperationAsync($"🚀 监控状态: {_dataModel.MonitorStatus}");
-                await _loggingService.LogOperationAsync($"📅 启动时间: {startTime:yyyy-MM-dd HH:mm:ss}");
-
-                if (_dataModel.ContractMonitors.Count > 0)
-                {
-                    await _loggingService.LogOperationAsync("📋 监控合约列表:");
-                    foreach (var contract in _dataModel.ContractMonitors)
-                    {
-                        var statusText = contract.IsEnabled ? "已启用" : "已禁用";
-                        await _loggingService.LogOperationAsync($"   • {contract.Symbol} {contract.PositionSide} - {statusText}");
-                    }
-                    
-                    await _loggingService.LogOperationAsync("");
-                    await _loggingService.LogOperationAsync("🎯 ====== 后台行动提醒 ======");
-                    await _loggingService.LogOperationAsync("📊 系统将持续监控持仓浮盈，当浮盈达到设定阈值时自动执行以下行动：");
-                    await _loggingService.LogOperationAsync("");
-                    
-                    foreach (var contract in _dataModel.ContractMonitors.Where(c => c.IsEnabled))
-                    {
-                        await _loggingService.LogOperationAsync($"🔹 合约 {contract.Symbol} {contract.PositionSide}:");
-                        
-                        // 保本条件
-                        var breakEvenCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
-                        if (breakEvenCondition != null)
-                        {
-                            var statusIcon = breakEvenCondition.Status == TriggerExecutionStatus.Executed ? "✅" : 
-                                           breakEvenCondition.Status == TriggerExecutionStatus.Executing ? "🔄" : "⏳";
-                            await _loggingService.LogOperationAsync($"   {statusIcon} 保本止损: 浮盈达到 {breakEvenCondition.TriggerPrice:F0}U 时设置保本止损委托");
-                        }
-                        
-                        // 推仓条件
-                        var addPositionConditions = contract.TriggerConditions.Where(c => c.Type == TriggerConditionType.AddPosition).OrderBy(c => c.TierIndex);
-                        foreach (var condition in addPositionConditions)
-                        {
-                            var statusIcon = condition.Status == TriggerExecutionStatus.Executed ? "✅" : 
-                                           condition.Status == TriggerExecutionStatus.Executing ? "🔄" : "⏳";
-                            await _loggingService.LogOperationAsync($"   {statusIcon} 推仓阶梯{condition.TierIndex}: 浮盈达到 {condition.TriggerPrice:F0}U 时执行风险加仓并设置新保本");
-                        }
-                        
-                        // 止盈条件
-                        var profitConditions = contract.TriggerConditions.Where(c => c.Type == TriggerConditionType.ProfitProtection).OrderBy(c => c.TierIndex);
-                        foreach (var condition in profitConditions)
-                        {
-                            var statusIcon = condition.Status == TriggerExecutionStatus.Executed ? "✅" : 
-                                           condition.Status == TriggerExecutionStatus.Executing ? "🔄" : "⏳";
-                            await _loggingService.LogOperationAsync($"   {statusIcon} 止盈阶梯{condition.TierIndex}: 浮盈达到 {condition.TriggerPrice:F0}U 时设置保护 {condition.KeepValue:F0}U 盈利的止损");
-                        }
-                        
-                        await _loggingService.LogOperationAsync("");
-                    }
-                    
-                    var totalConditions = _dataModel.ContractMonitors.SelectMany(c => c.TriggerConditions).Count();
-                    var pendingConditions = _dataModel.ContractMonitors.SelectMany(c => c.TriggerConditions).Count(c => c.Status == TriggerExecutionStatus.NotTriggered);
-                    var executedConditions = _dataModel.ContractMonitors.SelectMany(c => c.TriggerConditions).Count(c => c.Status == TriggerExecutionStatus.Executed);
-                    
-                    await _loggingService.LogOperationAsync($"📊 触发条件统计: 总计 {totalConditions} 个，待触发 {pendingConditions} 个，已执行 {executedConditions} 个");
-                    await _loggingService.LogOperationAsync($"⏰ 扫描频率: 每 {_dataModel.ScanIntervalSeconds} 秒检查一次浮盈状态");
-                    await _loggingService.LogOperationAsync($"🔔 状态变化: 触发时将自动更新状态为'执行中' → '已执行'");
-                }
-
-                await _loggingService.LogOperationAsync("🎯 监控系统现在正在运行，等待触发条件...");
+                await _loggingService.LogOperationAsync("✅ 启动盯盘成功");
                 _logger.LogInformation("✅ 自动盯盘监控启动成功");
                 return true;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 启动监控时发生异常");
-                await _loggingService.LogErrorAsync("❌ 启动监控失败", ex);
+                _logger.LogError(ex, "启动监控失败");
+                await _loggingService.LogErrorAsync("启动监控失败", ex);
                 _uiStateModel.SetErrorState();
                 return false;
             }
@@ -369,7 +294,8 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                     return;
                 }
 
-                var stateManager = _autoMonitorService.UnifiedStateManager;
+                // 🔧 简化版：从PositionProfiles获取执行状态
+                var positionProfiles = _autoMonitorService.GetPositionProfiles();
                 var statusUpdates = new List<(string symbol, string positionSide, string conditionType, int? tierIndex, TriggerExecutionStatus oldStatus, TriggerExecutionStatus newStatus)>();
 
                 // 🔧 修复：在UI线程中安全地访问集合
@@ -385,12 +311,17 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                         {
                             var symbol = contract.Symbol;
                             var positionSide = contract.PositionSide;
+                            var contractKey = $"{symbol}_{positionSide}";
+                            
+                            // 🔧 简化版：从PositionProfile获取状态
+                            var profile = positionProfiles.ContainsKey(contractKey) ? positionProfiles[contractKey] : null;
                             
                             // 检查并更新保本状态
                             var breakEvenCondition = contract.TriggerConditions.FirstOrDefault(c => c.Type == TriggerConditionType.BreakEven);
                             if (breakEvenCondition != null)
                             {
-                                var isExecuted = stateManager.IsExecuted(symbol, positionSide, ExecutionType.BreakEven);
+                                var isExecuted = profile?.TriggerRecords.ContainsKey("BreakEven") == true &&
+                                               profile.TriggerRecords["BreakEven"].IsExecuted;
                                 var newStatus = isExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
                                 
                                 if (breakEvenCondition.Status != newStatus)
@@ -411,7 +342,9 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                             foreach (var condition in addPositionConditions)
                             {
                                 var tierIndex = condition.TierIndex;
-                                var isExecuted = stateManager.IsExecuted(symbol, positionSide, ExecutionType.AddPosition, tierIndex);
+                                var triggerKey = $"AddPosition_{tierIndex}";
+                                var isExecuted = profile?.TriggerRecords.ContainsKey(triggerKey) == true &&
+                                               profile.TriggerRecords[triggerKey].IsExecuted;
                                 var newStatus = isExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
                                 
                                 if (condition.Status != newStatus)
@@ -432,7 +365,9 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                             foreach (var condition in profitConditions)
                             {
                                 var tierIndex = condition.TierIndex;
-                                var isExecuted = stateManager.IsExecuted(symbol, positionSide, ExecutionType.ProfitProtection, tierIndex);
+                                var triggerKey = $"ProfitProtection_{tierIndex}";
+                                var isExecuted = profile?.TriggerRecords.ContainsKey(triggerKey) == true &&
+                                               profile.TriggerRecords[triggerKey].IsExecuted;
                                 var newStatus = isExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered;
                                 
                                 if (condition.Status != newStatus)

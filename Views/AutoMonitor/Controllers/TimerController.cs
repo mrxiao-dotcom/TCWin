@@ -173,8 +173,10 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                 if (remaining < 0)
                 {
                     remaining = 0;
-                    // 重置下次扫描时间
-                    _dataModel.NextScanDateTime = DateTime.Now.AddSeconds(30);
+                    // 🔧 修复：重置下次扫描时间，使用正确的扫描间隔
+                    var scanInterval = _dataModel.ScanIntervalSeconds > 0 ? _dataModel.ScanIntervalSeconds : 30;
+                    _dataModel.NextScanDateTime = DateTime.Now.AddSeconds(scanInterval);
+                    _logger.LogDebug($"⏰ 重置倒计时，扫描间隔: {scanInterval}秒");
                 }
                 
                 var minutes = (int)remaining / 60;

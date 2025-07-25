@@ -26,17 +26,25 @@ namespace BinanceFuturesTrader.Views
 
         public ExecutionHistoryWindow(AutoMonitorService autoMonitorService, ILogger logger)
         {
-            InitializeComponent();
-            
-            _autoMonitorService = autoMonitorService ?? throw new ArgumentNullException(nameof(autoMonitorService));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            
-            _executionHistory = new ObservableCollection<ExecutionHistoryDisplayModel>();
-            _filteredHistory = new ObservableCollection<ExecutionHistoryDisplayModel>();
-            
-            InitializeWindow();
-            InitializeFilters();
-            LoadExecutionHistory();
+            try
+            {
+                InitializeComponent();
+                
+                _autoMonitorService = autoMonitorService ?? throw new ArgumentNullException(nameof(autoMonitorService));
+                _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+                
+                _executionHistory = new ObservableCollection<ExecutionHistoryDisplayModel>();
+                _filteredHistory = new ObservableCollection<ExecutionHistoryDisplayModel>();
+                
+                InitializeWindow();
+                InitializeFilters();
+                LoadExecutionHistory();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 执行历史窗口初始化失败");
+                MessageBox.Show($"执行历史窗口初始化失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void InitializeWindow()
@@ -135,6 +143,13 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                // 🔧 修复空对象错误：检查控件是否已初始化
+                if (SymbolFilterComboBox == null)
+                {
+                    _logger?.LogWarning("⚠️ SymbolFilterComboBox 控件未初始化，跳过更新");
+                    return;
+                }
+
                 var currentSelection = SymbolFilterComboBox.SelectedItem?.ToString();
                 
                 SymbolFilterComboBox.Items.Clear();
@@ -158,7 +173,7 @@ namespace BinanceFuturesTrader.Views
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 更新合约过滤选项失败");
+                _logger?.LogError(ex, "❌ 更新合约过滤选项失败");
             }
         }
 

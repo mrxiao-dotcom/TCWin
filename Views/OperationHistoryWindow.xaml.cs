@@ -34,15 +34,20 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
-                // 确保控件已完全初始化后再设置数据
-                if (HistoryDataGrid != null)
+                // 🔧 修复：增强控件检查和初始化
+                if (FindName("HistoryDataGrid") is DataGrid historyDataGrid)
                 {
-                    HistoryDataGrid.ItemsSource = _historyRecords;
+                    historyDataGrid.ItemsSource = _historyRecords;
+                }
+                else
+                {
+                    MessageBox.Show("无法找到历史数据表格控件", "控件错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
                 }
                 
-                if (HistoryDatePicker != null)
+                if (FindName("HistoryDatePicker") is DatePicker historyDatePicker)
                 {
-                    HistoryDatePicker.SelectedDate = _selectedDate;
+                    historyDatePicker.SelectedDate = _selectedDate;
                 }
                 
                 LoadHistoryForDate(_selectedDate);

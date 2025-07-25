@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows;
@@ -36,12 +37,16 @@ namespace BinanceFuturesTrader.Views
         private readonly ContractProfileService _profileService;
         private readonly TradingExecutionService _tradingExecutionService;
         private readonly AutoMonitorExecutionEngine _executionEngine;
+        private readonly ContractMonitoringStateService _stateService;
         private readonly DispatcherTimer _scanTimer;
         private readonly DispatcherTimer _logTimer;
+        private readonly DispatcherTimer _countdownTimer;
         
         private bool _isMonitoringActive = false;
         private DateTime _nextScanTime;
         private AutoMonitorConfig? _currentConfig;
+        private bool _needsConfigSync = false;
+        private bool _isUpdatingConfigSelection = false; // 🔧 新增：防止递归调用的标志
         
         #endregion
         
@@ -62,16 +67,16 @@ namespace BinanceFuturesTrader.Views
             RiskCapitalService? riskCapitalService = null,
             ContractProfileService? profileService = null,
             TradingExecutionService? tradingExecutionService = null,
-            AutoMonitorExecutionEngine? executionEngine = null)
+            AutoMonitorExecutionEngine? executionEngine = null,
+            ContractMonitoringStateService? stateService = null)
         {
             _autoMonitorService = autoMonitorService ?? throw new ArgumentNullException(nameof(autoMonitorService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _mainViewModel = mainViewModel ?? throw new ArgumentNullException(nameof(mainViewModel));
             _binanceService = binanceService ?? throw new ArgumentNullException(nameof(binanceService));
             
-            // 初始化配置管理器
-            _configManager = configManager ?? new BaseConfigManager(Microsoft.Extensions.Logging.LoggerFactory.Create(builder => 
-                builder.AddConsole()).CreateLogger<BaseConfigManager>());
+            // 🔧 修复：使用BaseConfigManager单例实例，确保全局配置统一
+            _configManager = BaseConfigManager.Instance;
             
             // 初始化风险金计算服务
             _riskCapitalService = riskCapitalService ?? new RiskCapitalService(Microsoft.Extensions.Logging.LoggerFactory.Create(builder => 
@@ -87,10 +92,19 @@ namespace BinanceFuturesTrader.Views
                 Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<TradingExecutionService>(),
                 _binanceService);
                 
-            // 初始化执行引擎
+            // 初始化持久化服务
+            var persistenceService = new AutoMonitorPersistenceService(
+                Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AutoMonitorPersistenceService>());
+                
+            // 🔧 新增：初始化统一状态服务（生成contract_monitoring_states.json）
+            _stateService = stateService ?? new ContractMonitoringStateService(
+                Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ContractMonitoringStateService>(),
+                BaseConfigManager.Instance);
+                
+            // 初始化执行引擎（传入状态服务）
             _executionEngine = executionEngine ?? new AutoMonitorExecutionEngine(
                 Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AutoMonitorExecutionEngine>(),
-                _tradingExecutionService, _profileService, _configManager);
+                _tradingExecutionService, _profileService, _configManager, persistenceService, null, _stateService); // 🔧【关键修复】传入状态服务
             
             InitializeComponent();
             
@@ -100,14 +114,36 @@ namespace BinanceFuturesTrader.Views
             // 绑定数据源
             ContractConfigDataGrid.ItemsSource = ContractConfigs;
             
-            // 初始化定时器
+            // 🔧 关键修复：订阅AutoMonitorService事件，确保能接收到诊断日志
+            try
+            {
+                            _autoMonitorService.WorkLogAdded += OnWorkLogAdded;
+            _autoMonitorService.MonitorStatusChanged += OnMonitorStatusChanged;
+            _autoMonitorService.ExecutionCompleted += OnExecutionCompleted;
+            _autoMonitorService.StatusUpdated += OnStatusUpdated; // 🔧 关键修复：订阅状态更新事件
+            _autoMonitorService.PositionChanged += OnPositionChanged; // 🔧 【重要新增】：订阅持仓变化事件
+                _logger.LogInformation("✅ 已订阅AutoMonitorService事件（包括StatusUpdated）");
+                AddLog("✅ 已订阅服务层事件，将显示详细诊断信息和状态更新");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 订阅AutoMonitorService事件失败");
+                AddLog($"❌ 订阅服务层事件失败: {ex.Message}");
+            }
+            
+            // 🗑️ 移除UI扫描定时器初始化
             _scanTimer = new DispatcherTimer();
-            _scanTimer.Tick += ScanTimer_Tick;
+            // _scanTimer.Tick += ScanTimer_Tick; // 已移除
             
             _logTimer = new DispatcherTimer();
             _logTimer.Interval = TimeSpan.FromSeconds(1);
             _logTimer.Tick += LogTimer_Tick;
             _logTimer.Start();
+            
+            // 🔧 新增：倒计时定时器，每秒更新一次
+            _countdownTimer = new DispatcherTimer();
+            _countdownTimer.Interval = TimeSpan.FromSeconds(1);
+            _countdownTimer.Tick += LogTimer_Tick; // 使用同一个方法
             
             // 创建默认配置
             CreateDefaultConfig();
@@ -118,7 +154,50 @@ namespace BinanceFuturesTrader.Views
             // 加载初始数据
             _ = LoadInitialDataAsync();
             
+            // 🔧 新增：订阅配置变更事件，确保实时更新下拉框
+            _configManager.ConfigurationChanged += OnConfigurationChanged;
+            
+            // 🔧 【重要修复】：订阅窗口Loaded事件，确保窗口显示时数据是最新的
+            this.Loaded += AutoMonitorConfigWindow_Loaded;
+            
             _logger.LogInformation("简化版自动盯盘配置窗口初始化完成");
+        }
+        
+        #endregion
+        
+        #region 事件处理方法
+        
+        /// <summary>
+        /// 窗口加载完成事件处理 - 确保显示最新数据
+        /// </summary>
+        private async void AutoMonitorConfigWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                AddLog("🔄 窗口加载完成，正在刷新最新数据...");
+                
+                // 🔧 【重要修复】：窗口加载完成后再次检查服务状态，确保状态同步
+                bool actualServiceStatus = _autoMonitorService?.IsRunning ?? false;
+                if (actualServiceStatus != _isMonitoringActive)
+                {
+                    AddLog($"🔄 检测到状态不同步，修正状态：服务运行={actualServiceStatus}, UI状态={_isMonitoringActive}");
+                    UpdateMonitoringStatus(actualServiceStatus);
+                    _isMonitoringActive = actualServiceStatus;
+                    
+                    // 同时通知主视图模型更新状态
+                    NotifyMainViewModel(actualServiceStatus);
+                }
+                
+                // 强制刷新最新的持仓数据
+                await RefreshPositionDataAsync();
+                
+                AddLog("✅ 窗口数据刷新完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "窗口加载时刷新数据失败");
+                AddLog($"❌ 窗口数据刷新失败: {ex.Message}");
+            }
         }
         
         #endregion
@@ -130,8 +209,21 @@ namespace BinanceFuturesTrader.Views
             // 设置窗口标题
             Title = "自动盯盘管理面板";
             
-            // 初始化状态
-            UpdateMonitoringStatus(false);
+            // 🔧 【重要修复】：初始化时检查实际的服务运行状态，而不是假设为停止状态
+            bool actualServiceStatus = _autoMonitorService?.IsRunning ?? false;
+            UpdateMonitoringStatus(actualServiceStatus);
+            
+            if (actualServiceStatus)
+            {
+                _isMonitoringActive = true;
+                AddLog("🔄 检测到后台监控服务正在运行，已同步UI状态");
+                AddLog("💡 可以直接查看监控状态或点击'停止盯盘'按钮停止监控");
+            }
+            else
+            {
+                _isMonitoringActive = false;
+                AddLog("🔴 检测到监控服务未运行");
+            }
             
             // 添加日志
             AddLog("系统启动完成，等待用户操作");
@@ -148,6 +240,14 @@ namespace BinanceFuturesTrader.Views
                 // 刷新风险金额显示
                 UpdateRiskCapitalDisplay();
                 
+                // 🔧 关键修复：自动加载用户之前的持仓合约配置
+                await LoadExistingContractConfigsAsync();
+                
+                // 🔧 【重要修复】：窗口打开时立即刷新最新持仓数据
+                AddLog("🔄 正在刷新最新持仓数据...");
+                await RefreshPositionDataAsync();
+                AddLog("✅ 最新持仓数据刷新完成");
+                
                 // 🔧 新增：检查并修复历史记录持久化
                 await CheckAndFixExecutionHistoryPersistence();
                 
@@ -157,6 +257,110 @@ namespace BinanceFuturesTrader.Views
             {
                 _logger.LogError(ex, "初始数据加载失败");
                 AddLog($"❌ 初始数据加载失败: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 关键修复：自动加载用户之前的持仓合约配置
+        /// </summary>
+        private async Task LoadExistingContractConfigsAsync()
+        {
+            try
+            {
+                AddLog("🔄 正在加载用户之前的合约配置...");
+                
+                // 1. 优先从保存的文件中加载合约配置
+                var contractConfigsFilePath = GetContractConfigsFilePath();
+                if (File.Exists(contractConfigsFilePath))
+                {
+                    var jsonContent = await File.ReadAllTextAsync(contractConfigsFilePath);
+                    if (!string.IsNullOrEmpty(jsonContent))
+                    {
+                        var savedConfigs = JsonSerializer.Deserialize<List<ContractConfigViewModel>>(jsonContent);
+                        if (savedConfigs?.Count > 0)
+                        {
+                            AddLog($"📂 发现已保存的合约配置 {savedConfigs.Count} 个，正在加载...");
+                            
+                            // 在UI线程中更新合约配置
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                ContractConfigs.Clear();
+                                foreach (var config in savedConfigs)
+                                {
+                                    ContractConfigs.Add(config);
+                                }
+                            });
+                            
+                            AddLog($"✅ 已加载 {savedConfigs.Count} 个用户之前的合约配置");
+                            return;
+                        }
+                    }
+                }
+                
+                // 2. 如果没有保存的配置，检查是否有活跃持仓需要生成配置
+                if (_currentConfig != null)
+                {
+                    AddLog("🔄 未找到保存的配置，检查当前持仓...");
+                    
+                    var positions = await _binanceService.GetPositionsAsync();
+                    var activePositions = positions.Where(p => p.PositionAmt != 0).ToList();
+                    
+                    if (activePositions.Count > 0)
+                    {
+                        AddLog($"📈 发现 {activePositions.Count} 个活跃持仓，自动生成合约配置...");
+                        
+                        // 确保活跃持仓都有档案
+                        await CreateProfilesForActivePositions(activePositions);
+                        
+                        // 为活跃持仓生成合约配置
+                        var newConfigs = new List<ContractConfigViewModel>();
+                        foreach (var position in activePositions)
+                        {
+                            var contractName = $"{position.Symbol}_{(position.PositionAmt > 0 ? "LONG" : "SHORT")}";
+                            var profile = await CreateProfileAsync(position, _currentConfig.Name);
+                            
+                            var config = new ContractConfigViewModel
+                            {
+                                ContractName = contractName,
+                                CurrentPnl = position.UnrealizedProfit,
+                                UpdateTime = DateTime.Now.ToString("HH:mm:ss")
+                            };
+                            
+                            // 从基础配置和档案填充配置数据
+                            PopulateConfigFromBaseConfigAndProfile(config, _currentConfig, profile, position);
+                            
+                            newConfigs.Add(config);
+                        }
+                        
+                        // 在UI线程中更新合约配置
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            ContractConfigs.Clear();
+                            foreach (var config in newConfigs)
+                            {
+                                ContractConfigs.Add(config);
+                            }
+                        });
+                        
+                        AddLog($"✅ 已为 {activePositions.Count} 个持仓生成合约配置");
+                        
+                        // 保存新生成的配置
+                        await SaveContractConfigToFileAsync(newConfigs);
+                    }
+                    else
+                    {
+                        AddLog("📝 当前无活跃持仓，等待用户操作");
+                    }
+                }
+                else
+                {
+                    AddLog("❌ 无基础配置，无法生成合约配置");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "加载合约配置失败");
+                AddLog($"❌ 加载合约配置失败: {ex.Message}");
             }
         }
         
@@ -283,6 +487,135 @@ namespace BinanceFuturesTrader.Views
                 AddLog($"❌ 测试历史记录持久化机制失败: {ex.Message}");
                 _logger.LogError(ex, "测试历史记录持久化机制失败");
             }
+            
+            await Task.CompletedTask; // 🔧 修复异步方法警告
+        }
+        
+        #endregion
+        
+        #region 配置变更事件处理
+        
+        private bool _isHandlingConfigurationChange = false; // 🔧 防止递归标志
+        
+        /// <summary>
+        /// 🔧 配置变更事件处理器 - 自动刷新下拉框（防止递归）
+        /// </summary>
+        private void OnConfigurationChanged(object? sender, ConfigurationChangedEventArgs e)
+        {
+            try
+            {
+                // 🔧 防止递归调用
+                if (_isHandlingConfigurationChange)
+                {
+                    _logger.LogDebug("⚠️ 跳过递归的配置变更事件处理");
+                    return;
+                }
+                
+                _isHandlingConfigurationChange = true;
+                
+                // 在UI线程中更新下拉框
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    try
+                    {
+                        AddLog($"🔔 检测到配置变更: {e.ChangeType} - {e.Configuration?.Name}");
+                        
+                        // 🔧 修复：直接更新下拉框，不调用LoadAvailableConfigs避免递归
+                        RefreshConfigurationDropdownOnly();
+                        
+                        // 如果当前没有选中的配置或者选中的配置被删除，自动选择第一个配置
+                        if (_currentConfig == null || 
+                            (e.ChangeType == ConfigChangeType.Deleted && e.Configuration?.Name == _currentConfig.Name))
+                        {
+                            var firstConfig = _configManager.Configurations.FirstOrDefault();
+                            if (firstConfig != null)
+                            {
+                                _currentConfig = firstConfig;
+                                
+                                // 🔧 使用标志位防止递归调用
+                                _isUpdatingConfigSelection = true;
+                                try
+                                {
+                                ConfigSelectionComboBox.SelectedItem = firstConfig;
+                                }
+                                finally
+                                {
+                                    _isUpdatingConfigSelection = false;
+                                }
+                                
+                                AddLog($"✅ 自动选择配置: {firstConfig.Name}");
+                            }
+                        }
+                        // 如果是更新当前配置，刷新选中项
+                        else if (e.ChangeType == ConfigChangeType.Updated && e.Configuration?.Name == _currentConfig?.Name)
+                        {
+                            var updatedConfig = _configManager.Configurations.FirstOrDefault(c => c.Name == e.Configuration.Name);
+                            if (updatedConfig != null)
+                            {
+                                _currentConfig = updatedConfig;
+                                
+                                // 🔧 使用标志位防止递归调用
+                                _isUpdatingConfigSelection = true;
+                                try
+                                {
+                                ConfigSelectionComboBox.SelectedItem = updatedConfig;
+                                }
+                                finally
+                                {
+                                    _isUpdatingConfigSelection = false;
+                                }
+                                
+                                AddLog($"✅ 已刷新当前配置: {updatedConfig.Name}");
+                            }
+                        }
+                        
+                        AddLog("✅ 配置下拉框已自动刷新");
+                    }
+                    finally
+                    {
+                        _isHandlingConfigurationChange = false;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "配置变更事件处理失败");
+                AddLog($"❌ 配置变更事件处理失败: {ex.Message}");
+                _isHandlingConfigurationChange = false;
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 仅刷新配置下拉框，不触发RefreshConfigurations避免递归
+        /// </summary>
+        private void RefreshConfigurationDropdownOnly()
+        {
+            try
+            {
+                // 直接从已加载的配置更新下拉框，不重新加载文件
+                var availableConfigs = _configManager.Configurations.ToList();
+                
+                if (ConfigSelectionComboBox != null)
+                {
+                    ConfigSelectionComboBox.ItemsSource = availableConfigs;
+                    
+                    // 保持当前选中项
+                    if (_currentConfig != null)
+                    {
+                        var selectedConfig = availableConfigs.FirstOrDefault(c => c.Name == _currentConfig.Name);
+                        if (selectedConfig != null)
+                        {
+                            ConfigSelectionComboBox.SelectedItem = selectedConfig;
+                        }
+                    }
+                }
+                
+                _logger.LogDebug($"🔄 已刷新配置下拉框：{availableConfigs.Count} 个配置");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "刷新配置下拉框失败");
+            }
         }
         
         #endregion
@@ -336,9 +669,20 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
-                AddLog("手动刷新数据...");
+                AddLog("🔄 手动刷新数据和配置...");
+                
+                // 🔧 新增：刷新基础配置参数
+                AddLog("📋 重新加载基础配置参数...");
+                RefreshCurrentConfig();
+                
+                // 等待配置刷新完成
+                await Task.Delay(500);
+                
+                // 刷新持仓数据
+                AddLog("📊 刷新持仓数据...");
                 await RefreshPositionDataAsync();
-                AddLog("数据刷新完成");
+                
+                AddLog("✅ 数据和配置刷新完成");
             }
             catch (Exception ex)
             {
@@ -522,7 +866,30 @@ namespace BinanceFuturesTrader.Views
                     return;
                 }
                 
-                // 启动服务
+                // 🔧 关键修复：启动前先创建档案
+                if (_currentConfig != null)
+                {
+                    AddLog("📊 启动前检查和创建持仓档案...");
+                    
+                    // 获取当前持仓
+                    var positions = await _binanceService.GetPositionsAsync();
+                    var activePositions = positions.Where(p => p.PositionAmt != 0).ToList();
+                    
+                    AddLog($"📊 发现 {activePositions.Count} 个活跃持仓");
+                    
+                    // 🚨 重要修复：不在UI层创建档案，让服务层在InitializePositionProfilesAsync中处理
+                    // 这样避免双重档案系统不同步的问题
+                    if (activePositions.Any())
+                    {
+                        AddLog($"📝 发现活跃持仓，服务层将自动创建档案");
+                    }
+                    else
+                    {
+                        AddLog("💤 当前无活跃持仓，等待新持仓出现");
+                    }
+                }
+                
+                // 🔧 关键修改：只启动服务，不启动UI定时器
                 if (_currentConfig != null)
                 {
                     _currentConfig.ScanIntervalSeconds = scanInterval;
@@ -531,11 +898,34 @@ namespace BinanceFuturesTrader.Views
                     if (success)
                     {
                         _isMonitoringActive = true;
-                        _scanTimer.Interval = TimeSpan.FromSeconds(scanInterval);
-                        _scanTimer.Start();
+                        // 🗑️ 移除UI定时器启动：_scanTimer.Start();
+                        
+                        // 🔧 状态更新已统一到UpdateMonitoringStatus方法中处理
+                        
+                        // 🔧 修复：正确初始化下次扫描时间
+                        _nextScanTime = DateTime.Now.AddSeconds(scanInterval);
+                        AddLog($"⏰ 倒计时初始化，下次扫描: {_nextScanTime:HH:mm:ss}");
                         
                         UpdateMonitoringStatus(true);
-                        AddLog("✅ 自动盯盘监控已启动");
+                        AddLog("✅ 自动盯盘监控已启动 (服务层执行)");
+                        
+                        // 🔧 重要修复：启动成功后等待服务层初始化完成并检查档案状态
+                        AddLog("⏳ 等待服务层初始化档案...");
+                        await Task.Delay(3000); // 等待服务完全初始化档案
+                        
+                        var finalProfileCount = _autoMonitorService?.GetActiveProfileCount() ?? 0;
+                        AddLog($"📊 监控启动完成，当前档案数: {finalProfileCount}");
+                        
+                        if (finalProfileCount == 0)
+                        {
+                            AddLog("⚠️ 警告：服务层档案数为0，这可能表示初始化失败");
+                            AddLog("💡 建议检查：1) API连接 2) 持仓是否存在 3) 网络连接");
+                            AddLog("🔄 系统将继续运行，如有新持仓会自动开始监控");
+                        }
+                        else
+                        {
+                            AddLog($"✅ 档案初始化成功，开始监控 {finalProfileCount} 个持仓");
+                        }
                         
                         // 通知主界面更新按钮状态
                         NotifyMainViewModel(true);
@@ -563,10 +953,13 @@ namespace BinanceFuturesTrader.Views
             {
                 AddLog("⏹️ 正在停止自动盯盘监控...");
                 
-                _scanTimer.Stop();
+                // 🗑️ 移除UI定时器停止：_scanTimer.Stop();
                 await _autoMonitorService.StopMonitoringAsync();
                 
                 _isMonitoringActive = false;
+                
+                // 🔧 状态更新已统一到UpdateMonitoringStatus方法中处理
+                
                 UpdateMonitoringStatus(false);
                 AddLog("✅ 自动盯盘监控已停止");
                 
@@ -589,9 +982,27 @@ namespace BinanceFuturesTrader.Views
             StartStopButton.Background = isActive ? Brushes.Red : Brushes.Green;
             StartStopButton.IsEnabled = true; // 重新启用按钮
             
-            // 更新状态文本
+            // 🔧 【重要修复】：同时更新监控状态文本和状态信息文本
+            MonitorStatusText.Text = isActive ? "运行中" : "未启动";
+            MonitorStatusText.Foreground = isActive ? Brushes.Green : Brushes.Gray;
+            
             StatusInfoText.Text = isActive ? "🟢 监控运行中" : "🔴 监控已停止";
             StatusInfoText.Foreground = isActive ? Brushes.Green : Brushes.Red;
+            
+            // 🔧 【重要修复】：同时更新倒计时相关控件的可见性
+            if (isActive)
+            {
+                CountdownLabelText.Visibility = Visibility.Visible;
+                CountdownTimerText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                CountdownLabelText.Visibility = Visibility.Collapsed;
+                CountdownTimerText.Visibility = Visibility.Collapsed;
+            }
+            
+            // 🔧 更新监控信息提示
+            UpdateMonitorInfoText();
         }
         
         private void NotifyMainViewModel(bool isActive)
@@ -616,30 +1027,45 @@ namespace BinanceFuturesTrader.Views
                 _logger.LogError(ex, "通知主界面更新状态失败");
             }
         }
+
+        /// <summary>
+        /// 更新监控状态提示信息
+        /// </summary>
+        private void UpdateMonitorInfoText()
+        {
+            try
+            {
+                if (_currentConfig != null)
+                {
+                    if (_isMonitoringActive)
+                    {
+                        MonitorInfoText.Text = $"正在使用配置：{_currentConfig.Name}";
+                        MonitorInfoText.Foreground = new SolidColorBrush(Colors.Green);
+                    }
+                    else
+                    {
+                        MonitorInfoText.Text = $"当前选择配置：{_currentConfig.Name}，点击启动开始监控";
+                        MonitorInfoText.Foreground = new SolidColorBrush(Colors.DarkBlue);
+                    }
+                }
+                else
+                {
+                    MonitorInfoText.Text = "请选择基础配置并启动监控";
+                    MonitorInfoText.Foreground = new SolidColorBrush(Colors.Gray);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "更新监控信息提示失败");
+            }
+        }
         
         #endregion
         
         #region 定时器事件
         
-        private void ScanTimer_Tick(object sender, EventArgs e)
-        {
-            try
-            {
-                if (_isMonitoringActive && _currentConfig != null)
-                {
-                    _nextScanTime = DateTime.Now.AddSeconds(_currentConfig.ScanIntervalSeconds);
-                    AddLog($"🔄 扫描开始 - 下次扫描时间: {_nextScanTime:HH:mm:ss}");
-                    
-                    // 这里应该触发实际的扫描逻辑
-                    _ = Task.Run(async () => await PerformScanAsync());
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "扫描定时器异常");
-                AddLog($"❌ 扫描异常: {ex.Message}");
-            }
-        }
+        // 🗑️ 已移除：UI层扫描定时器，统一使用服务层扫描
+        // private void ScanTimer_Tick(object sender, EventArgs e) - 已删除
         
         private void LogTimer_Tick(object sender, EventArgs e)
         {
@@ -650,17 +1076,164 @@ namespace BinanceFuturesTrader.Views
                     var remaining = (_nextScanTime - DateTime.Now).TotalSeconds;
                     if (remaining > 0)
                     {
-                        StatusInfoText.Text = $"🟢 监控运行中 - 下次扫描: {(int)remaining}秒";
+                        StatusInfoText.Text = $"🟢 监控运行中";
+                        // 🔧 新增：更新专门的倒计时显示
+                        CountdownTimerText.Text = $"{(int)remaining}秒";
+                        CountdownTimerText.Foreground = new SolidColorBrush(Colors.Orange);
                     }
                     else
                     {
-                        StatusInfoText.Text = "🟢 监控运行中 - 扫描中...";
+                        StatusInfoText.Text = "🟢 监控运行中";
+                        // 🔧 修复：显示扫描状态并重置下次扫描时间
+                        CountdownTimerText.Text = "扫描中...";
+                        CountdownTimerText.Foreground = new SolidColorBrush(Colors.Green);
+                        
+                        // 🔧 关键修复：重置下次扫描时间，避免倒计时一直显示"扫描中"
+                        var scanInterval = _currentConfig?.ScanIntervalSeconds ?? 5;
+                        if (remaining < -scanInterval) // 如果倒计时已经很久了，立即重置
+                        {
+                            _nextScanTime = DateTime.Now.AddSeconds(scanInterval);
+                            AddLog($"⏰ 重置扫描倒计时 (间隔: {scanInterval}秒)");
+                        }
                     }
+                }
+                else
+                {
+                    StatusInfoText.Text = "❌ 监控已停止";
+                    CountdownTimerText.Text = "--";
+                    CountdownTimerText.Foreground = new SolidColorBrush(Colors.Gray);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "日志定时器异常");
+            }
+        }
+        
+        #endregion
+        
+        #region AutoMonitorService事件处理
+        
+        /// <summary>
+        /// 处理服务层工作日志事件
+        /// </summary>
+        private void OnWorkLogAdded(object? sender, BinanceFuturesTrader.Models.WorkLogEventArgs e)
+        {
+            try
+            {
+                // 直接使用现有的AddLog方法，确保服务层的诊断日志能显示在UI中
+                AddLog($"[{e.Level}] {e.Message}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理工作日志事件时发生错误");
+            }
+        }
+
+        /// <summary>
+        /// 处理监控状态变化事件
+        /// </summary>
+        private void OnMonitorStatusChanged(object? sender, BinanceFuturesTrader.Models.MonitorStatusChangedEventArgs e)
+        {
+            try
+            {
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    // 更新监控状态
+                    UpdateMonitoringStatus(e.IsRunning);
+                    
+                    // 记录状态变化日志
+                    AddLog($"🔄 监控状态变更: {(e.IsRunning ? "启动" : "停止")} - {e.Message}");
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理监控状态变化事件时发生错误");
+            }
+        }
+
+        /// <summary>
+        /// 处理执行完成事件
+        /// </summary>
+        private void OnExecutionCompleted(object? sender, BinanceFuturesTrader.Models.ExecutionResultEventArgs e)
+        {
+            try
+            {
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    // 记录执行结果日志
+                    var statusIcon = e.IsSuccess ? "✅" : "❌";
+                    var resultText = e.IsSuccess ? "成功" : "失败";
+                    AddLog($"{statusIcon} {e.ExecutionType} {resultText}: {e.Symbol} (浮盈: {e.PnlAtExecution:F1}U) - {e.Message}");
+                    
+                    // 🔧 关键修复：执行成功后立即更新合约配置表格中的状态
+                    if (e.IsSuccess)
+                    {
+                        UpdateContractExecutionStatus(e.Symbol, e.ExecutionType);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理执行完成事件时发生错误");
+            }
+        }
+        
+        /// <summary>
+        /// 更新合约执行状态（推仓阶梯状态）
+        /// </summary>
+        private void UpdateContractExecutionStatus(string symbol, string executionType)
+        {
+            try
+            {
+                // 解析执行类型，提取阶梯信息
+                if (!executionType.Contains("推仓阶梯"))
+                {
+                    return; // 不是推仓阶梯执行，不处理
+                }
+                
+                // 提取阶梯号：从"推仓阶梯1"中提取"1"
+                var tierMatch = System.Text.RegularExpressions.Regex.Match(executionType, @"推仓阶梯(\d+)");
+                if (!tierMatch.Success)
+                {
+                    AddLog($"⚠️ 无法解析推仓阶梯号: {executionType}");
+                    return;
+                }
+                
+                int tierIndex = int.Parse(tierMatch.Groups[1].Value);
+                
+                // 查找所有可能的合约配置匹配（LONG或SHORT）
+                var matchingConfigs = ContractConfigs.Where(c => c.ContractName.StartsWith(symbol)).ToList();
+                
+                foreach (var config in matchingConfigs)
+                {
+                    // 更新对应阶梯的状态为"√"
+                    string pushKey = $"Push{tierIndex}";
+                    var currentValue = config.GetDynamicData(pushKey);
+                    
+                    if (!string.IsNullOrEmpty(currentValue))
+                    {
+                        // 解析当前值，保留触发金额，更新状态
+                        var parts = currentValue.Split('|');
+                        if (parts.Length >= 2)
+                        {
+                            var triggerAmount = parts[0].Trim();
+                            var newValue = $"{triggerAmount} | √";
+                            config.SetDynamicData(pushKey, newValue, "Green", true);
+                            AddLog($"✅ 推仓阶梯{tierIndex}状态已更新: {config.ContractName} = √");
+                        }
+                    }
+                }
+                
+                // 刷新DataGrid显示
+                ContractConfigDataGrid.Items.Refresh();
+                
+                AddLog($"🔄 推仓状态更新完成: {symbol} 阶梯{tierIndex}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"更新合约执行状态失败: {symbol} {executionType}");
+                AddLog($"❌ 更新执行状态失败: {ex.Message}");
             }
         }
         
@@ -727,6 +1300,26 @@ namespace BinanceFuturesTrader.Views
                 
                 // 清理已平仓的合约档案
                 await CleanupClosedPositionsAsync(activePositions);
+                
+                // 🔧 【关键修复】同步所有合约配置到contract_monitoring_states.json文件
+                try
+                {
+                    if (_stateService != null && !string.IsNullOrEmpty(_currentConfig.Name))
+                    {
+                        AddLog($"🔄 同步所有合约配置到统一状态文件: {_currentConfig.Name}");
+                        _stateService.SwitchAllContractsConfiguration(_currentConfig.Name);
+                        AddLog($"✅ 统一状态文件同步完成");
+                    }
+                    else
+                    {
+                        AddLog("⚠️ 统一状态服务未初始化，跳过文件同步");
+                    }
+                }
+                catch (Exception syncEx)
+                {
+                    _logger.LogError(syncEx, "同步统一状态文件失败");
+                    AddLog($"❌ 统一状态文件同步失败: {syncEx.Message}");
+                }
                 
                 // 刷新UI显示
                 await RefreshPositionDataAsync();
@@ -1111,14 +1704,19 @@ namespace BinanceFuturesTrader.Views
                     newConfigs.Add(config);
                 }
                 
-                // 🔧 替换集合内容而不是清空重建
-                ContractConfigs.Clear();
-                foreach (var config in newConfigs)
+                // 🔧 修复：在UI线程中安全地更新集合
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    ContractConfigs.Add(config);
-                }
+                    ContractConfigs.Clear();
+                    foreach (var config in newConfigs)
+                    {
+                        ContractConfigs.Add(config);
+                    }
+                });
                 
-                AddLog($"📊 持仓数据已刷新，活跃合约: {activePositions.Count}个，档案数量: {_profileService.ContractProfiles.Count}");
+                // 🔧 修复：使用正确的档案数量统计
+                var profileCount = _autoMonitorService?.GetActiveProfileCount() ?? 0;
+                AddLog($"📊 持仓数据已刷新，活跃合约: {activePositions.Count}个，档案数量: {profileCount}");
             }
             catch (Exception ex)
             {
@@ -1161,80 +1759,81 @@ namespace BinanceFuturesTrader.Views
             }
         }
         
-        private async Task PerformScanAsync()
-        {
-            try
-            {
-                // 高级扫描逻辑，使用执行引擎
-                AddLog("🔍 执行高级扫描检查...");
-                
-                // 更新所有档案的价格信息
-                await _profileService.UpdateAllProfilesPricesAsync();
-                
-                // 获取监控中的档案
-                var activeProfiles = _profileService.GetActiveProfiles();
-                var executionSummaries = new List<MonitorExecutionSummary>();
-                
-                AddLog($"🎯 开始处理 {activeProfiles.Count} 个活跃档案");
-                
-                // 使用执行引擎处理每个档案
-                foreach (var profile in activeProfiles)
-                {
-                    try
-                    {
-                        var summary = await _executionEngine.ExecuteContractMonitoringAsync(profile);
-                        executionSummaries.Add(summary);
-                        
-                        if (summary.IsSuccess)
-                        {
-                            var stats = summary.GetExecutionStats();
-                            AddLog($"✅ {profile.Symbol}: {stats}");
-                        }
-                        else
-                        {
-                            AddLog($"❌ {profile.Symbol}: {summary.Message}");
-                        }
-                    }
-                    catch (Exception profileEx)
-                    {
-                        _logger.LogError(profileEx, $"处理档案失败: {profile.DisplayName}");
-                        AddLog($"❌ {profile.Symbol}: 处理失败 - {profileEx.Message}");
-                    }
-                }
-                
-                // 统计执行结果
-                var totalExecutions = executionSummaries.Sum(s => 
-                    (s.BreakEvenResult?.IsSuccess == true ? 1 : 0) +
-                    s.AddPositionResults.Count(r => r.IsSuccess) +
-                    s.ProfitProtectionResults.Count(r => r.IsSuccess));
-                
-                var failedExecutions = executionSummaries.Sum(s =>
-                    (s.BreakEvenResult?.IsSuccess == false ? 1 : 0) +
-                    s.AddPositionResults.Count(r => !r.IsSuccess) +
-                    s.ProfitProtectionResults.Count(r => !r.IsSuccess));
-                
-                // 更新UI显示
-                Application.Current.Dispatcher.Invoke(() =>
-                {
-                    // 刷新合约配置显示
-                    _ = RefreshPositionDataAsync();
-                    
-                    AddLog($"📊 高级扫描完成: {activeProfiles.Count}个档案, 成功执行{totalExecutions}次, 失败{failedExecutions}次");
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "执行高级扫描失败");
-                Application.Current.Dispatcher.Invoke(() =>
-                {
-                    AddLog($"❌ 高级扫描失败: {ex.Message}");
-                });
-            }
-        }
+        // 🗑️ 已移除：UI层扫描逻辑，统一使用服务层扫描
+        // private async Task PerformScanAsync() - 已删除，功能转移到 AutoMonitorService.ScanPositionsAsync
         
         #endregion
         
         #region 辅助方法
+        
+        /// <summary>
+        /// 🔧 【新增】检查当前账户是否有已保存的合约状态配置
+        /// </summary>
+        private bool CheckForExistingContractStates()
+        {
+            try
+            {
+                var filePathManager = new FilePathManager();
+                var currentAccount = GetCurrentAccountName();
+                
+                if (string.IsNullOrEmpty(currentAccount))
+                {
+                    AddLog("⚠️ 无法获取当前账户名称");
+                    return false;
+                }
+                
+                var stateFilePath = filePathManager.GetContractMonitoringStatesFilePath(currentAccount);
+                var fileExists = System.IO.File.Exists(stateFilePath);
+                
+                if (fileExists)
+                {
+                    var fileInfo = new System.IO.FileInfo(stateFilePath);
+                    if (fileInfo.Length > 10) // 文件有实际内容
+                    {
+                        AddLog($"✅ 发现账户'{currentAccount}'的合约状态配置文件 (大小: {fileInfo.Length} 字节)");
+                        return true;
+                    }
+                    else
+                    {
+                        AddLog($"📂 账户'{currentAccount}'的配置文件存在但为空");
+                        return false;
+                    }
+                }
+                else
+                {
+                    AddLog($"📂 账户'{currentAccount}'没有合约状态配置文件");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"❌ 检查合约状态配置失败: {ex.Message}");
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 【辅助方法】获取当前账户名称
+        /// </summary>
+        private string GetCurrentAccountName()
+        {
+            try
+            {
+                // 尝试从主窗口获取当前账户
+                if (System.Windows.Application.Current?.MainWindow is MainWindow mainWindow)
+                {
+                    if (mainWindow.DataContext is ViewModels.MainViewModel mainViewModel)
+                    {
+                        return mainViewModel.SelectedAccount?.Name ?? "default";
+                    }
+                }
+                return "default";
+            }
+            catch
+            {
+                return "default";
+            }
+        }
         
         private void AddLog(string message)
         {
@@ -1275,44 +1874,113 @@ namespace BinanceFuturesTrader.Views
                 // 加载所有可用配置到下拉框
                 LoadAvailableConfigs();
                 
-                // 使用配置管理器获取当前配置
-                _currentConfig = _configManager.CurrentConfig;
+                // 🔧 新增：检查是否为第一次打开（没有配置）
+                // 🔧 【修复】检查是否为第一次打开（没有配置且没有合约状态）
+                var hasExistingStates = CheckForExistingContractStates();
                 
-                if (_currentConfig == null)
+                if (_configManager.Configurations.Count == 0 && !hasExistingStates)
                 {
-                    // 如果没有配置，获取第一个可用配置
-                    _currentConfig = _configManager.Configurations.FirstOrDefault();
+                    AddLog("⚠️ 检测到这是第一次使用自动盯盘功能");
+                    AddLog("💡 请先点击右上角的'编辑配置'按钮创建您的第一个配置");
                     
-                    if (_currentConfig != null)
+                    // 延迟显示提醒对话框，等待窗口完全加载
+                    this.Loaded += (s, e) =>
                     {
-                        _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                        var result = MessageBox.Show(
+                            "欢迎使用自动盯盘功能！\n\n" +
+                            "检测到您还没有创建任何配置。\n" +
+                            "自动盯盘功能需要先创建基础配置才能使用。\n\n" +
+                            "是否现在就打开配置编辑器创建您的第一个配置？",
+                            "首次使用提示",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Information);
+                        
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            // 直接打开配置编辑器
+                            EditConfigButton_Click(null, null);
+                        }
+                        else
+                        {
+                            AddLog("🔧 您可以随时点击'编辑配置'按钮来创建配置");
+                        }
+                    };
+                    
+                    return; // 没有配置时直接返回
+                }
+                else if (_configManager.Configurations.Count == 0 && hasExistingStates)
+                {
+                    AddLog("🔧 检测到有已保存的合约配置，建议直接使用'自动盯盘'功能");
+                }
+                
+                // 🔧 关键修复：优先从MainViewModel获取当前账户的配置
+                _currentConfig = _mainViewModel?.CurrentAutoMonitorConfig;
+                
+                if (_currentConfig != null)
+                {
+                    AddLog($"✅ 从MainViewModel获取到配置: {_currentConfig.Name}");
+                    // 确保配置管理器也使用同样的配置
+                    _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                }
+                else
+                {
+                    // 🔧 如果MainViewModel没有配置，尝试从配置管理器获取
+                    _currentConfig = _configManager.CurrentConfig;
+                    
+                    if (_currentConfig == null)
+                    {
+                        // 如果没有配置，获取第一个可用配置
+                        _currentConfig = _configManager.Configurations.FirstOrDefault();
+                        
+                        if (_currentConfig != null)
+                        {
+                            _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                            AddLog($"🔄 使用第一个可用配置: {_currentConfig.Name}");
+                        }
+                    }
+                    else
+                    {
+                        AddLog($"🔄 从配置管理器获取配置: {_currentConfig.Name}");
                     }
                 }
                 
                 if (_currentConfig == null)
                 {
-                    // 如果仍然没有配置，创建一个智能默认配置
-                    try
+                    // 🔧 修复：检查是否已存在"智能默认配置"，避免重复创建
+                    var existingConfig = _configManager.Configurations.FirstOrDefault(c => c.Name == "智能默认配置");
+                    
+                    if (existingConfig != null)
                     {
-                        var accountEquity = _riskCapitalService.GetCurrentAccountEquity();
-                        var riskCapitalTimes = _riskCapitalService.GetCurrentRiskCapitalTimes();
-                        
-                        _currentConfig = _configManager.CreateConfiguration("智能默认配置", accountEquity, riskCapitalTimes);
+                        // 使用现有的配置
+                        _currentConfig = existingConfig;
                         _configManager.SetCurrentConfiguration(_currentConfig.Name);
-                        
-                        AddLog($"💡 创建智能默认配置: 权益{accountEquity:F2}U, 风险次数{riskCapitalTimes}");
+                        AddLog($"✅ 使用现有的智能默认配置");
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        _logger.LogError(ex, "从风险金服务创建配置失败，使用回退参数");
-                        AddLog($"⚠️ 从风险金服务创建配置失败，使用回退参数: {ex.Message}");
-                        
-                        // 回退到硬编码参数
-                        var accountEquity = _mainViewModel?.AccountInfo?.TotalEquity ?? 1000m;
-                        var riskCapitalTimes = _mainViewModel?.SelectedAccount?.RiskCapitalTimes ?? 10;
-                        
-                        _currentConfig = _configManager.CreateConfiguration("智能默认配置", accountEquity, riskCapitalTimes);
-                        _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                        // 如果真的不存在，才创建一个新的智能默认配置
+                        try
+                        {
+                            var accountEquity = _riskCapitalService.GetCurrentAccountEquity();
+                            var riskCapitalTimes = _riskCapitalService.GetCurrentRiskCapitalTimes();
+                            
+                            _currentConfig = _configManager.CreateConfiguration("智能默认配置", accountEquity, riskCapitalTimes);
+                            _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                            
+                            AddLog($"💡 创建智能默认配置: 权益{accountEquity:F2}U, 风险次数{riskCapitalTimes}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "从风险金服务创建配置失败，使用回退参数");
+                            AddLog($"⚠️ 从风险金服务创建配置失败，使用回退参数: {ex.Message}");
+                            
+                            // 回退到硬编码参数
+                            var accountEquity = _mainViewModel?.AccountInfo?.TotalEquity ?? 1000m;
+                            var riskCapitalTimes = _mainViewModel?.SelectedAccount?.RiskCapitalTimes ?? 10;
+                            
+                            _currentConfig = _configManager.CreateConfiguration("智能默认配置", accountEquity, riskCapitalTimes);
+                            _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                        }
                     }
                 }
                 
@@ -1322,7 +1990,7 @@ namespace BinanceFuturesTrader.Views
                 // 动态生成DataGrid列
                 GenerateDataGridColumns();
                 
-                AddLog($"🔄 配置切换完成，开始刷新数据显示");
+    
                 
                 // 更新UI显示
                 UpdateConfigDisplay();
@@ -1342,83 +2010,43 @@ namespace BinanceFuturesTrader.Views
         }
         
         /// <summary>
-        /// 加载可用配置到下拉框
+        /// 🎯 加载可用配置到下拉框（使用新的双文件系统）
         /// </summary>
         private void LoadAvailableConfigs()
         {
             try
             {
-                var availableConfigs = new List<AutoMonitorConfig>();
+                AddLog("🔄 正在从双文件系统加载配置...");
                 
-                // 从配置管理器获取配置，过滤掉系统默认配置
-                var managerConfigs = _configManager.Configurations.Where(IsUserCustomConfig).ToList();
-                availableConfigs.AddRange(managerConfigs);
+                // 🔧 【关键修复】首先检查是否有已保存的合约状态配置
+                var hasExistingContractStates = CheckForExistingContractStates();
                 
-                // 尝试从SimpleConfigEditorWindow保存的配置文件加载
-                try
-                {
-                    string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
-                                                     "BinanceFuturesTrader", "AutoMonitorConfigs.json");
-                    
-                    if (File.Exists(configPath))
-                    {
-                        var json = File.ReadAllText(configPath);
-                        var editorConfigs = System.Text.Json.JsonSerializer.Deserialize<List<AutoMonitorConfig>>(json);
-                        if (editorConfigs != null)
-                        {
-                            // 合并配置，避免重复，并过滤系统默认配置
-                            foreach (var editorConfig in editorConfigs.Where(IsUserCustomConfig))
-                            {
-                                if (!availableConfigs.Any(c => c.Name == editorConfig.Name))
-                                {
-                                    availableConfigs.Add(editorConfig);
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AddLog($"⚠️ 加载编辑器配置失败: {ex.Message}");
-                }
+                // 🔧 修复：强制重新加载最新配置，确保获取编辑器中保存的最新配置
+                _configManager.RefreshConfigurations();
                 
-                // 检查是否有可用配置
+                // 🎯 从新的双文件系统获取所有配置模板
+                var availableConfigs = _configManager.Configurations.ToList();
+                
+                AddLog($"✅ 从BaseConfigManager加载了 {availableConfigs.Count} 个配置模板");
+                
+                // 🎯 修复：遵循统一规则，如果没有配置就保持空状态，不自动创建
                 if (availableConfigs.Count == 0)
                 {
-                    // 没有配置时提醒用户
-                    AddLog("⚠️ 没有找到任何配置，请先创建配置");
-                    
-                    // 禁用启动按钮
-                    if (StartStopButton != null)
+                    if (hasExistingContractStates)
                     {
-                        StartStopButton.IsEnabled = false;
-                        StartStopButton.Content = "请先创建配置";
+                        AddLog("📝 虽然没有基础配置模板，但发现了已保存的合约配置");
+                        AddLog("💡 建议：直接点击主界面的'自动盯盘'按钮查看已有配置");
+                        AddLog("🔧 您也可以在此创建新的基础配置模板");
                     }
-                    
-                    // 🔧 修复：下拉框显示提示文本而不是空白
-                    ConfigSelectionComboBox.ItemsSource = null;
-                    ConfigSelectionComboBox.IsEnabled = false;
-                    ConfigSelectionComboBox.Text = "请先创建配置";
-                    
-                    // 可选：显示一次性提示
-                    if (availableConfigs.Count == 0)
+                    else
                     {
-                        MessageBox.Show("没有找到任何配置！\n\n请点击\"编辑配置\"按钮创建您的第一个配置。\n\n配置包含：\n• 保本目标金额设置\n• 推仓阶梯配置\n• 保盈阶梯配置", 
-                                      "需要创建配置", MessageBoxButton.OK, MessageBoxImage.Information);
+                        AddLog("📝 当前没有基础配置，请先使用'编辑配置'功能创建配置模板");
+                        AddLog("💡 提示：点击界面右上角的'编辑配置'按钮来创建您的第一个配置");
                     }
                 }
-                else
+                else if (hasExistingContractStates)
                 {
-                    // 有配置时启用启动按钮和下拉框
-                    if (StartStopButton != null)
-                    {
-                        StartStopButton.IsEnabled = true;
-                        StartStopButton.Content = "启动盯盘";
-                    }
-                    
-                    // 🔧 修复：启用下拉框并设置数据源
-                    ConfigSelectionComboBox.IsEnabled = true;
-                    ConfigSelectionComboBox.Text = "";
+                    AddLog("✅ 发现已保存的合约状态配置，可通过'自动盯盘'按钮查看");
                 }
                 
                 // 设置下拉框数据源
@@ -1430,28 +2058,55 @@ namespace BinanceFuturesTrader.Views
                     var selectedConfig = availableConfigs.FirstOrDefault(c => c.Name == _currentConfig.Name);
                     if (selectedConfig != null)
                     {
+                        // 🔧 使用标志位防止递归调用
+                        _isUpdatingConfigSelection = true;
+                        try
+                    {
                         ConfigSelectionComboBox.SelectedItem = selectedConfig;
+                        }
+                        finally
+                        {
+                            _isUpdatingConfigSelection = false;
+                        }
                     }
                 }
                 
                 AddLog($"✅ 加载了 {availableConfigs.Count} 个可用配置");
+                
+                // 🔧 加载配置后更新监控信息提示
+                UpdateMonitorInfoText();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "加载可用配置失败");
                 AddLog($"❌ 加载可用配置失败: {ex.Message}");
+                
+                // 🔧 加载失败时也要更新提示信息
+                UpdateMonitorInfoText();
             }
         }
         
         /// <summary>
         /// 配置选择变化事件处理
         /// </summary>
-        private async void ConfigSelectionComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        private async void ConfigSelectionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             try
             {
+                // 🔧 防止递归调用：如果正在更新配置选择，直接返回
+                if (_isUpdatingConfigSelection)
+                {
+                    return;
+                }
+                
                 if (ConfigSelectionComboBox.SelectedItem is AutoMonitorConfig selectedConfig)
                 {
+                    // 🔧 防止递归调用：如果选择的配置与当前配置相同，直接返回
+                    if (_currentConfig != null && selectedConfig.Name == _currentConfig.Name)
+                    {
+                        return;
+                    }
+                    
                     // 检查是否正在监控，如果正在监控则不允许切换配置
                     if (_isMonitoringActive)
                     {
@@ -1461,32 +2116,26 @@ namespace BinanceFuturesTrader.Views
                         return;
                     }
                     
+                    // 🔧 保存旧配置用于比较
+                    var oldConfig = _currentConfig;
                     _currentConfig = selectedConfig;
                     
-                    AddLog($"🔄 切换到配置：{selectedConfig.Name}");
+                    // 🔧 更新监控状态提示信息
+                    UpdateMonitorInfoText();
+                    
+                    // 🔧 清理重复日志：移除这里的重复日志输出
+                    // AddLog($"🔄 切换到配置：{selectedConfig.Name}");
                     
                     // 🔧 修复：强制基于新配置重新生成DataGrid列结构
                     GenerateDataGridColumns();
                     
-                    // 尝试将配置同步到配置管理器
+                    // 🔧 修复：只同步配置到配置管理器，不覆盖用户选择
                     try
                     {
-                        // 检查配置管理器中是否存在此配置
-                        var existingConfig = _configManager.GetConfiguration(_currentConfig.Name);
-                        if (existingConfig == null)
-                        {
-                            // 如果不存在，则添加到配置管理器
-                            _configManager.AddConfiguration(_currentConfig);
-                            AddLog($"📝 配置 '{_currentConfig.Name}' 已添加到配置管理器");
-                        }
-                        else
-                        {
-                            // 🔧 关键修复：使用配置管理器中的配置，而不是下拉框中的配置
-                            _currentConfig = existingConfig;
-                            AddLog($"✅ 使用配置管理器中的最新配置");
-                        }
-                        
+                        // 🔧 关键修复：保持用户选择的配置，不从配置管理器重新获取，避免覆盖用户选择
                         _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                        // 🔧 简化日志：减少冗余信息
+                        // AddLog($"✅ 配置已同步到配置管理器：'{_currentConfig.Name}'");
                     }
                     catch (Exception configEx)
                     {
@@ -1494,32 +2143,112 @@ namespace BinanceFuturesTrader.Views
                         AddLog($"⚠️ 配置同步警告: {configEx.Message}，使用本地配置");
                     }
                     
-                    AddLog($"🔄 切换到配置：{_currentConfig.Name}");
-                    AddLog($"📊 当前配置详情 - 推仓档位: {_currentConfig.AddPositionConfig?.Tiers?.Count ?? 0}, 止盈档位: {_currentConfig.ProfitProtectionConfig?.Tiers?.Count ?? 0}");
-                    
-                    // 🔧 修复：先输出配置内容用于调试
-                    if (_currentConfig.AddPositionConfig?.Tiers != null)
+                    // 🔧 关键修复：将选择的配置保存到MainViewModel中
+                    try
                     {
-                        foreach (var tier in _currentConfig.AddPositionConfig.Tiers)
+                        if (_mainViewModel != null && _mainViewModel.SelectedAccount != null)
                         {
-                            AddLog($"  推仓{tier.TierIndex}档: {tier.TriggerProfitAmount}U");
+                            // 🔧 关键修复：立即设置为当前配置，确保立即生效
+                            _mainViewModel.SetCurrentAutoMonitorConfig(_currentConfig);
+                            
+                            // 使用新方法更新账户配置
+                            _mainViewModel.UpdateAccountAutoMonitorConfig(_mainViewModel.SelectedAccount.Name, _currentConfig);
+                            
+                            // 🔧 持久化配置到文件
+                            var configPersistenceService = new AutoMonitorConfigPersistenceService();
+                            configPersistenceService.SaveSingleAccountConfig(_mainViewModel.SelectedAccount.Name, _currentConfig);
+                            
+                            // 🔧 简化日志：合并保存和验证信息
+                            // AddLog($"💾 配置 '{_currentConfig.Name}' 已保存到账户 '{_mainViewModel.SelectedAccount.Name}'");
+                            _logger.LogInformation($"✅ 配置选择已保存：{_mainViewModel.SelectedAccount.Name} -> {_currentConfig.Name}");
+                            
+                            // 🔧 新增：验证保存结果
+                            var verifyConfig = configPersistenceService.GetAccountConfig(_mainViewModel.SelectedAccount.Name);
+                            if (verifyConfig?.Name == _currentConfig.Name)
+                            {
+                                // 🔧 简化日志：减少验证成功的冗余输出
+                                // AddLog($"✅ 配置保存验证成功：{verifyConfig.Name}");
+                            }
+                            else
+                            {
+                                AddLog($"⚠️ 配置保存验证失败：期望{_currentConfig.Name}，实际{verifyConfig?.Name ?? "null"}");
+                            }
+                        }
+                        else
+                        {
+                            AddLog("⚠️ 无法获取主视图模型或当前账户，配置选择未保存");
                         }
                     }
+                    catch (Exception saveEx)
+                    {
+                        _logger.LogError(saveEx, "保存配置选择失败");
+                        AddLog($"❌ 保存配置选择失败: {saveEx.Message}");
+                    }
+                    
+                    AddLog($"🔄 切换到配置：{_currentConfig.Name}");
+                    // 🔧 简化配置详情日志，只在必要时输出
+                    if (_currentConfig.AddPositionConfig?.Tiers?.Count > 0)
+                    {
+                        AddLog($"📊 配置详情 - 推仓:{_currentConfig.AddPositionConfig.Tiers.Count}档, 保本:{(_currentConfig.BreakEvenConfig?.IsEnabled == true ? "启用" : "禁用")}, 保盈:{_currentConfig.ProfitProtectionConfig?.Tiers?.Count ?? 0}档");
+                    }
+                    
+                    // 🔧 移除详细的推仓档位日志，减少冗余信息
+                    // if (_currentConfig.AddPositionConfig?.Tiers != null)
+                    // {
+                    //     foreach (var tier in _currentConfig.AddPositionConfig.Tiers)
+                    //     {
+                    //         AddLog($"  推仓{tier.TierIndex}档: {tier.TriggerProfitAmount}U");
+                    //     }
+                    // }
                     
                     // 更新UI显示
                     UpdateConfigDisplay();
                     
-                    // 🔧 修复：先将新配置应用到所有合约档案，确保完成后再刷新界面
-                    await UpdateAllContractConfigsAsync();
+                    // 🔧 新增：配置切换时自动同步合约配置
+                    AddLog($"🔄 基础配置切换为：{_currentConfig.Name}");
                     
-                    // 强制等待档案更新完成
-                    await System.Threading.Tasks.Task.Delay(200);
+                    // 🔧 优化：只有当存在合约配置时才询问是否重新生成
+                    bool hasExistingConfigs = ContractConfigs.Count > 0;
                     
-                    // 🔧 修复：强制基于新配置重新刷新界面数据
+                    if (hasExistingConfigs)
+                    {
+                        AddLog("🔄 检测到现有合约配置，询问是否重新生成...");
+                        
+                        // 显示配置切换确认对话框
+                        var syncResult = MessageBox.Show(
+                            $"您已切换到基础配置：{_currentConfig.Name}\n\n" +
+                            "是否用新的基础配置重新生成所有合约配置？\n\n" +
+                            "✅ 是 - 用基础配置重新生成所有合约配置（推荐）\n" +
+                            "❌ 否 - 保持现有合约配置不变",
+                            "配置切换确认",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Question);
+                        
+                        if (syncResult == MessageBoxResult.Yes)
+                        {
+                            // 强制基于新配置重新生成所有合约配置
+                    await RegenerateAllContractConfigsAsync();
+                            AddLog("✅ 已用新基础配置重新生成所有合约配置");
+                        }
+                        else
+                        {
+                            AddLog("ℹ️ 保持现有合约配置不变");
+                            // 仍然需要刷新界面显示
                     await RefreshPositionDataAsync();
+                        }
+                    }
+                    else
+                    {
+                        AddLog("ℹ️ 当前无合约配置，直接刷新界面");
+                        // 如果没有现有配置，直接刷新界面
+                        await RefreshPositionDataAsync();
+                    }
                     
-                    AddLog($"✅ 配置切换和数据刷新完成：{_currentConfig.Name}");
+                    AddLog($"✅ 配置切换完成：{_currentConfig.Name}");
                 }
+                
+                // 🔧 初始化时也要更新监控信息提示
+                UpdateMonitorInfoText();
             }
             catch (Exception ex)
             {
@@ -1595,7 +2324,7 @@ namespace BinanceFuturesTrader.Views
                     }
                 }
 
-                AddLog($"✅ 动态生成列完成: 推仓{_currentConfig.AddPositionConfig?.Tiers?.Count ?? 0}档, 保盈{_currentConfig.ProfitProtectionConfig?.Tiers?.Count ?? 0}档");
+    
             }
             catch (Exception ex)
             {
@@ -1624,7 +2353,7 @@ namespace BinanceFuturesTrader.Views
                 // 🔧 修复：基于当前配置和实际状态填充推仓数据
                 if (_currentConfig.AddPositionConfig?.IsEnabled == true && _currentConfig.AddPositionConfig.Tiers?.Count > 0)
                 {
-                    AddLog($"📊 填充推仓数据: {_currentConfig.AddPositionConfig.Tiers.Count}档");
+                    // 简化：移除冗长的推仓数据填充日志
                     
                     foreach (var tier in _currentConfig.AddPositionConfig.Tiers)
                     {
@@ -1656,7 +2385,7 @@ namespace BinanceFuturesTrader.Views
                         var color = GetStatusColor(status);
                         config.SetDynamicData($"Push{tier.TierIndex}", displayText, color);
                         
-                        AddLog($"  推仓{tier.TierIndex}档: {displayText} (浮盈:{position.UnrealizedProfit:F1}U)");
+                        // 简化：移除推仓档位详细日志
                     }
                 }
                 else
@@ -1667,7 +2396,7 @@ namespace BinanceFuturesTrader.Views
                 // 🔧 修复：基于当前配置和实际状态填充保盈数据
                 if (_currentConfig.ProfitProtectionConfig?.IsEnabled == true && _currentConfig.ProfitProtectionConfig.Tiers?.Count > 0)
                 {
-                    AddLog($"📊 填充保盈数据: {_currentConfig.ProfitProtectionConfig.Tiers.Count}档");
+                    // 简化：移除冗长的保盈数据填充日志
                     foreach (var tier in _currentConfig.ProfitProtectionConfig.Tiers)
                     {
                         var triggerAmount = tier.TriggerProfitAmount;
@@ -1699,7 +2428,7 @@ namespace BinanceFuturesTrader.Views
                         var color = GetStatusColor(status);
                         config.SetDynamicData($"Profit{tier.TierIndex}", displayText, color);
                         
-                        AddLog($"  保盈{tier.TierIndex}档: {displayText} (浮盈:{position.UnrealizedProfit:F1}U)");
+                        // 简化：移除保盈档位详细日志
                     }
                 }
                 else
@@ -1707,7 +2436,7 @@ namespace BinanceFuturesTrader.Views
                     AddLog($"⚠️ 保盈配置未启用或无档位");
                 }
                 
-                AddLog($"✅ 动态数据填充完成: {position.Symbol} (基于配置: {_currentConfig.Name})");
+                // 简化：移除冗长的动态数据填充完成日志
             }
             catch (Exception ex)
             {
@@ -1822,7 +2551,16 @@ namespace BinanceFuturesTrader.Views
                     var selectedConfig = availableConfigs?.FirstOrDefault(c => c.Name == _currentConfig.Name);
                     if (selectedConfig != null && ConfigSelectionComboBox.SelectedItem != selectedConfig)
                     {
+                        // 🔧 使用标志位防止递归调用
+                        _isUpdatingConfigSelection = true;
+                        try
+                    {
                         ConfigSelectionComboBox.SelectedItem = selectedConfig;
+                        }
+                        finally
+                        {
+                            _isUpdatingConfigSelection = false;
+                        }
                     }
                 }
                 
@@ -1870,7 +2608,7 @@ namespace BinanceFuturesTrader.Views
                 if (RiskCapitalAmountText != null)
                     RiskCapitalAmountText.Text = $"{riskCapital:F2} USDT";
                 
-                AddLog($"💰 风险金信息更新: 权益{accountEquity:F2}U, 风险次数{riskCapitalTimes}, 单倍风险金{riskCapital:F2}U");
+
             }
             catch (Exception ex)
             {
@@ -1930,6 +2668,17 @@ namespace BinanceFuturesTrader.Views
                 // 🔧 修复：无论是否停止监控，都要停止UI相关的定时器
                 _scanTimer?.Stop();
                 _logTimer?.Stop();
+                
+                // 🔧 【重要新增】：取消订阅事件，避免内存泄漏
+                if (_autoMonitorService != null)
+                {
+                    _autoMonitorService.WorkLogAdded -= OnWorkLogAdded;
+                    _autoMonitorService.MonitorStatusChanged -= OnMonitorStatusChanged;
+                    _autoMonitorService.ExecutionCompleted -= OnExecutionCompleted;
+                    _autoMonitorService.StatusUpdated -= OnStatusUpdated;
+                    _autoMonitorService.PositionChanged -= OnPositionChanged;
+                    AddLog("✅ 已取消订阅服务层事件");
+                }
                 
                 AddLog("🖥️ 配置窗口关闭中...");
                 
@@ -2075,47 +2824,12 @@ namespace BinanceFuturesTrader.Views
         {
             if (profile == null) return "-";
             
-            // 🔧 优先检查本地手动修改文件
-            try
-            {
-                var configPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "BinanceFuturesTrader", "ContractConfigs.json");
-                
-                if (File.Exists(configPath))
-                {
-                    var json = File.ReadAllText(configPath);
-                    var savedConfigs = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, ContractConfigData>>(json);
-                    var contractName = $"{profile.Symbol} {profile.Side}";
-                    
-                    if (savedConfigs != null && savedConfigs.TryGetValue(contractName, out var savedConfig))
-                    {
-                        if (!string.IsNullOrEmpty(savedConfig.BreakEvenStatus) && savedConfig.BreakEvenStatus != "-")
-                        {
-                            AddLog($"🔍 优先使用手动修改的保本状态: {contractName} = {savedConfig.BreakEvenStatus}");
-                            return savedConfig.BreakEvenStatus;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AddLog($"❌ 读取手动修改状态失败: {ex.Message}");
-            }
+            // 🔧 【关键修复】优先从状态文件检查，确保与文件同步
+            var isExecuted = _autoMonitorService.IsExecutedInStateFile(profile.Symbol, profile.Side, "保本");
+            if (isExecuted) return "√";
             
-            // 🔧 回退到档案系统状态
-            if (profile.BreakEvenState.IsTriggered)
-            {
-                return profile.BreakEvenState.ExecutionStatus switch
-                {
-                    "已执行" => "√",
-                    "执行失败" => "❌",
-                    "触发中" => "执行中",
-                    _ => "-"
-                };
-            }
-            
-            return "-";
+            // 🔧 回退：使用统一状态检查
+            return GetUnifiedContractStatus(profile.Symbol, profile.Side, "BreakEven");
         }
         
         /// <summary>
@@ -2125,59 +2839,12 @@ namespace BinanceFuturesTrader.Views
         {
             if (profile == null) return "-";
             
-            // 🔧 优先检查本地手动修改文件
-            try
-            {
-                var configPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "BinanceFuturesTrader", "ContractConfigs.json");
-                
-                if (File.Exists(configPath))
-                {
-                    var json = File.ReadAllText(configPath);
-                    var savedConfigs = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, ContractConfigData>>(json);
-                    var contractName = $"{profile.Symbol} {profile.Side}";
-                    
-                    if (savedConfigs != null && savedConfigs.TryGetValue(contractName, out var savedConfig))
-                    {
-                        var tierStatus = tier switch
-                        {
-                            1 => savedConfig.PushTier1Status,
-                            2 => savedConfig.PushTier2Status,
-                            3 => savedConfig.PushTier3Status,
-                            4 => savedConfig.PushTier4Status,
-                            _ => "-"
-                        };
-                        
-                        if (!string.IsNullOrEmpty(tierStatus) && tierStatus != "-")
-                        {
-                            AddLog($"🔍 优先使用手动修改的推仓{tier}档状态: {contractName} = {tierStatus}");
-                            return tierStatus;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AddLog($"❌ 读取手动修改推仓状态失败: {ex.Message}");
-            }
+            // 🔧 【关键修复】优先从状态文件检查，确保与文件同步
+            var isExecuted = _autoMonitorService.IsExecutedInStateFile(profile.Symbol, profile.Side, "推仓", tier);
+            if (isExecuted) return "√";
             
-            // 🔧 回退到档案系统状态
-            var tierState = profile.AddPositionStates.FirstOrDefault(s => s.TierIndex == tier);
-            if (tierState == null) return "-";
-            
-            if (tierState.IsTriggered)
-            {
-                return tierState.ExecutionStatus switch
-                {
-                    "已执行" => "√",
-                    "执行失败" => "❌",
-                    "触发中" => "执行中",
-                    _ => "-"
-                };
-            }
-            
-            return "-";
+            // 🔧 回退：使用统一状态检查
+            return GetUnifiedContractStatus(profile.Symbol, profile.Side, "AddPosition", tier);
         }
         
         /// <summary>
@@ -2284,7 +2951,7 @@ namespace BinanceFuturesTrader.Views
         /// <summary>
         /// 编辑基础配置
         /// </summary>
-        private void EditConfigButton_Click(object sender, RoutedEventArgs e)
+        private async void EditConfigButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -2297,18 +2964,226 @@ namespace BinanceFuturesTrader.Views
                     return;
                 }
                 
-                // 打开配置编辑器
-                var configEditor = new SimpleConfigEditorWindow();
-                configEditor.ShowDialog();
+                // 🔧 保存当前配置用于后续比较
+                var configBeforeEdit = _currentConfig != null ? 
+                    System.Text.Json.JsonSerializer.Serialize(_currentConfig) : null;
                 
-                // 编辑完成后刷新配置
-                RefreshCurrentConfig();
-                AddLog("✅ 配置编辑器已关闭，配置已刷新");
+                AddLog($"📋 编辑前配置快照: {_currentConfig?.Name ?? "null"}");
+                
+                // 🔧 修复：使用单例模式，两个窗口自动共享同一个BaseConfigManager实例
+                var configEditor = new SimpleConfigEditorWindow(_mainViewModel);
+                AddLog($"🔗 单例模式已启用，配置自动同步");
+                
+                // 🔧 关键修复：保存编辑前的配置状态用于比较
+                var configBeforeEditJson = _currentConfig != null ? 
+                    System.Text.Json.JsonSerializer.Serialize(_currentConfig) : null;
+                
+                var result = configEditor.ShowDialog();
+                
+                AddLog($"🔄 配置编辑器已关闭，结果: {result}");
+                
+                // 🔧 强制刷新配置列表，确保获取最新保存的配置
+                _configManager.RefreshConfigurations();
+                LoadAvailableConfigs();
+                
+                // 🔧 关键修复：检查基础配置是否发生变化
+                AutoMonitorConfig configAfterEdit = null;
+                if (_currentConfig != null)
+                {
+                    configAfterEdit = _configManager.Configurations.FirstOrDefault(c => c.Name == _currentConfig.Name);
+                    if (configAfterEdit != null)
+                    {
+                        _currentConfig = configAfterEdit;
+                        ConfigSelectionComboBox.SelectedItem = configAfterEdit;
+                    }
+                }
+                
+                // 🔧 检测配置是否有实质性变化
+                bool hasConfigChanged = false;
+                if (configBeforeEditJson != null && configAfterEdit != null)
+                {
+                    var configAfterEditJson = System.Text.Json.JsonSerializer.Serialize(configAfterEdit);
+                    hasConfigChanged = configBeforeEditJson != configAfterEditJson;
+                }
+                else if (configBeforeEditJson == null && configAfterEdit != null)
+                {
+                    // 新创建的配置
+                    hasConfigChanged = true;
+                }
+                
+                // 🔧 新增：如果配置有变化，自动同步合约配置
+                if (hasConfigChanged && configAfterEdit != null)
+                {
+                    AddLog("🔍 检测到基础配置发生变化！");
+                    AddLog($"🔄 自动用基础配置 '{configAfterEdit.Name}' 重新生成合约配置...");
+                    
+                    // 提示用户配置变化，询问是否同步
+                    var syncResult = MessageBox.Show(
+                        $"检测到基础配置 '{configAfterEdit.Name}' 发生了变化。\n\n" +
+                        "为了保持一致性，建议将变化同步到所有合约配置。\n\n" +
+                        "是否现在同步合约配置？\n\n" +
+                        "✅ 是 - 用基础配置重新生成所有合约配置\n" +
+                        "❌ 否 - 保持现有合约配置不变",
+                        "配置同步确认",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+                    
+                    if (syncResult == MessageBoxResult.Yes)
+                    {
+                        // 强制基于新配置重新生成所有合约配置
+                        await RegenerateAllContractConfigsAsync();
+                        AddLog("✅ 基础配置变化已同步到所有合约配置");
+                    }
+                    else
+                    {
+                        AddLog("ℹ️ 用户选择保持现有合约配置不变");
+                    }
+                }
+                else if (!hasConfigChanged)
+                {
+                    AddLog("ℹ️ 基础配置无重要变化，保持现有合约配置");
+                }
+                
+                if (result == true || result == null) // 即使用户没有明确确认，也检查是否有变化
+                {
+                    AddLog("🔍 配置编辑完成，自动同步配置到所有合约...");
+                    
+                    // 🔧 自动同步，不询问用户
+                    AddLog("🔄 自动更新所有合约配置...");
+                    
+                    // 执行同步
+                    await Task.Run(async () =>
+                    {
+                        await UpdateAllContractConfigsAsync();
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            AddLog("✅ 合约配置自动同步完成！");
+                        });
+                    });
+                    
+                    // 刷新配置显示
+                    RefreshCurrentConfig();
+                }
+                else
+                {
+                    AddLog("📝 用户取消了配置编辑");
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "打开编辑配置失败");
                 AddLog($"❌ 打开编辑配置失败: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 基于当前基础配置生成统一监控状态文件（遵循统一规则）
+        /// 🎯 用户选择基础配置后，针对每个持仓的合约，与基础配置的详细内容，生成统一状态文件
+        /// </summary>
+        private async Task RegenerateAllContractConfigsAsync()
+        {
+            try
+            {
+                if (_currentConfig == null)
+                {
+                    AddLog("❌ 无当前配置，无法重新生成");
+                    return;
+                }
+                
+                AddLog($"🔄 基于配置'{_currentConfig.Name}'生成统一监控状态文件...");
+                
+                // 获取当前活跃持仓
+                var positions = await _binanceService.GetPositionsAsync();
+                var activePositions = positions.Where(p => Math.Abs(p.PositionAmt) > 0).ToList();
+                
+                AddLog($"📊 找到 {activePositions.Count} 个活跃持仓");
+                
+                if (activePositions.Count == 0)
+                {
+                    AddLog("⚠️ 当前没有活跃持仓，无法生成监控状态");
+                    return;
+                }
+                
+                // 🎯 使用统一状态服务生成contract_monitoring_states.json
+                var monitoringStates = _stateService.GenerateMonitoringStatesFromPositions(activePositions, _currentConfig.Name);
+                
+                // 保存统一监控状态文件
+                _stateService.SaveMonitoringStates(monitoringStates);
+                
+                AddLog($"✅ 已生成统一监控状态文件：{monitoringStates.Count(s => s.Value.IsActive)} 个活跃状态");
+                
+                foreach (var state in monitoringStates.Values.Where(s => s.IsActive))
+                {
+                    AddLog($"   📝 {state.Symbol}_{state.PositionSide} - 配置: {state.BaseConfigName}");
+                }
+                
+                // 清除UI中的合约配置，强制重新加载
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    ContractConfigs.Clear();
+                });
+                
+                // 重新生成数据网格列结构
+                GenerateDataGridColumns();
+                
+                // 重新加载位置数据，这将基于新配置创建所有配置
+                await RefreshPositionDataAsync();
+                
+                AddLog($"✅ 统一监控状态文件生成完成！");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "生成统一监控状态失败");
+                AddLog($"❌ 生成统一监控状态失败: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 简化的配置同步检查
+        /// </summary>
+        private async Task ForceReloadAndCompareConfigAsync(string? configBeforeEdit)
+        {
+            try
+            {
+                AddLog("🔄 开始配置同步检查...");
+                
+                var syncChoice = MessageBox.Show(
+                    $"🔧 配置编辑完成！\n\n" +
+                    $"配置名称：{_currentConfig?.Name ?? "未知"}\n\n" +
+                    $"📋 是否要将配置同步到所有合约？\n\n" +
+                    $"✅ 【是】- 立即同步配置到所有合约\n" +
+                    $"❌ 【否】- 保持现有合约配置不变", 
+                    "配置同步确认", 
+                    MessageBoxButton.YesNo, 
+                    MessageBoxImage.Question);
+                
+                if (syncChoice == MessageBoxResult.Yes)
+                {
+                    AddLog("🔄 用户确认同步，开始更新所有合约配置...");
+                    
+                    await Task.Run(async () =>
+                    {
+                        await UpdateAllContractConfigsAsync();
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            AddLog("✅ 合约配置同步完成！");
+                            MessageBox.Show("✅ 配置同步成功！\n\n所有合约配置已更新", 
+                                "同步完成", MessageBoxButton.OK, MessageBoxImage.Information);
+                        });
+                    });
+                }
+                else
+                {
+                    AddLog("ℹ️ 用户选择不同步配置");
+                }
+                
+                RefreshCurrentConfig();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "配置同步检查失败");
+                AddLog($"❌ 配置同步检查失败: {ex.Message}");
             }
         }
         
@@ -2324,9 +3199,11 @@ namespace BinanceFuturesTrader.Views
                 // 🔧 修复：重新加载所有可用配置，而不是创建默认配置
                 LoadAvailableConfigs();
                 
+                // 🔧 【重要修复】：配置刷新后也刷新持仓数据，确保数据同步
+                _ = RefreshPositionDataAsync();
+                
                 // 🚧 调试：验证配置文件内容
-                var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
-                                             "BinanceFuturesTrader", "AutoMonitorConfigs.json");
+                var configPath = _configManager.GetConfigFilePath();
                 if (File.Exists(configPath))
                 {
                     var json = File.ReadAllText(configPath);
@@ -2375,8 +3252,12 @@ namespace BinanceFuturesTrader.Views
                 }
                 
                 // 🔧 修复：如果当前有选中的配置，尝试重新加载它
+                AutoMonitorConfig oldConfig = null;
                 if (_currentConfig != null)
                 {
+                    // 保存旧配置用于变化检测
+                    oldConfig = _currentConfig;
+                    
                     var refreshedConfig = ConfigSelectionComboBox.ItemsSource?.Cast<AutoMonitorConfig>()
                         .FirstOrDefault(c => c.Name == _currentConfig.Name);
                     
@@ -2385,6 +3266,21 @@ namespace BinanceFuturesTrader.Views
                         _currentConfig = refreshedConfig;
                         ConfigSelectionComboBox.SelectedItem = refreshedConfig;
                         AddLog($"✅ 已重新加载配置: {_currentConfig.Name}");
+                        
+                        // 🔧 新增：检测配置是否有变化
+                        if (HasConfigurationChanged(oldConfig, _currentConfig))
+                        {
+                            AddLog("🔍 检测到基础配置参数变化！");
+                            AddLog("🔄 自动同步配置变化到所有合约配置...");
+                            
+                            // 🔧 自动同步，不询问用户
+                            _needsConfigSync = true;
+                        }
+                        else
+                        {
+                            AddLog("ℹ️ 基础配置无重要变化，保持现有合约配置");
+                            _needsConfigSync = false;
+                        }
                         
                         // 输出配置详情用于验证
                         AddLog($"📊 配置验证 - 推仓档位: {_currentConfig.AddPositionConfig?.Tiers?.Count ?? 0}");
@@ -2411,15 +3307,30 @@ namespace BinanceFuturesTrader.Views
                 // 更新UI显示
                 UpdateConfigDisplay();
                 
-                // 🔧 修复：如果有持仓，强制重新生成合约配置
+                // 🔧 修复：根据是否需要同步来决定更新策略
                 if (_currentConfig != null)
                 {
-                    AddLog($"🔄 基于配置 '{_currentConfig.Name}' 重新生成合约配置...");
-                    _ = Task.Run(async () =>
+                    if (_needsConfigSync)
                     {
-                        await UpdateAllContractConfigsAsync();
-                        AddLog("✅ 合约配置重新生成完成");
-                    });
+                        AddLog($"🔄 强制基于新配置 '{_currentConfig.Name}' 重新生成所有合约配置...");
+                        _ = Task.Run(async () =>
+                        {
+                            await UpdateAllContractConfigsAsync();
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                AddLog("✅ 合约配置强制同步完成！所有合约已使用最新参数");
+                            });
+                        });
+                    }
+                    else
+                    {
+                        AddLog($"🔄 基于配置 '{_currentConfig.Name}' 常规刷新合约配置...");
+                        _ = Task.Run(async () =>
+                        {
+                            await UpdateAllContractConfigsAsync();
+                            AddLog("✅ 合约配置常规更新完成");
+                        });
+                    }
                 }
                 else
                 {
@@ -2432,6 +3343,70 @@ namespace BinanceFuturesTrader.Views
             {
                 _logger.LogError(ex, "刷新配置失败");
                 AddLog($"❌ 刷新配置失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：检查配置是否发生重要变化
+        /// </summary>
+        private bool HasConfigurationChanged(AutoMonitorConfig oldConfig, AutoMonitorConfig newConfig)
+        {
+            if (oldConfig == null || newConfig == null)
+                return true;
+            
+            try
+            {
+                // 检查保本配置变化
+                bool breakEvenChanged = false;
+                if (oldConfig.BreakEvenConfig?.TriggerProfitAmount != newConfig.BreakEvenConfig?.TriggerProfitAmount ||
+                    oldConfig.BreakEvenConfig?.IsEnabled != newConfig.BreakEvenConfig?.IsEnabled)
+                {
+                    breakEvenChanged = true;
+                    AddLog($"🔍 保本配置变化：{oldConfig.BreakEvenConfig?.TriggerProfitAmount}U -> {newConfig.BreakEvenConfig?.TriggerProfitAmount}U");
+                }
+                
+                // 检查推仓配置变化
+                bool addPositionChanged = false;
+                var oldTiers = oldConfig.AddPositionConfig?.Tiers?.Count ?? 0;
+                var newTiers = newConfig.AddPositionConfig?.Tiers?.Count ?? 0;
+                if (oldTiers != newTiers)
+                {
+                    addPositionChanged = true;
+                    AddLog($"🔍 推仓阶梯数量变化：{oldTiers} -> {newTiers}");
+                }
+                else if (newConfig.AddPositionConfig?.Tiers != null && oldConfig.AddPositionConfig?.Tiers != null)
+                {
+                    for (int i = 0; i < newTiers; i++)
+                    {
+                        if (i < oldConfig.AddPositionConfig.Tiers.Count)
+                {
+                    var oldTier = oldConfig.AddPositionConfig.Tiers[i];
+                    var newTier = newConfig.AddPositionConfig.Tiers[i];
+                            if (oldTier.TriggerProfitAmount != newTier.TriggerProfitAmount)
+                            {
+                                addPositionChanged = true;
+                                AddLog($"🔍 推仓{i + 1}档变化：{oldTier.TriggerProfitAmount}U -> {newTier.TriggerProfitAmount}U");
+                            }
+                        }
+                    }
+                }
+                
+                // 检查止盈配置变化
+                bool profitProtectionChanged = false;
+                var oldProfitTiers = oldConfig.ProfitProtectionConfig?.Tiers?.Count ?? 0;
+                var newProfitTiers = newConfig.ProfitProtectionConfig?.Tiers?.Count ?? 0;
+                if (oldProfitTiers != newProfitTiers)
+                {
+                    profitProtectionChanged = true;
+                    AddLog($"🔍 止盈阶梯数量变化：{oldProfitTiers} -> {newProfitTiers}");
+                }
+                
+                return breakEvenChanged || addPositionChanged || profitProtectionChanged;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检查配置变化时发生异常");
+                return true; // 发生异常时认为有变化，确保安全
             }
         }
 
@@ -2571,9 +3546,7 @@ namespace BinanceFuturesTrader.Views
                         
                         if (savedConfigs != null && savedConfigs.TryGetValue(originalConfig.ContractName, out var savedConfig))
                         {
-                            AddLog($"🔍 从本地文件读取到手动修改的状态: {savedConfig.BreakEvenStatus}");
-                            
-                            // 应用手动修改的保本状态
+                            // 应用手动修改的保本状态（简化日志）
                             if (!string.IsNullOrEmpty(savedConfig.BreakEvenStatus) && savedConfig.BreakEvenStatus != "-")
                             {
                                 originalConfig.BreakEvenStatus = savedConfig.BreakEvenStatus;
@@ -2615,24 +3588,37 @@ namespace BinanceFuturesTrader.Views
                 }
                 
                 // 2. 检查AutoMonitorService中的状态
+                // 🔧 【关键修复】优先从状态文件检查，确保与文件同步
                 if (_autoMonitorService != null)
                 {
-                    var positionProfiles = _autoMonitorService.GetPositionProfiles();
-                    var profileKey = $"{symbol}_{side}";
-                    
-                    if (positionProfiles.ContainsKey(profileKey))
+                    // 先检查状态文件
+                    var isBreakEvenExecuted = _autoMonitorService.IsExecutedInStateFile(symbol, side, "保本");
+                    if (isBreakEvenExecuted)
                     {
-                        var profile = positionProfiles[profileKey];
+                        originalConfig.BreakEvenStatus = "√";
+                        originalConfig.MarkAsManuallyModified("BreakEvenStatus");
+                        AddLog($"🔍 从状态文件读取到保本已执行状态");
+                    }
+                    else
+                    {
+                        // 回退：从服务获取最新状态
+                        var positionProfiles = _autoMonitorService.GetPositionProfiles();
+                        var profileKey = $"{symbol}_{side}";
                         
-                        // 检查是否有保本触发记录
-                        if (profile.TriggerRecords.ContainsKey("BreakEven"))
+                        if (positionProfiles.ContainsKey(profileKey))
                         {
-                            var record = profile.TriggerRecords["BreakEven"];
-                            if (record.IsExecuted)
+                            var profile = positionProfiles[profileKey];
+                            
+                            // 检查是否有保本触发记录
+                            if (profile.TriggerRecords.ContainsKey("BreakEven"))
                             {
-                                originalConfig.BreakEvenStatus = "√";
-                                originalConfig.MarkAsManuallyModified("BreakEvenStatus");
-                                AddLog($"🔍 从AutoMonitorService读取到保本已执行状态");
+                                var record = profile.TriggerRecords["BreakEven"];
+                                if (record.IsExecuted)
+                                {
+                                    originalConfig.BreakEvenStatus = "√";
+                                    originalConfig.MarkAsManuallyModified("BreakEvenStatus");
+                                    AddLog($"🔍 从AutoMonitorService读取到保本已执行状态");
+                                }
                             }
                         }
                     }
@@ -2907,10 +3893,13 @@ namespace BinanceFuturesTrader.Views
 
                 allConfigs[config.ContractName] = configData;
 
-                // 保存到文件
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                var json = JsonSerializer.Serialize(allConfigs, options);
-                await File.WriteAllTextAsync(configPath, json);
+                // 🔧 【重要修复】禁用旧格式保存，防止覆盖新的统一状态文件
+                // var options = new JsonSerializerOptions { WriteIndented = true };
+                // var json = JsonSerializer.Serialize(allConfigs, options);
+                // await File.WriteAllTextAsync(configPath, json);
+                
+                _logger.LogWarning($"⚠️ 已禁用旧格式保存，避免覆盖 contract_monitoring_states.json 新格式");
+                _logger.LogWarning($"   ✅ 配置数据应通过 ContractMonitoringStateService 管理");
 
                 _logger.LogInformation($"✅ 已保存完整合约配置到本地文件: {config.ContractName}");
                 _logger.LogInformation($"   保本: {configData.BreakEvenTarget}U ({configData.BreakEvenStatus})");
@@ -2933,12 +3922,17 @@ namespace BinanceFuturesTrader.Views
 
         /// <summary>
         /// 获取合约配置文件路径
+        /// ⚠️ 已废弃：现在使用统一的 contract_monitoring_states.json 文件
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 获取统一的配置状态文件路径")]
         private string GetContractConfigFilePath()
         {
-            var documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            var appPath = Path.Combine(documentsPath, "BinanceFuturesTrader");
-            return Path.Combine(appPath, "contract_configs.json");
+            // 🔧 修改：返回新的统一状态文件路径
+            var appDataPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "BinanceFuturesTrader",
+                "AutoMonitor");
+            return Path.Combine(appDataPath, "contract_monitoring_states.json");
         }
 
         /// <summary>
@@ -3132,6 +4126,577 @@ namespace BinanceFuturesTrader.Views
                 return "Black";
             }
         }
+
+        /// <summary>
+        /// 处理状态更新事件
+        /// </summary>
+        private void OnStatusUpdated(object? sender, StatusUpdateEventArgs e)
+        {
+            try
+            {
+                // 🔍【UI状态更新诊断】记录接收到的状态更新事件
+                _logger.LogCritical($"🔍【UI状态更新诊断】接收到状态更新事件:");
+                _logger.LogCritical($"   📊 合约: {e.Symbol}_{e.PositionSide}");
+                _logger.LogCritical($"   📈 保本执行: {e.BreakEvenExecuted}");
+                _logger.LogCritical($"   📈 推仓结果: {e.AddPositionResults?.Count ?? 0}个");
+                _logger.LogCritical($"   📈 保盈结果: {e.ProfitProtectionResults?.Count ?? 0}个");
+                
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    _logger.LogCritical($"🚀【UI线程执行】开始调用UpdateContractStatus");
+                    UpdateContractStatus(e);
+                    _logger.LogCritical($"✅【UI线程完成】UpdateContractStatus执行完毕");
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 处理状态更新失败");
+                AddLog($"❌ 处理状态更新失败: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 【重要新增】：持仓变化事件处理器 - 立即响应新开仓
+        /// </summary>
+        private void OnPositionChanged(object? sender, PositionChangedEventArgs e)
+        {
+            try
+            {
+                Application.Current.Dispatcher.Invoke(async () =>
+                {
+                    AddLog($"🆕【持仓变化】{e.Symbol}_{e.PositionSide}: {e.ChangeType} - 数量:{e.CurrentQuantity:F6}, 浮盈:{e.CurrentPnl:F2}U");
+                    
+                    if (e.ChangeType == PositionChangeType.Opened)
+                    {
+                        AddLog($"🔄 检测到新开仓，自动生成合约配置...");
+                        
+                        // 立即刷新持仓数据，确保新仓位显示在列表中
+                        await RefreshPositionDataAsync();
+                        
+                        AddLog($"✅ 新开仓配置已添加到合约列表");
+                    }
+                    else if (e.ChangeType == PositionChangeType.Closed)
+                    {
+                        AddLog($"❌ 检测到平仓，将移除对应的合约配置");
+                        await RefreshPositionDataAsync();
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理持仓变化事件失败");
+                AddLog($"❌ 处理持仓变化事件失败: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// 更新合约状态显示
+        /// </summary>
+        private void UpdateContractStatus(StatusUpdateEventArgs statusUpdate)
+        {
+            try
+            {
+                // 🔧 修复：正确处理所有持仓方向，包括BOTH
+                var positionSideText = statusUpdate.PositionSide switch
+                {
+                    "LONG" => "LONG",
+                    "SHORT" => "SHORT", 
+                    "BOTH" => "BOTH",
+                    _ => statusUpdate.PositionSide // 保持原值
+                };
+                
+                var contractName = $"{statusUpdate.Symbol} {positionSideText}";
+                var config = ContractConfigs.FirstOrDefault(c => c.ContractName == contractName);
+                
+                if (config == null)
+                {
+                    AddLog($"⚠️ 未找到合约配置: {contractName}");
+                    return;
+                }
+                
+                AddLog($"🔄【状态更新】{contractName}: 开始更新状态显示");
+                
+                // 更新保本状态
+                if (statusUpdate.BreakEvenExecuted)
+                {
+                    config.BreakEvenStatus = "√";
+                    AddLog($"✅【保本状态】{contractName}: 已执行");
+                }
+                
+                // 更新推仓状态
+                foreach (var result in statusUpdate.AddPositionResults)
+                {
+                    var tierIndex = result.Key;
+                    var isSuccess = result.Value;
+                    
+                    switch (tierIndex)
+                    {
+                        case 1:
+                            config.PushTier1Status = isSuccess ? "√" : "-";
+                            break;
+                        case 2:
+                            config.PushTier2Status = isSuccess ? "√" : "-";
+                            break;
+                        case 3:
+                            config.PushTier3Status = isSuccess ? "√" : "-";
+                            break;
+                        case 4:
+                            config.PushTier4Status = isSuccess ? "√" : "-";
+                            break;
+                    }
+                    
+                    if (isSuccess)
+                    {
+                        AddLog($"✅【推仓状态】{contractName}-阶梯{tierIndex}: 已执行");
+                    }
+                }
+                
+                // 更新保盈状态
+                foreach (var result in statusUpdate.ProfitProtectionResults)
+                {
+                    var tierIndex = result.Key;
+                    var isSuccess = result.Value;
+                    
+                    switch (tierIndex)
+                    {
+                        case 1:
+                            config.ProfitTier1Status = isSuccess ? "√" : "-";
+                            break;
+                        case 2:
+                            config.ProfitTier2Status = isSuccess ? "√" : "-";
+                            break;
+                        case 3:
+                            config.ProfitTier3Status = isSuccess ? "√" : "-";
+                            break;
+                    }
+                    
+                    if (isSuccess)
+                    {
+                        AddLog($"✅【保盈状态】{contractName}-阶梯{tierIndex}: 已执行");
+                    }
+                }
+                
+                // 刷新UI显示
+                ContractConfigDataGrid.Items.Refresh();
+                
+                AddLog($"✅【状态更新】{contractName}: 状态显示已更新");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"❌ 更新合约状态失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 【关键修复】统一获取合约状态，确保UI与后台状态一致
+        /// </summary>
+        private string GetUnifiedContractStatus(string symbol, string positionSide, string statusType, int? tierIndex = null)
+        {
+            try
+            {
+                // 1. 🔧 【关键修复】直接从状态管理器获取状态，确保使用相同的键格式
+                // 通过反射获取状态管理器（这是临时解决方案）
+                var stateManagerField = _autoMonitorService.GetType().GetField("_unifiedStateManager", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                if (stateManagerField != null)
+                {
+                    var stateManager = stateManagerField.GetValue(_autoMonitorService);
+                    if (stateManager != null)
+                    {
+                        // 调用IsOperationExecuted方法检查状态
+                        var method = stateManager.GetType().GetMethod("IsOperationExecuted");
+                        if (method != null)
+                        {
+                            var isExecuted = (bool)method.Invoke(stateManager, new object[] { symbol, positionSide, statusType, tierIndex });
+                            if (isExecuted)
+                            {
+                                AddLog($"🔍【状态检查】从状态管理器获取 {symbol}_{positionSide} {statusType}{(tierIndex.HasValue ? $"_T{tierIndex}" : "")} = 已执行");
+                                return "√";
+                            }
+                        }
+                    }
+                }
+                
+                // 2. 回退：从positionProfiles检查（向后兼容）
+                var positionProfiles = _autoMonitorService.GetPositionProfiles();
+                var profileKey = $"{symbol}_{positionSide}";
+                
+                if (positionProfiles.ContainsKey(profileKey))
+                {
+                    var profile = positionProfiles[profileKey];
+                    
+                    // 使用正确的键格式检查
+                    string triggerKey = $"{symbol}_{positionSide}_{statusType}";
+                    if (tierIndex.HasValue)
+                    {
+                        triggerKey += $"_{tierIndex}";
+                    }
+                    
+                    // 检查触发记录
+                    if (profile.TriggerRecords.ContainsKey(triggerKey))
+                    {
+                        var record = profile.TriggerRecords[triggerKey];
+                        if (record.IsExecuted)
+                        {
+                            AddLog($"🔍【状态检查】从档案获取 {symbol}_{positionSide} {statusType}{(tierIndex.HasValue ? $"_T{tierIndex}" : "")} = 已执行");
+                            return "√";
+                        }
+                    }
+                }
+                
+                // 2. 回退到本地手动修改文件
+                var configPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "BinanceFuturesTrader", "ContractConfigs.json");
+                
+                if (File.Exists(configPath))
+                {
+                    var json = File.ReadAllText(configPath);
+                    var savedConfigs = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, ContractConfigData>>(json);
+                    var contractName = $"{symbol} {positionSide}";
+                    
+                    if (savedConfigs != null && savedConfigs.TryGetValue(contractName, out var savedConfig))
+                    {
+                        var manualStatus = statusType switch
+                        {
+                            "BreakEven" => savedConfig.BreakEvenStatus,
+                            "AddPosition" when tierIndex == 1 => savedConfig.PushTier1Status,
+                            "AddPosition" when tierIndex == 2 => savedConfig.PushTier2Status,
+                            "AddPosition" when tierIndex == 3 => savedConfig.PushTier3Status,
+                            "AddPosition" when tierIndex == 4 => savedConfig.PushTier4Status,
+                            "ProfitProtection" when tierIndex == 1 => savedConfig.ProfitTier1Status,
+                            "ProfitProtection" when tierIndex == 2 => savedConfig.ProfitTier2Status,
+                            "ProfitProtection" when tierIndex == 3 => savedConfig.ProfitTier3Status,
+                            _ => "-"
+                        };
+                        
+                        if (!string.IsNullOrEmpty(manualStatus) && manualStatus != "-")
+                        {
+                            AddLog($"🔍【状态检查】从手动修改文件获取 {contractName} {statusType}{(tierIndex.HasValue ? $"_T{tierIndex}" : "")} = {manualStatus}");
+                            return manualStatus;
+                        }
+                    }
+                }
+                
+                // 3. 默认返回未触发
+                return "-";
+            }
+            catch (Exception ex)
+            {
+                AddLog($"❌ 获取统一状态失败: {symbol}_{positionSide} {statusType} - {ex.Message}");
+                return "-";
+            }
+        }
+
+        /// <summary>
+        /// 初始化窗口配置
+        /// </summary>
+        private void InitializeWindow()
+        {
+            try
+            {
+                AddLog("📝 加载配置列表...");
+                
+                // 加载所有可用配置到下拉框
+                LoadAvailableConfigs();
+                
+                // 🔧 【修复】检查是否为第一次打开（没有配置且没有合约状态）
+                var hasExistingStates = CheckForExistingContractStates();
+                
+                if (_configManager.Configurations.Count == 0 && !hasExistingStates)
+                {
+                    AddLog("⚠️ 检测到这是第一次使用自动盯盘功能");
+                    AddLog("💡 请先点击右上角的'编辑配置'按钮创建您的第一个配置");
+                    
+                    // 显示提醒对话框
+                    var result = MessageBox.Show(
+                        "欢迎使用自动盯盘功能！\n\n" +
+                        "检测到您还没有创建任何配置。\n" +
+                        "自动盯盘功能需要先创建基础配置才能使用。\n\n" +
+                        "是否现在就打开配置编辑器创建您的第一个配置？",
+                        "首次使用提示",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Information);
+                    
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        // 直接打开配置编辑器
+                        EditConfigButton_Click(null, null);
+                        return;
+                    }
+                    else
+                    {
+                        AddLog("🔧 您可以随时点击'编辑配置'按钮来创建配置");
+                    }
+                    
+                    return; // 没有配置时直接返回
+                }
+                else if (_configManager.Configurations.Count == 0 && hasExistingStates)
+                {
+                    AddLog("🔧 检测到有已保存的合约配置，建议直接使用'自动盯盘'功能");
+                }
+                
+                // 🔧 关键修复：优先从MainViewModel获取当前账户的配置
+                _currentConfig = _mainViewModel?.CurrentAutoMonitorConfig;
+                
+                if (_currentConfig != null)
+                {
+                    AddLog($"✅ 从MainViewModel获取到配置: {_currentConfig.Name}");
+                    // 确保配置管理器也使用同样的配置
+                    _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                }
+                else
+                {
+                    // 🔧 如果MainViewModel没有配置，尝试从配置管理器获取
+                    _currentConfig = _configManager.CurrentConfig;
+                    
+                    if (_currentConfig == null)
+                    {
+                        // 如果没有配置，获取第一个可用配置
+                        _currentConfig = _configManager.Configurations.FirstOrDefault();
+                        
+                        if (_currentConfig != null)
+                        {
+                            _configManager.SetCurrentConfiguration(_currentConfig.Name);
+                            AddLog($"🔄 使用第一个可用配置: {_currentConfig.Name}");
+                        }
+                    }
+                    else
+                    {
+                        AddLog($"🔄 从配置管理器获取配置: {_currentConfig.Name}");
+                    }
+                }
+                
+                if (_currentConfig == null)
+                {
+                    AddLog("❌ 无法获取任何可用配置，请检查配置文件");
+                    return;
+                }
+                
+                // 设置当前配置到MainViewModel
+                if (_mainViewModel?.SelectedAccount != null)
+                {
+                    _mainViewModel.SetCurrentAutoMonitorConfig(_currentConfig);
+                    AddLog($"✅ 配置已设置到MainViewModel: {_currentConfig.Name}");
+                }
+                
+                // 更新UI显示
+                UpdateConfigDisplay();
+                
+                // 基于当前配置生成DataGrid列结构
+                GenerateDataGridColumns();
+                
+                // 订阅配置变更事件（已在构造函数中完成）
+                // SubscribeToConfigurationEvents();
+                
+                AddLog($"✅ 窗口初始化完成，当前配置: {_currentConfig.Name}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "窗口初始化失败");
+                AddLog($"❌ 窗口初始化失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 获取合约配置文件路径
+        /// </summary>
+        private string GetContractConfigsFilePath()
+        {
+            var appDataPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "BinanceFuturesTrader",
+                "AutoMonitor");
+            
+            if (!Directory.Exists(appDataPath))
+            {
+                Directory.CreateDirectory(appDataPath);
+            }
+            
+            return Path.Combine(appDataPath, "ContractConfigs.json");
+        }
+
+        /// <summary>
+        /// 从基础配置和档案填充合约配置数据
+        /// </summary>
+        private void PopulateConfigFromBaseConfigAndProfile(ContractConfigViewModel config, AutoMonitorConfig baseConfig, ContractProfile profile, PositionInfo position)
+        {
+            try
+            {
+                // 基本信息
+                config.ContractName = $"{position.Symbol}_{(position.PositionAmt > 0 ? "LONG" : "SHORT")}";
+                config.Symbol = position.Symbol;
+                config.Side = position.PositionAmt > 0 ? "LONG" : "SHORT";
+                config.PositionSize = Math.Abs(position.PositionAmt);
+                config.EntryPrice = position.EntryPrice;
+                config.CurrentPrice = position.MarkPrice;
+                config.CurrentPnl = position.UnrealizedProfit;
+                
+                // 保本配置
+                if (baseConfig.BreakEvenConfig.IsEnabled)
+                {
+                    config.BreakEvenTarget = baseConfig.BreakEvenConfig.TriggerProfitAmount;
+                    config.BreakEvenStatus = GetTierStatusFromProfile(profile, "BreakEven", 0);
+                }
+                
+                // 推仓配置
+                if (baseConfig.AddPositionConfig.IsEnabled)
+                {
+                    var tiers = baseConfig.AddPositionConfig.Tiers.Take(4).ToList();
+                    for (int i = 0; i < tiers.Count; i++)
+                    {
+                        var tier = tiers[i];
+                        switch (i)
+                        {
+                            case 0:
+                                config.PushTier1Amount = tier.TriggerProfitAmount;
+                                config.PushTier1Status = GetTierStatusFromProfile(profile, "AddPosition", tier.TierIndex);
+                                break;
+                            case 1:
+                                config.PushTier2Amount = tier.TriggerProfitAmount;
+                                config.PushTier2Status = GetTierStatusFromProfile(profile, "AddPosition", tier.TierIndex);
+                                break;
+                            case 2:
+                                config.PushTier3Amount = tier.TriggerProfitAmount;
+                                config.PushTier3Status = GetTierStatusFromProfile(profile, "AddPosition", tier.TierIndex);
+                                break;
+                            case 3:
+                                config.PushTier4Amount = tier.TriggerProfitAmount;
+                                config.PushTier4Status = GetTierStatusFromProfile(profile, "AddPosition", tier.TierIndex);
+                                break;
+                        }
+                    }
+                }
+                
+                // 保盈配置
+                if (baseConfig.ProfitProtectionConfig.IsEnabled)
+                {
+                    var tiers = baseConfig.ProfitProtectionConfig.Tiers.Take(3).ToList();
+                    for (int i = 0; i < tiers.Count; i++)
+                    {
+                        var tier = tiers[i];
+                        switch (i)
+                        {
+                            case 0:
+                                config.ProfitTier1TriggerAmount = tier.TriggerProfitAmount;
+                                config.ProfitTier1ProtectionAmount = tier.ProtectionAmount;
+                                config.ProfitTier1Status = GetTierStatusFromProfile(profile, "ProfitProtection", tier.TierIndex);
+                                break;
+                            case 1:
+                                config.ProfitTier2TriggerAmount = tier.TriggerProfitAmount;
+                                config.ProfitTier2ProtectionAmount = tier.ProtectionAmount;
+                                config.ProfitTier2Status = GetTierStatusFromProfile(profile, "ProfitProtection", tier.TierIndex);
+                                break;
+                            case 2:
+                                config.ProfitTier3TriggerAmount = tier.TriggerProfitAmount;
+                                config.ProfitTier3ProtectionAmount = tier.ProtectionAmount;
+                                config.ProfitTier3Status = GetTierStatusFromProfile(profile, "ProfitProtection", tier.TierIndex);
+                                break;
+                        }
+                    }
+                }
+                
+                config.UpdateTime = DateTime.Now.ToString("HH:mm:ss");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"填充合约配置数据失败: {config.ContractName}");
+            }
+        }
+
+        /// <summary>
+        /// 从档案获取阶梯状态
+        /// </summary>
+        private string GetTierStatusFromProfile(ContractProfile profile, string tierType, int tierIndex)
+        {
+            try
+            {
+                switch (tierType)
+                {
+                    case "BreakEven":
+                        return profile.BreakEvenState.IsTriggered ? 
+                            (profile.BreakEvenState.ExecutionStatus == "已执行" ? "√" : profile.BreakEvenState.ExecutionStatus) : 
+                            "-";
+                    
+                    case "AddPosition":
+                        var addPositionState = profile.AddPositionStates.FirstOrDefault(s => s.TierIndex == tierIndex);
+                        return addPositionState?.IsTriggered == true ? 
+                            (addPositionState.ExecutionStatus == "已执行" ? "√" : addPositionState.ExecutionStatus) : 
+                            "-";
+                    
+                    case "ProfitProtection":
+                        var profitProtectionState = profile.ProfitProtectionStates.FirstOrDefault(s => s.TierIndex == tierIndex);
+                        return profitProtectionState?.IsTriggered == true ? 
+                            (profitProtectionState.ExecutionStatus == "已执行" ? "√" : profitProtectionState.ExecutionStatus) : 
+                            "-";
+                    
+                    default:
+                        return "-";
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"获取阶梯状态失败: {tierType}, 阶梯{tierIndex}");
+                return "-";
+            }
+        }
+
+        /// <summary>
+        /// 保存合约配置到文件
+        /// </summary>
+        private async Task SaveContractConfigToFileAsync(List<ContractConfigViewModel> configs)
+        {
+            try
+            {
+                var filePath = GetContractConfigsFilePath();
+                var json = JsonSerializer.Serialize(configs, new JsonSerializerOptions 
+                { 
+                    WriteIndented = true,
+                    PropertyNameCaseInsensitive = true
+                });
+                
+                await File.WriteAllTextAsync(filePath, json);
+                
+                _logger.LogInformation($"✅ 已保存 {configs.Count} 个合约配置到文件: {filePath}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "保存合约配置到文件失败");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 创建合约档案（简化版本，直接使用ContractProfile构造函数）
+        /// </summary>
+        private Task<ContractProfile> CreateProfileAsync(PositionInfo position, string baseConfigName)
+        {
+            try
+            {
+                var profile = new ContractProfile
+                {
+                    Symbol = position.Symbol,
+                    Side = position.PositionAmt > 0 ? "LONG" : "SHORT",
+                    PositionSize = position.PositionAmt,
+                    EntryPrice = position.EntryPrice,
+                    CurrentPrice = position.MarkPrice,
+                    UnrealizedPnl = position.UnrealizedProfit,
+                    BaseConfigName = baseConfigName,
+                    UseIndependentConfig = false,
+                    IsMonitoring = false,
+                    CreateTime = DateTime.Now,
+                    LastUpdateTime = DateTime.Now
+                };
+                
+                return Task.FromResult(profile);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"创建合约档案失败: {position.Symbol}");
+                throw;
+            }
+        }
     }
     
     /// <summary>
@@ -3148,6 +4713,27 @@ namespace BinanceFuturesTrader.Views
         private decimal _breakEvenTarget = 0;
         private string _breakEvenStatus = "-";
         private string _updateTime = "";
+        
+        // 🔧 添加缺失的基本属性
+        private string _symbol = "";
+        private string _side = "";
+        private decimal _positionSize = 0;
+        private decimal _entryPrice = 0;
+        private decimal _currentPrice = 0;
+        
+        // 🔧 添加推仓金额属性
+        private decimal _pushTier1Amount = 0;
+        private decimal _pushTier2Amount = 0;
+        private decimal _pushTier3Amount = 0;
+        private decimal _pushTier4Amount = 0;
+        
+        // 🔧 添加保盈金额属性
+        private decimal _profitTier1TriggerAmount = 0;
+        private decimal _profitTier1ProtectionAmount = 0;
+        private decimal _profitTier2TriggerAmount = 0;
+        private decimal _profitTier2ProtectionAmount = 0;
+        private decimal _profitTier3TriggerAmount = 0;
+        private decimal _profitTier3ProtectionAmount = 0;
 
         // 动态推仓和保盈数据
         private readonly Dictionary<string, string> _dynamicData = new Dictionary<string, string>();
@@ -3183,6 +4769,99 @@ namespace BinanceFuturesTrader.Views
         { 
             get => _updateTime; 
             set { _updateTime = value; OnPropertyChanged(); } 
+        }
+        
+        // 🔧 添加缺失的基本属性访问器
+        public string Symbol 
+        { 
+            get => _symbol; 
+            set { _symbol = value; OnPropertyChanged(); } 
+        }
+        
+        public string Side 
+        { 
+            get => _side; 
+            set { _side = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal PositionSize 
+        { 
+            get => _positionSize; 
+            set { _positionSize = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal EntryPrice 
+        { 
+            get => _entryPrice; 
+            set { _entryPrice = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal CurrentPrice 
+        { 
+            get => _currentPrice; 
+            set { _currentPrice = value; OnPropertyChanged(); } 
+        }
+        
+        // 🔧 添加推仓金额属性访问器
+        public decimal PushTier1Amount 
+        { 
+            get => _pushTier1Amount; 
+            set { _pushTier1Amount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal PushTier2Amount 
+        { 
+            get => _pushTier2Amount; 
+            set { _pushTier2Amount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal PushTier3Amount 
+        { 
+            get => _pushTier3Amount; 
+            set { _pushTier3Amount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal PushTier4Amount 
+        { 
+            get => _pushTier4Amount; 
+            set { _pushTier4Amount = value; OnPropertyChanged(); } 
+        }
+        
+        // 🔧 添加保盈金额属性访问器
+        public decimal ProfitTier1TriggerAmount 
+        { 
+            get => _profitTier1TriggerAmount; 
+            set { _profitTier1TriggerAmount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal ProfitTier1ProtectionAmount 
+        { 
+            get => _profitTier1ProtectionAmount; 
+            set { _profitTier1ProtectionAmount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal ProfitTier2TriggerAmount 
+        { 
+            get => _profitTier2TriggerAmount; 
+            set { _profitTier2TriggerAmount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal ProfitTier2ProtectionAmount 
+        { 
+            get => _profitTier2ProtectionAmount; 
+            set { _profitTier2ProtectionAmount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal ProfitTier3TriggerAmount 
+        { 
+            get => _profitTier3TriggerAmount; 
+            set { _profitTier3TriggerAmount = value; OnPropertyChanged(); } 
+        }
+        
+        public decimal ProfitTier3ProtectionAmount 
+        { 
+            get => _profitTier3ProtectionAmount; 
+            set { _profitTier3ProtectionAmount = value; OnPropertyChanged(); } 
         }
 
         // 颜色绑定属性
@@ -3493,6 +5172,8 @@ namespace BinanceFuturesTrader.Views
         {
             OnPropertyChanged(string.Empty);
         }
+
+
 
         /// <summary>
         /// 检查某个键是否被手动修改

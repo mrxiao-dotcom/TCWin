@@ -1232,6 +1232,9 @@ namespace BinanceFuturesTrader.ViewModels
             if (success)
             {
                 _logger.LogInformation($"移动止损单创建成功(替换模式): {position.Symbol} 数量{Math.Abs(position.PositionAmt):F4} 回调率{TrailingStopConfig.CallbackRate:F2}%");
+                
+                // 🔧 新增：保存移动止损状态
+                await SaveTrailingStopStatusAsync(position, null, TrailingStopMode.Replace);
             }
             else
             {
@@ -1560,6 +1563,61 @@ namespace BinanceFuturesTrader.ViewModels
 
             bool? dialogResult = inputWindow.ShowDialog();
             return dialogResult == true ? result : null;
+        }
+
+        /// <summary>
+        /// 保存移动止损状态到持久化存储
+        /// </summary>
+        private async Task SaveTrailingStopStatusAsync(PositionInfo position, long? fixedOrderId, TrailingStopMode mode)
+        {
+            try
+            {
+                // 获取最新创建的移动止损单ID
+                var latestOrders = await _binanceService.GetOpenOrdersAsync();
+                var trailingOrder = latestOrders
+                    .Where(o => o.Symbol == position.Symbol && 
+                               o.Type == "TRAILING_STOP_MARKET" && 
+                               o.Status == "NEW" && 
+                               o.ReduceOnly)
+                    .OrderByDescending(o => o.OrderId)
+                    .FirstOrDefault();
+
+                if (trailingOrder == null)
+                {
+                    _logger.LogWarning($"未找到新创建的移动止损单: {position.Symbol}");
+                    return;
+                }
+
+                var status = new TrailingStopStatus
+                {
+                    Symbol = position.Symbol,
+                    TrailingOrderId = trailingOrder.OrderId,
+                    FixedOrderId = fixedOrderId,
+                    CreatedTime = DateTime.Now,
+                    TrailingQuantity = trailingOrder.OrigQty,
+                    FixedQuantity = fixedOrderId.HasValue ? (decimal?)0 : null, // 如果有固定订单，稍后需要获取数量
+                    CallbackRate = TrailingStopConfig.CallbackRate,
+                    Mode = mode,
+                    Status = "活跃"
+                };
+
+                // 添加到状态集合
+                var existingStatus = TrailingStopStatuses.FirstOrDefault(s => s.Symbol == position.Symbol);
+                if (existingStatus != null)
+                {
+                    TrailingStopStatuses.Remove(existingStatus);
+                }
+                TrailingStopStatuses.Add(status);
+
+                // 保存到文件
+                await _trailingStopPersistenceService.AddOrUpdateStatusAsync(status, TrailingStopStatuses);
+                
+                _logger.LogInformation($"💾 移动止损状态已保存: {position.Symbol} 订单#{trailingOrder.OrderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"保存移动止损状态失败: {position?.Symbol}");
+            }
         }
 
         #endregion

@@ -20,6 +20,7 @@ namespace BinanceFuturesTrader.Views
         private AutoMonitorConfig? _selectedConfig;
         private bool _isEditMode = false;
         private AutoMonitorConfig? _editingConfig;
+        private bool _isNewConfig = false; // 🔧 新增：标识是否为新建配置
         
         // 风险金计算相关
         private decimal _currentRiskCapital = 0m;
@@ -27,10 +28,12 @@ namespace BinanceFuturesTrader.Views
         
         // 🔧 移除手动获取方法，改用RiskCapitalService
         
-        public SimpleConfigEditorWindow(MainViewModel? mainViewModel = null)
+        public SimpleConfigEditorWindow(MainViewModel? mainViewModel = null, BaseConfigManager? configManager = null)
         {
             InitializeComponent();
-            _configManager = new BaseConfigManager(NullLogger<BaseConfigManager>.Instance);
+            
+            // 🔧 修复：使用BaseConfigManager单例实例，确保全局配置统一
+            _configManager = BaseConfigManager.Instance;
             _configs = new ObservableCollection<AutoMonitorConfig>();
             
             // 🔧 初始化RiskCapitalService
@@ -66,6 +69,9 @@ namespace BinanceFuturesTrader.Views
             
             // 🔧 自动加载账户权益和风险次数
             LoadSystemAccountInfo();
+            
+            // 🔧 添加窗口激活事件，确保每次显示时都刷新配置
+            this.Activated += SimpleConfigEditorWindow_Activated;
         }
 
         /// <summary>
@@ -119,22 +125,86 @@ namespace BinanceFuturesTrader.Views
             }
         }
         
+        /// <summary>
+        /// 🔧 窗口激活时重新加载配置，确保显示最新的基础配置
+        /// </summary>
+        private void SimpleConfigEditorWindow_Activated(object? sender, EventArgs e)
+        {
+            try
+            {
+                // 强制重新加载配置，确保从基础配置文档导入最新数据
+                System.Diagnostics.Debug.WriteLine("🔄 窗口激活，重新加载配置...");
+                LoadConfigs();
+                
+                // 🔧 只有在确实没有选中配置且不在编辑模式时才自动选择第一个
+                if (ConfigListBox.SelectedItem == null && _configs.Count > 0 && !_isEditMode && _selectedConfig == null)
+                {
+                    ConfigListBox.SelectedIndex = 0;
+                    System.Diagnostics.Debug.WriteLine("🎯 自动选中第一个配置");
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"✅ 配置重新加载完成，当前配置数量: {_configs.Count}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"❌ 窗口激活时重新加载配置失败: {ex.Message}");
+            }
+        }
+        
         private void LoadConfigs()
         {
+            // 🔧 保存当前选中的配置名称
+            string currentSelectedConfigName = _selectedConfig?.Name;
+            
             _configs.Clear();
             
             try
             {
-                // 尝试从文件加载配置
-                LoadConfigsFromFile();
+                // 🔧 强制重新加载最新配置，确保从基础配置文档导入之前保存的数据
+                _configManager.RefreshConfigurations();
+                
+                // 🎯 完全从BaseConfigManager加载配置，之前保存的数据直接载入
+                foreach (var config in _configManager.Configurations)
+                {
+                    _configs.Add(config);
+                }
+                
+                // 🔧 显示配置文件路径和加载状态 - 使用统一路径管理
+                var configPath = _configManager.GetConfigFilePath();
+                System.Diagnostics.Debug.WriteLine($"📁 基础配置文档路径: {configPath}");
+                
+                // 🎯 修复：直接从基础配置文档导入，不进行旧文件迁移
+                if (_configs.Count == 0)
+                {
+                    System.Diagnostics.Debug.WriteLine("📝 当前没有基础配置，请创建新配置");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"✅ 已从基础配置文档加载 {_configs.Count} 个配置:");
+                    foreach (var config in _configs)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"   📋 配置: {config.Name}");
+                    }
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                // 如果加载失败，不创建任何默认配置
-                // 让用户手动创建配置
+                MessageBox.Show($"加载配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             
             ConfigListBox.ItemsSource = _configs;
+            
+            // 🔧 重新选中之前选中的配置，保持选择状态
+            if (!string.IsNullOrEmpty(currentSelectedConfigName))
+            {
+                var configToSelect = _configs.FirstOrDefault(c => c.Name == currentSelectedConfigName);
+                if (configToSelect != null)
+                {
+                    ConfigListBox.SelectedItem = configToSelect;
+                    _selectedConfig = configToSelect;
+                    System.Diagnostics.Debug.WriteLine($"🎯 重新选中配置: {configToSelect.Name}");
+                }
+            }
         }
         
         private void LoadConfigsFromFile()
@@ -175,19 +245,20 @@ namespace BinanceFuturesTrader.Views
         
         private string GetConfigFilePath()
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
-                               "BinanceFuturesTrader", "AutoMonitorConfigs.json");
+            return _configManager.GetConfigFilePath();
         }
         
         private void SetupUI()
         {
             SetReadOnlyMode();
             
-            if (_configs.Count > 0)
+            // 🔧 只有在没有选中配置时才自动选择第一个
+            if (_configs.Count > 0 && _selectedConfig == null)
             {
                 ConfigListBox.SelectedIndex = 0;
+                System.Diagnostics.Debug.WriteLine("🎯 SetupUI: 自动选中第一个配置");
             }
-            else
+            else if (_configs.Count == 0)
             {
                 // 没有配置时清空详细信息显示
                 ClearConfigDetails();
@@ -340,42 +411,40 @@ namespace BinanceFuturesTrader.Views
                 _editingConfig.AddPositionConfig.IsEnabled = AddPositionEnabledCheckBox.IsChecked ?? false;
                 _editingConfig.ProfitProtectionConfig.IsEnabled = ProfitProtectionEnabledCheckBox.IsChecked ?? false;
                 
-                // 区分新增和修改
-                if (_selectedConfig == null)
-                {
-                    // 新增模式：添加到列表
-                    _configs.Add(_editingConfig);
-                    // 选中新添加的配置
-                    ConfigListBox.SelectedItem = _editingConfig;
-                    _selectedConfig = _editingConfig;
-                    
-                    MessageBox.Show($"新配置 '{configName}' 创建成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                else
-                {
-                    // 修改模式：更新现有配置
-                    var index = _configs.IndexOf(_selectedConfig);
-                    if (index >= 0)
+                // 🎯 使用BaseConfigManager保存配置（统一处理新增和修改）
+                    try
                     {
-                        // 将修改后的配置复制回原配置
+                        // 将修改后的配置复制到选中的配置
                         _selectedConfig.Name = _editingConfig.Name;
                         _selectedConfig.LastModifiedTime = _editingConfig.LastModifiedTime;
                         _selectedConfig.BreakEvenConfig = _editingConfig.BreakEvenConfig;
                         _selectedConfig.AddPositionConfig = _editingConfig.AddPositionConfig;
                         _selectedConfig.ProfitProtectionConfig = _editingConfig.ProfitProtectionConfig;
                         
-                        // 刷新列表显示
-                        var selectedItem = ConfigListBox.SelectedItem;
-                        ConfigListBox.ItemsSource = null;
-                        ConfigListBox.ItemsSource = _configs;
-                        ConfigListBox.SelectedItem = selectedItem;
-                    }
+                        // 使用BaseConfigManager更新配置（会自动保存到文件）
+                        _configManager.UpdateConfiguration(_selectedConfig);
+                        
+                    // 重新加载配置列表，确保数据同步
+                    LoadConfigs();
                     
-                    MessageBox.Show($"配置 '{configName}' 更新成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // 重新选中更新后的配置
+                    var updatedConfig = _configs.FirstOrDefault(c => c.Name == configName);
+                    if (updatedConfig != null)
+                    {
+                        ConfigListBox.SelectedItem = updatedConfig;
+                        _selectedConfig = updatedConfig;
+                    }
+                        
+                    MessageBox.Show($"配置 '{configName}' 保存成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    
+                    // 🔧 重置新建标志
+                    _isNewConfig = false;
+                    }
+                    catch (Exception ex)
+                    {
+                    MessageBox.Show($"保存配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                        return;
                 }
-                
-                // 持久化保存配置
-                SaveConfigsToFile();
                 
                 SetReadOnlyMode();
                 LoadConfigDetails(_selectedConfig);
@@ -393,33 +462,97 @@ namespace BinanceFuturesTrader.Views
         {
             if (ConfigListBox.SelectedItem is AutoMonitorConfig selectedConfig)
             {
+                // 🔧 防止在编辑模式下意外退出编辑状态
+                // 如果选择的是当前正在编辑的配置，不要退出编辑模式
+                bool isSameConfig = _selectedConfig != null && selectedConfig.Name == _selectedConfig.Name;
+                
+                // 🔧 如果是同一个配置，直接返回，避免重复处理
+                if (isSameConfig)
+                {
+                    return;
+                }
+                
                 _selectedConfig = selectedConfig;
+                _isNewConfig = false; // 🔧 选择已有配置时重置新建标志
                 
                 if (_isEditMode)
                 {
+                    // 如果当前在编辑模式下选择了不同配置，退出编辑模式
                     SetReadOnlyMode();
                 }
                 
+                // 加载新选择的配置详情
                 LoadConfigDetails(selectedConfig);
             }
         }
         
         private void NewConfigButton_Click(object sender, RoutedEventArgs e)
         {
+            try
+        {
             // 🔧 新建配置时自动读取和填充账户权益
-            var accountEquity = _riskCapitalService.GetCurrentAccountEquity();
-            var riskTimes = _riskCapitalService.GetCurrentRiskCapitalTimes();
+                var accountEquity = _riskCapitalService?.GetCurrentAccountEquity() ?? 1000m;
+                var riskTimes = _riskCapitalService?.GetCurrentRiskCapitalTimes() ?? 10;
             
             var newConfig = CreateNewConfig();
-            newConfig.Name = $"新配置{_configs.Count + 1}";
+                
+                // 🔧 生成唯一的配置名称
+                string baseName = "新配置";
+                string configName = baseName;
+                int counter = 1;
+                while (_configs.Any(c => c.Name == configName))
+                {
+                    configName = $"{baseName}{counter}";
+                    counter++;
+                }
+                newConfig.Name = configName;
+                
             _editingConfig = newConfig;
             
-            // 重要：清空当前选中的配置，表示这是新增操作
-            _selectedConfig = null;
-            ConfigListBox.SelectedItem = null;
-            
+                // 🔧 关键修复：先将配置保存到BaseConfigManager，确保持久化
+                try
+                {
+                    // 使用BaseConfigManager创建临时配置
+                    var tempConfig = _configManager.CreateConfiguration(configName, accountEquity, riskTimes);
+                    
+                    // 更新配置内容
+                    tempConfig.BreakEvenConfig = newConfig.BreakEvenConfig;
+                    tempConfig.AddPositionConfig = newConfig.AddPositionConfig;
+                    tempConfig.ProfitProtectionConfig = newConfig.ProfitProtectionConfig;
+                    tempConfig.LastModifiedTime = DateTime.Now;
+                    
+                    // 保存到BaseConfigManager
+                    _configManager.UpdateConfiguration(tempConfig);
+                    
+                    // 使用持久化后的配置
+                    _editingConfig = tempConfig;
+                    
+                    // 重新加载配置列表，确保包含新配置
+                    LoadConfigs();
+                    
+                    // 选中新创建的配置
+                    var createdConfig = _configs.FirstOrDefault(c => c.Name == configName);
+                    if (createdConfig != null)
+                    {
+                        // 🔧 先设置编辑模式标志，防止选择变化事件干扰
+                        _selectedConfig = createdConfig;
+                        _isNewConfig = false; // 已经持久化，不再是临时新建状态
+                        
+                        // 🔧 进入编辑模式
             SetEditMode();
-            LoadConfigDetails(newConfig);
+                        
+                        // 🔧 设置选中项（此时_isEditMode已经为true，不会被选择变化事件干扰）
+                        ConfigListBox.SelectedItem = createdConfig;
+                        
+                        // 手动加载配置详情，确保显示正确
+                        LoadConfigDetails(tempConfig);
+                    }
+                }
+                catch (Exception createEx)
+                {
+                    MessageBox.Show($"创建配置失败：{createEx.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
             
             // 🔧 自动填充账户权益到风险金计算区域
             AccountEquityTextBox.Text = accountEquity.ToString("F2");
@@ -429,13 +562,22 @@ namespace BinanceFuturesTrader.Views
             _currentRiskCapital = accountEquity / riskTimes;
             SingleRiskCapitalTextBox.Text = _currentRiskCapital.ToString("F2");
             
-            MessageBox.Show($"已自动读取账户信息：\n\n" +
-                          $"账户权益：{accountEquity:F2} USDT\n" +
-                          $"风险次数：{riskTimes}\n" +
-                          $"单倍风险金：{_currentRiskCapital:F2} USDT\n\n" +
-                          $"配置已根据风险金自动设置，保本目标为 {_currentRiskCapital:F2} USDT (1倍风险金)\n\n" +
-                          $"如需调整，请修改风险金计算区域的参数后重新计算。",
-                          "自动读取账户信息", MessageBoxButton.OK, MessageBoxImage.Information);
+                // 🔧 自动聚焦到配置名称输入框，方便用户修改
+                ConfigNameTextBox.Focus();
+                ConfigNameTextBox.SelectAll();
+                
+                MessageBox.Show($"✅ 新配置已创建并保存：{configName}\n\n" +
+                              $"已自动读取账户信息：\n" +
+                              $"• 账户权益：{accountEquity:F2} USDT\n" +
+                              $"• 风险次数：{riskTimes}\n" +
+                              $"• 单倍风险金：{_currentRiskCapital:F2} USDT\n\n" +
+                              $"配置已保存到文件，您可以继续编辑参数。",
+                              "新建配置成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"创建新配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
         
         private void EditConfigButton_Click(object sender, RoutedEventArgs e)
@@ -486,14 +628,22 @@ namespace BinanceFuturesTrader.Views
             
             if (result == MessageBoxResult.Yes)
             {
-                _configs.Remove(_selectedConfig);
-                _selectedConfig = null;
-                ClearConfigDetails();
-                
-                // 持久化保存更改
-                SaveConfigsToFile();
-                
-                MessageBox.Show("配置删除成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                try
+                {
+                    // 🎯 使用BaseConfigManager删除配置
+                    _configManager.DeleteConfiguration(_selectedConfig.Name);
+                    
+                    // 从本地列表中移除
+                    _configs.Remove(_selectedConfig);
+                    _selectedConfig = null;
+                    ClearConfigDetails();
+                    
+                    MessageBox.Show("配置删除成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"删除配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
         
@@ -729,6 +879,9 @@ namespace BinanceFuturesTrader.Views
         {
             if (_editingConfig == null) return;
             
+            // 🔧 保存当前选中的配置名称，防止在DataGrid更新时丢失选择
+            string currentSelectedConfigName = _selectedConfig?.Name;
+            
             // 1. 自动填写保本配置（1倍风险金）
             _editingConfig.BreakEvenConfig.IsEnabled = true;
             _editingConfig.BreakEvenConfig.TriggerProfitAmount = Math.Round(_currentRiskCapital * 1.0m, 2);
@@ -775,8 +928,16 @@ namespace BinanceFuturesTrader.Views
             
             // 更新界面显示
             AddPositionEnabledCheckBox.IsChecked = true;
-            AddPositionTiersDataGrid.ItemsSource = null;
+            
+            // 🔧 安全地更新DataGrid数据源，避免触发意外事件
+            if (AddPositionTiersDataGrid.ItemsSource != _editingConfig.AddPositionConfig.Tiers)
+            {
             AddPositionTiersDataGrid.ItemsSource = _editingConfig.AddPositionConfig.Tiers;
+            }
+            else
+            {
+                AddPositionTiersDataGrid.Items.Refresh();
+            }
             
             // 3. 自动填写保盈配置（保留现有手工添加的阶梯）
             _editingConfig.ProfitProtectionConfig.IsEnabled = true;
@@ -810,10 +971,56 @@ namespace BinanceFuturesTrader.Views
             
             // 更新界面显示
             ProfitProtectionEnabledCheckBox.IsChecked = true;
-            ProfitProtectionTiersDataGrid.ItemsSource = null;
+            
+            // 🔧 安全地更新DataGrid数据源，避免触发意外事件
+            if (ProfitProtectionTiersDataGrid.ItemsSource != _editingConfig.ProfitProtectionConfig.Tiers)
+            {
             ProfitProtectionTiersDataGrid.ItemsSource = _editingConfig.ProfitProtectionConfig.Tiers;
+            }
+            else
+            {
+                ProfitProtectionTiersDataGrid.Items.Refresh();
+            }
+            
+            // 🔧 确保配置选择没有被意外改变
+            if (!string.IsNullOrEmpty(currentSelectedConfigName) && 
+                (_selectedConfig == null || _selectedConfig.Name != currentSelectedConfigName))
+            {
+                var configToReselect = _configs.FirstOrDefault(c => c.Name == currentSelectedConfigName);
+                if (configToReselect != null)
+                {
+                    ConfigListBox.SelectedItem = configToReselect;
+                    _selectedConfig = configToReselect;
+                    System.Diagnostics.Debug.WriteLine($"🔧 自动填写后重新选中配置: {configToReselect.Name}");
+                }
+            }
         }
         
         #endregion
+
+        /// <summary>
+        /// 窗口关闭事件处理
+        /// </summary>
+        protected override void OnClosed(EventArgs e)
+        {
+            try
+            {
+                // 🔧 新增：通知BaseConfigManager配置可能发生了变化
+                _configManager.RefreshConfigurations();
+                
+                // 🔧 新增：触发配置变更事件，通知其他窗口刷新
+                if (_selectedConfig != null)
+                {
+                    _configManager.SetCurrentConfiguration(_selectedConfig.Name);
+                }
+                
+                base.OnClosed(e);
+            }
+            catch (Exception ex)
+            {
+                // 记录错误但不阻止窗口关闭
+                System.Diagnostics.Debug.WriteLine($"窗口关闭处理异常：{ex.Message}");
+            }
+        }
     }
 } 

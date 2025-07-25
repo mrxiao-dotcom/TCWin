@@ -16,6 +16,7 @@ namespace BinanceFuturesTrader.Services
     {
         private readonly ILogger _logger;
         private readonly AutoMonitorPersistenceService _persistenceService;
+        private readonly ContractMonitoringStateService? _contractStateService;
         private IEventBus? _eventBus;
         
         // 🎯 核心数据：使用ContractExecutionState作为唯一数据模型
@@ -37,16 +38,24 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         public event EventHandler<StateChangedEventArgs>? StateChanged;
 
-        public UnifiedStateManager(ILogger logger)
+        public UnifiedStateManager(ILogger logger, ContractMonitoringStateService? contractStateService = null)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _contractStateService = contractStateService;
             
             // 为持久化服务创建专用的logger
             var persistenceLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole())
                 .CreateLogger<AutoMonitorPersistenceService>();
             _persistenceService = new AutoMonitorPersistenceService(persistenceLogger);
             
-            _logger.LogInformation("🔄 统一状态管理器已初始化");
+            if (_contractStateService != null)
+            {
+                _logger.LogInformation("🔄 统一状态管理器已初始化（含新状态服务）");
+            }
+            else
+            {
+                _logger.LogInformation("🔄 统一状态管理器已初始化（兼容模式）");
+            }
         }
 
         /// <summary>
@@ -442,8 +451,108 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
+                // 1. 保存到旧的持久化系统（向后兼容）
                 _persistenceService.SavePositionProfiles(_legacyProfiles);
                 _persistenceService.SaveExecutionHistory(_executionHistory);
+                
+                // 2. 🔧 【关键修复】直接同步内存状态到统一状态文件
+                if (_contractStateService != null)
+                {
+                    try
+                    {
+                        _logger.LogCritical($"🔍【状态同步诊断】开始同步 {_contractStates.Count} 个内存状态到文件");
+                        
+                        // 🔧 【优化】一次性加载所有监控状态，避免重复加载
+                        var currentMonitoringStates = _contractStateService.LoadMonitoringStates();
+                        _logger.LogCritical($"   📂 当前监控状态文件中有 {currentMonitoringStates.Count} 个合约");
+                        
+                        foreach (var contractState in _contractStates.Values)
+                        {
+                            var contractKey = contractState.ContractKey;
+                            _logger.LogCritical($"   🔄 检查合约: {contractKey}");
+                            
+                            // 🔧 【关键修复】确保合约存在于监控状态中
+                            if (!currentMonitoringStates.ContainsKey(contractKey))
+                            {
+                                _logger.LogCritical($"   ⚠️ 合约 {contractKey} 不在监控状态文件中，跳过状态同步");
+                                _logger.LogCritical($"   📋 可用合约键: {string.Join(", ", currentMonitoringStates.Keys)}");
+                                continue;
+                            }
+                            
+                            if (contractState.BreakEvenState.IsExecuted)
+                            {
+                                _logger.LogCritical($"   ✅ 同步保本状态: {contractKey} = 已执行");
+                                _contractStateService.UpdateExecutionStatus(
+                                    contractKey, "BreakEven", null,
+                                    contractState.BreakEvenState.IsSuccess, 
+                                    contractState.BreakEvenState.TriggerPnl, 
+                                    contractState.BreakEvenState.Message ?? "保本执行成功");
+                            }
+                            
+                            // 🔧 【关键修复】直接更新推仓和保盈阶梯状态
+                            foreach (var tierState in contractState.TierStates.Values)
+                            {
+                                // 推仓状态更新
+                                if (tierState.AddPositionRecord.IsExecuted)
+                                {
+                                    _logger.LogCritical($"   ✅ 同步推仓阶梯{tierState.TierIndex}状态: {contractKey} = 已执行");
+                                    _contractStateService.UpdateExecutionStatus(
+                                        contractKey, "AddPosition", tierState.TierIndex,
+                                        tierState.AddPositionRecord.IsSuccess,
+                                        tierState.AddPositionRecord.TriggerPnl,
+                                        tierState.AddPositionRecord.Message ?? "推仓执行成功");
+                                }
+                                
+                                // 保盈状态更新
+                                if (tierState.ProfitProtectionRecord.IsExecuted)
+                                {
+                                    _logger.LogCritical($"   ✅ 同步保盈阶梯{tierState.TierIndex}状态: {contractKey} = 已执行");
+                                    _contractStateService.UpdateExecutionStatus(
+                                        contractKey, "ProfitProtection", tierState.TierIndex,
+                                        tierState.ProfitProtectionRecord.IsSuccess,
+                                        tierState.ProfitProtectionRecord.TriggerPnl,
+                                        tierState.ProfitProtectionRecord.Message ?? "保盈执行成功");
+                                }
+                            }
+                        }
+                        
+                        _logger.LogCritical("🔧 【状态同步完成】所有内存状态已同步到 contract_monitoring_states.json");
+                        
+                        // 🔧 【关键验证】立即验证状态是否真的被保存
+                        _logger.LogCritical("🔍【验证状态保存】重新读取文件验证同步结果...");
+                        var verifyStates = _contractStateService.LoadMonitoringStates();
+                        foreach (var contractState in _contractStates.Values)
+                        {
+                            var contractKey = contractState.ContractKey;
+                            if (verifyStates.TryGetValue(contractKey, out var savedState))
+                            {
+                                // 验证保本状态
+                                if (contractState.BreakEvenState.IsExecuted)
+                                {
+                                    var fileSavedCorrectly = savedState.BreakEvenConfig.IsExecuted;
+                                    _logger.LogCritical($"   🔍 保本状态验证: {contractKey} - 内存={contractState.BreakEvenState.IsExecuted}, 文件={fileSavedCorrectly}");
+                                }
+                                
+                                // 验证推仓状态
+                                foreach (var tierState in contractState.TierStates.Values.Where(t => t.AddPositionRecord.IsExecuted))
+                                {
+                                    var savedTier = savedState.AddPositionConfig.Tiers.FirstOrDefault(t => t.TierIndex == tierState.TierIndex);
+                                    var fileSavedCorrectly = savedTier?.IsExecuted ?? false;
+                                    _logger.LogCritical($"   🔍 推仓阶梯{tierState.TierIndex}状态验证: {contractKey} - 内存={tierState.AddPositionRecord.IsExecuted}, 文件={fileSavedCorrectly}");
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogCritical($"   ❌ 验证失败：文件中未找到合约 {contractKey}");
+                            }
+                        }
+                    }
+                    catch (Exception newEx)
+                    {
+                        _logger.LogError(newEx, "❌ 同步到新状态文件失败，但旧系统同步成功");
+                    }
+                }
+                
                 _lastSyncTime = DateTime.Now;
                 
                 _logger.LogDebug($"💾 状态已同步到持久化存储: {_contractStates.Count}个合约, {_executionHistory.Count}条历史");

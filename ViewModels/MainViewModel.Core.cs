@@ -34,6 +34,9 @@ namespace BinanceFuturesTrader.ViewModels
         
         // 🔧 新增配置持久化服务
         private readonly AutoMonitorConfigPersistenceService _configPersistenceService;
+        
+        // 🔧 新增移动止损状态持久化服务
+        private readonly TrailingStopPersistenceService _trailingStopPersistenceService;
         #endregion
 
         #region 定时器
@@ -140,6 +143,25 @@ namespace BinanceFuturesTrader.ViewModels
         }
         
         /// <summary>
+        /// 🔧 新增：更新账户的自动监控配置
+        /// </summary>
+        /// <param name="accountName">账户名称</param>
+        /// <param name="config">配置对象</param>
+        public void UpdateAccountAutoMonitorConfig(string accountName, AutoMonitorConfig config)
+        {
+            _accountAutoMonitorConfigs[accountName] = config;
+            
+            // 如果是当前选中的账户，也更新当前配置
+            if (SelectedAccount?.Name == accountName)
+            {
+                _currentAutoMonitorConfig = config;
+                OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+            }
+            
+            _logger?.LogInformation($"已更新账户 '{accountName}' 的自动监控配置: {config.Name}");
+        }
+        
+        /// <summary>
         /// 获取账户自动监控配置字典
         /// </summary>
         public IReadOnlyDictionary<string, AutoMonitorConfig> GetAccountAutoMonitorConfigs() 
@@ -205,6 +227,46 @@ namespace BinanceFuturesTrader.ViewModels
                 _logger.LogError(ex, "通知配置同步管理器时发生异常");
             }
         }
+
+        /// <summary>
+        /// 恢复移动止损状态
+        /// </summary>
+        private async Task RecoverTrailingStopStatusAsync()
+        {
+            try
+            {
+                if (_trailingStopPersistenceService == null)
+                {
+                    _logger.LogWarning("移动止损持久化服务未初始化，跳过状态恢复");
+                    return;
+                }
+
+                _logger.LogInformation("开始恢复移动止损状态...");
+                var recoveredStatuses = await _trailingStopPersistenceService.RecoverTrailingStopStatusAsync();
+                
+                if (recoveredStatuses.Any())
+                {
+                    // 更新移动止损状态集合
+                    TrailingStopStatuses.Clear();
+                    foreach (var status in recoveredStatuses)
+                    {
+                        TrailingStopStatuses.Add(status);
+                    }
+                    
+                    _logger.LogInformation($"✅ 移动止损状态恢复完成，恢复了 {recoveredStatuses.Count} 个状态");
+                    StatusMessage = $"✅ 恢复了 {recoveredStatuses.Count} 个移动止损状态";
+                }
+                else
+                {
+                    _logger.LogInformation("没有需要恢复的移动止损状态");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "恢复移动止损状态失败");
+                StatusMessage = $"恢复移动止损状态失败: {ex.Message}";
+            }
+        }
         #endregion
 
         #region 构造函数
@@ -229,6 +291,10 @@ namespace BinanceFuturesTrader.ViewModels
             _logger = logger;
             _serviceProvider = serviceProvider;
             _configPersistenceService = configPersistenceService;
+            
+            // 🔧 新增移动止损状态持久化服务
+            var trailingStopLogger = serviceProvider.GetService<ILogger<TrailingStopPersistenceService>>();
+            _trailingStopPersistenceService = new TrailingStopPersistenceService(trailingStopLogger ?? logger as ILogger<TrailingStopPersistenceService>, binanceService);
             
             // 🔧 修改：适度优化定时器频率，保持实用性
             _priceTimer = new DispatcherTimer();
@@ -258,6 +324,9 @@ namespace BinanceFuturesTrader.ViewModels
                 
                 // 🔧 新增：加载自动盯盘配置
                 LoadAutoMonitorConfigs();
+                
+                // 🔧 新增：恢复移动止损状态
+                await RecoverTrailingStopStatusAsync();
                 
                 _isInitializing = false;
                 
@@ -493,26 +562,49 @@ namespace BinanceFuturesTrader.ViewModels
         {
             try
             {
+                _logger.LogCritical("🔍【初始加载】开始加载所有账户的自动盯盘配置");
+                
                 var configs = _configPersistenceService.LoadAccountConfigs();
                 _accountAutoMonitorConfigs.Clear();
+                
+                _logger.LogCritical($"🔍【初始加载】从配置服务加载到 {configs.Count} 个账户配置");
                 
                 foreach (var kvp in configs)
                 {
                     _accountAutoMonitorConfigs[kvp.Key] = kvp.Value;
+                    _logger.LogCritical($"🔍【初始加载】账户配置: '{kvp.Key}' -> 配置名称: '{kvp.Value.Name}'");
                 }
                 
-                _logger.LogInformation($"💾 已加载 {configs.Count} 个账户的自动盯盘配置");
+                _logger.LogCritical($"💾【初始加载】已加载 {configs.Count} 个账户的自动盯盘配置");
                 
-                // 如果当前有选中的账户，尝试加载对应的配置
-                if (SelectedAccount != null && _accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var currentConfig))
+                // 🔧 关键修复：确保当前账户的配置被正确设置
+                if (SelectedAccount != null)
                 {
-                    _currentAutoMonitorConfig = currentConfig;
-                    _logger.LogInformation($"📋 已为当前账户 '{SelectedAccount.Name}' 加载配置: {currentConfig.Name}");
+                    _logger.LogCritical($"🔍【初始加载】当前选中账户: '{SelectedAccount.Name}'");
+                    
+                    if (_accountAutoMonitorConfigs.TryGetValue(SelectedAccount.Name, out var currentConfig))
+                    {
+                        _currentAutoMonitorConfig = currentConfig;
+                        _logger.LogCritical($"✅【初始加载】成功为当前账户 '{SelectedAccount.Name}' 加载配置: {currentConfig.Name}");
+                        
+                        // 🔧 强制通知配置变化，确保UI能获取到最新配置
+                        OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+                    }
+                    else
+                    {
+                        _currentAutoMonitorConfig = null;
+                        _logger.LogCritical($"⚠️【初始加载】账户 '{SelectedAccount.Name}' 没有找到保存的配置");
+                        OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+                    }
+                }
+                else
+                {
+                    _logger.LogCritical("⚠️【初始加载】当前没有选中的账户");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 加载自动盯盘配置失败");
+                _logger.LogCritical(ex, "❌【初始加载】加载自动盯盘配置失败");
             }
         }
         #endregion

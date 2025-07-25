@@ -12,121 +12,57 @@ namespace BinanceFuturesTrader.Services
     /// <summary>
     /// 自动盯盘状态持久化服务
     /// 负责保存和恢复自动盯盘的执行状态，避免重复执行
+    /// 🔧 已更新：使用新的统一文件系统，移除对旧文件的引用
     /// </summary>
     public class AutoMonitorPersistenceService
     {
         private readonly string _dataPath;
-        private readonly string _positionProfilesPath;
         private readonly string _executionHistoryPath;
-        private readonly string _contractConfigsPath;
+        private readonly string _contractConfigsPath; // 🔧 保留用于兼容性，但相关方法已废弃
+        private readonly FilePathManager _filePathManager;
         private readonly ILogger<AutoMonitorPersistenceService>? _logger;
         
-        public AutoMonitorPersistenceService(ILogger<AutoMonitorPersistenceService>? logger = null)
+        public AutoMonitorPersistenceService(
+            ILogger<AutoMonitorPersistenceService>? logger = null,
+            FilePathManager? filePathManager = null,
+            string? accountName = null)
         {
             _logger = logger;
+            _filePathManager = filePathManager ?? new FilePathManager();
             
-            // 创建数据目录
-            var appDataPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "BinanceFuturesTrader",
-                "AutoMonitor");
+            // 🔧 修复：使用统一路径管理，指向默认账号目录
+            var currentAccount = accountName ?? _filePathManager.GetCurrentAccountName();
+            _dataPath = _filePathManager.GetAccountDirectory(currentAccount);
+            _executionHistoryPath = _filePathManager.GetExecutionHistoryFilePath(currentAccount);
+            _contractConfigsPath = Path.Combine(_dataPath, "contract_configs.json"); // 🔧 保留用于兼容性
             
-            if (!Directory.Exists(appDataPath))
-            {
-                Directory.CreateDirectory(appDataPath);
-            }
+            // 🔧 已移除：_positionProfilesPath (已废弃，使用contract_monitoring_states.json)
             
-            _dataPath = appDataPath;
-            _positionProfilesPath = Path.Combine(appDataPath, "position_profiles.json");
-            _executionHistoryPath = Path.Combine(appDataPath, "execution_history.json");
-            _contractConfigsPath = Path.Combine(appDataPath, "contract_configs.json");
-            
-            _logger?.LogDebug($"📁 自动盯盘数据目录: {_dataPath}");
+            _logger?.LogDebug($"📁 自动盯盘数据目录 (账号: {currentAccount}): {_dataPath}");
         }
         
         /// <summary>
         /// 保存持仓档案状态
+        /// ⚠️ 已废弃：此方法已不再使用，数据现在保存在 contract_monitoring_states.json 中
+        /// 请使用 ContractMonitoringStateService 或 UnifiedPersistenceService
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一保存在 contract_monitoring_states.json")]
         public void SavePositionProfiles(Dictionary<string, PositionProfile> profiles)
         {
-            try
-            {
-                if (profiles == null || !profiles.Any())
-                {
-                    _logger?.LogDebug("💡 没有持仓档案需要保存");
-                    return;
-                }
-                
-                // 只保存活跃的持仓档案
-                var activeProfiles = profiles
-                    .Where(kvp => kvp.Value.IsActive)
-                    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                
-                var json = JsonSerializer.Serialize(activeProfiles, new JsonSerializerOptions 
-                { 
-                    WriteIndented = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                });
-                
-                File.WriteAllText(_positionProfilesPath, json);
-                
-                _logger?.LogInformation($"💾 已保存持仓档案: {activeProfiles.Count} 个");
-                foreach (var profile in activeProfiles.Values)
-                {
-                    _logger?.LogDebug($"   📝 {profile.Symbol}_{profile.PositionSide} - 触发记录: {profile.TriggerRecords.Count}");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "❌ 保存持仓档案失败");
-            }
+            _logger?.LogWarning("⚠️ SavePositionProfiles 已废弃：请使用 ContractMonitoringStateService 替代");
+            // 不再执行任何操作，数据现在通过 contract_monitoring_states.json 管理
         }
         
         /// <summary>
         /// 加载持仓档案状态
+        /// ⚠️ 已废弃：此方法已不再使用，数据现在从 contract_monitoring_states.json 中读取
+        /// 请使用 ContractMonitoringStateService 或 UnifiedPersistenceService
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一从 contract_monitoring_states.json 读取")]
         public Dictionary<string, PositionProfile> LoadPositionProfiles()
         {
-            try
-            {
-                if (!File.Exists(_positionProfilesPath))
-                {
-                    _logger?.LogDebug("💡 持仓档案文件不存在，返回空字典");
-                    return new Dictionary<string, PositionProfile>();
-                }
-                
-                var json = File.ReadAllText(_positionProfilesPath);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    _logger?.LogDebug("💡 持仓档案文件为空，返回空字典");
-                    return new Dictionary<string, PositionProfile>();
-                }
-                
-                var profiles = JsonSerializer.Deserialize<Dictionary<string, PositionProfile>>(json, 
-                    new JsonSerializerOptions 
-                    { 
-                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase 
-                    }) ?? new Dictionary<string, PositionProfile>();
-                
-                // 清理过期的档案（超过24小时的非活跃档案）
-                var cutoffTime = DateTime.Now.AddHours(-24);
-                var validProfiles = profiles
-                    .Where(kvp => kvp.Value.IsActive || kvp.Value.LastUpdateTime > cutoffTime)
-                    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                
-                _logger?.LogInformation($"📖 已加载持仓档案: {validProfiles.Count} 个");
-                foreach (var profile in validProfiles.Values)
-                {
-                    _logger?.LogDebug($"   📝 {profile.Symbol}_{profile.PositionSide} - 触发记录: {profile.TriggerRecords.Count}");
-                }
-                
-                return validProfiles;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "❌ 加载持仓档案失败");
-                return new Dictionary<string, PositionProfile>();
-            }
+            _logger?.LogWarning("⚠️ LoadPositionProfiles 已废弃：请使用 ContractMonitoringStateService 替代");
+            return new Dictionary<string, PositionProfile>();
         }
         
         /// <summary>
@@ -244,16 +180,15 @@ namespace BinanceFuturesTrader.Services
         
         /// <summary>
         /// 清空所有数据
+        /// ⚠️ 已部分废弃：现在只清理执行历史，其他数据请使用 ContractMonitoringStateService 管理
         /// </summary>
+        [Obsolete("部分废弃：持仓档案和合约配置现在统一在 contract_monitoring_states.json 中管理")]
         public void ClearAllData()
         {
             try
             {
-                if (File.Exists(_positionProfilesPath))
-                {
-                    File.Delete(_positionProfilesPath);
-                    _logger?.LogInformation("🗑️ 已清空持仓档案数据");
-                }
+                // 🔧 已移除：_positionProfilesPath 清理 (文件已废弃)
+                _logger?.LogInformation("🔧 跳过持仓档案数据清理 (已迁移到新系统)");
                 
                 if (File.Exists(_executionHistoryPath))
                 {
@@ -261,17 +196,76 @@ namespace BinanceFuturesTrader.Services
                     _logger?.LogInformation("🗑️ 已清空执行历史数据");
                 }
                 
-                if (File.Exists(_contractConfigsPath))
-                {
-                    File.Delete(_contractConfigsPath);
-                    _logger?.LogInformation("🗑️ 已清空合约配置数据");
-                }
+                // 🔧 已移除：_contractConfigsPath 清理 (文件已废弃)
+                _logger?.LogInformation("🔧 跳过合约配置数据清理 (已迁移到新系统)");
                 
-                _logger?.LogInformation("✅ 所有持久化数据已清理完成");
+                _logger?.LogInformation("✅ 兼容清理完成，其他数据请使用 ContractMonitoringStateService 管理");
             }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "❌ 清空数据失败");
+            }
+        }
+
+        /// <summary>
+        /// 🚨 紧急清理无效档案（如BTC等误添加的合约）
+        /// </summary>
+        public void EmergencyCleanInvalidProfiles()
+        {
+            try
+            {
+                var profiles = LoadPositionProfiles();
+                var originalCount = profiles.Count;
+                
+                // 定义可疑的合约列表
+                var suspiciousSymbols = new[] { "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "SOLUSDT" };
+                
+                var invalidKeys = profiles.Where(kvp => 
+                    suspiciousSymbols.Contains(kvp.Value.Symbol) ||
+                    !kvp.Value.Symbol.EndsWith("USDT") ||
+                    !kvp.Value.IsActive ||
+                    kvp.Value.LastUpdateTime < DateTime.Now.AddHours(-24)
+                ).Select(kvp => kvp.Key).ToList();
+                
+                if (invalidKeys.Any())
+                {
+                    _logger?.LogWarning($"🚨 紧急清理: 发现 {invalidKeys.Count} 个可疑档案");
+                    
+                    foreach (var key in invalidKeys)
+                    {
+                        if (profiles.TryGetValue(key, out var profile))
+                        {
+                            _logger?.LogWarning($"   ❌ 清理: {key} (合约: {profile.Symbol}, 最后更新: {profile.LastUpdateTime})");
+                            profiles.Remove(key);
+                        }
+                    }
+                    
+                    // 保存清理后的档案
+                    SavePositionProfiles(profiles);
+                    
+                    // 清理执行历史
+                    var history = LoadExecutionHistory();
+                    var validHistory = history.Where(h => 
+                        !suspiciousSymbols.Contains(h.Symbol) &&
+                        h.Symbol.EndsWith("USDT")
+                    ).ToList();
+                    
+                    if (validHistory.Count != history.Count)
+                    {
+                        SaveExecutionHistory(validHistory);
+                        _logger?.LogInformation($"🧹 同时清理了 {history.Count - validHistory.Count} 条无效执行历史");
+                    }
+                    
+                    _logger?.LogInformation($"✅ 紧急清理完成: 移除 {originalCount - profiles.Count} 个档案，剩余 {profiles.Count} 个有效档案");
+                }
+                else
+                {
+                    _logger?.LogInformation("✅ 没有发现可疑档案，持久化数据正常");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 紧急清理失败");
             }
         }
         
@@ -518,162 +512,62 @@ namespace BinanceFuturesTrader.Services
 
         /// <summary>
         /// 保存合约配置到文件
+        /// ⚠️ 已废弃：此方法已不再使用，数据现在保存在 contract_monitoring_states.json 中
+        /// 请使用 ContractMonitoringStateService 或 UnifiedPersistenceService
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一保存在 contract_monitoring_states.json")]
         public void SaveContractConfigs(List<ContractMonitorModel> contracts)
         {
-            try
-            {
-                if (contracts == null || !contracts.Any())
-                {
-                    _logger?.LogDebug("💡 没有合约配置需要保存");
-                    return;
-                }
-
-                // 创建序列化友好的数据结构
-                var configData = contracts.Select(contract => new
-                {
-                    contract.Symbol,
-                    contract.PositionSide,
-                    contract.IsEnabled,
-                    contract.IsActive,
-                    contract.CurrentPrice,
-                    contract.PositionSize,
-                    contract.UnrealizedPnl,
-                    TriggerConditions = contract.TriggerConditions.Select(tc => new
-                    {
-                        tc.Id,
-                        tc.Type,
-                        tc.TierIndex,
-                        tc.Description,
-                        tc.TriggerPrice,
-                        tc.KeepValue,
-                        tc.Status,
-                        tc.LastExecutionTime,
-                        tc.StatusNote
-                    }).ToList()
-                }).ToList();
-
-                var json = JsonSerializer.Serialize(configData, new JsonSerializerOptions 
-                { 
-                    WriteIndented = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                });
-
-                File.WriteAllText(_contractConfigsPath, json);
-
-                _logger?.LogInformation($"💾 已保存合约配置: {contracts.Count} 个合约");
-                foreach (var contract in contracts)
-                {
-                    _logger?.LogDebug($"   📝 {contract.ContractKey} - {contract.TriggerConditions.Count} 个触发条件");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "❌ 保存合约配置失败");
-            }
+            _logger?.LogWarning("⚠️ SaveContractConfigs 已废弃：请使用 ContractMonitoringStateService 替代");
+            // 不再执行任何操作，数据现在通过 contract_monitoring_states.json 管理
         }
 
         /// <summary>
         /// 从文件加载合约配置
+        /// ⚠️ 已废弃：此方法已不再使用，数据现在从 contract_monitoring_states.json 中读取
+        /// 请使用 ContractMonitoringStateService 或 UnifiedPersistenceService
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一从 contract_monitoring_states.json 读取")]
         public List<ContractMonitorModel> LoadContractConfigs()
         {
-            try
-            {
-                if (!File.Exists(_contractConfigsPath))
-                {
-                    _logger?.LogDebug("💡 合约配置文件不存在，返回空列表");
-                    return new List<ContractMonitorModel>();
-                }
-
-                var json = File.ReadAllText(_contractConfigsPath);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    _logger?.LogDebug("💡 合约配置文件为空，返回空列表");
-                    return new List<ContractMonitorModel>();
-                }
-
-                // 反序列化为动态对象
-                var configData = JsonSerializer.Deserialize<JsonElement[]>(json, 
-                    new JsonSerializerOptions 
-                    { 
-                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase 
-                    });
-
-                var contracts = new List<ContractMonitorModel>();
-
-                foreach (var item in configData)
-                {
-                    var contract = new ContractMonitorModel
-                    {
-                        Symbol = item.GetProperty("symbol").GetString() ?? "",
-                        PositionSide = item.GetProperty("positionSide").GetString() ?? "",
-                        IsEnabled = item.GetProperty("isEnabled").GetBoolean(),
-                        IsActive = item.GetProperty("isActive").GetBoolean(),
-                        CurrentPrice = item.GetProperty("currentPrice").GetDecimal(),
-                        PositionSize = item.GetProperty("positionSize").GetDecimal(),
-                        UnrealizedPnl = item.GetProperty("unrealizedPnl").GetDecimal()
-                    };
-
-                    // 加载触发条件
-                    if (item.TryGetProperty("triggerConditions", out var conditionsElement))
-                    {
-                        foreach (var conditionItem in conditionsElement.EnumerateArray())
-                        {
-                            var condition = new TriggerConditionModel
-                            {
-                                Id = conditionItem.GetProperty("id").GetInt32(),
-                                Type = (TriggerConditionType)conditionItem.GetProperty("type").GetInt32(),
-                                TierIndex = conditionItem.TryGetProperty("tierIndex", out var tierElement) && !tierElement.ValueKind.Equals(JsonValueKind.Null) 
-                                    ? tierElement.GetInt32() : null,
-                                Description = conditionItem.GetProperty("description").GetString() ?? "",
-                                TriggerPrice = conditionItem.GetProperty("triggerPrice").GetDecimal(),
-                                KeepValue = conditionItem.GetProperty("keepValue").GetDecimal(),
-                                Status = (TriggerExecutionStatus)conditionItem.GetProperty("status").GetInt32(),
-                                LastExecutionTime = conditionItem.TryGetProperty("lastExecutionTime", out var timeElement) && !timeElement.ValueKind.Equals(JsonValueKind.Null)
-                                    ? timeElement.GetDateTime() : null,
-                                StatusNote = conditionItem.GetProperty("statusNote").GetString() ?? ""
-                            };
-
-                            contract.TriggerConditions.Add(condition);
-                        }
-                    }
-
-                    contracts.Add(contract);
-                }
-
-                _logger?.LogInformation($"📖 已加载合约配置: {contracts.Count} 个合约");
-                foreach (var contract in contracts)
-                {
-                    _logger?.LogDebug($"   📝 {contract.ContractKey} - {contract.TriggerConditions.Count} 个触发条件");
-                }
-
-                return contracts;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "❌ 加载合约配置失败");
-                return new List<ContractMonitorModel>();
-            }
+            _logger?.LogWarning("⚠️ LoadContractConfigs 已废弃：请使用 ContractMonitoringStateService 替代");
+            return new List<ContractMonitorModel>();
         }
 
         /// <summary>
         /// 清理合约配置文件
+        /// ⚠️ 已废弃：请使用 ContractMonitoringStateService 替代
         /// </summary>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一在 contract_monitoring_states.json 中管理")]
         public void ClearContractConfigs()
         {
-            try
-            {
-                if (File.Exists(_contractConfigsPath))
-                {
-                    File.Delete(_contractConfigsPath);
-                    _logger?.LogInformation("🗑️ 合约配置文件已清理");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "❌ 清理合约配置文件失败");
-            }
+            _logger?.LogWarning("⚠️ ClearContractConfigs 已废弃：请使用 ContractMonitoringStateService 替代");
+            // 不再执行任何操作，数据现在通过 contract_monitoring_states.json 管理
+        }
+
+        /// <summary>
+        /// 从文件中移除特定合约的配置
+        /// ⚠️ 已废弃：请使用 ContractMonitoringStateService 替代
+        /// </summary>
+        /// <param name="symbol">合约名称</param>
+        /// <param name="positionSide">持仓方向</param>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一在 contract_monitoring_states.json 中管理")]
+        public void RemoveContractConfig(string symbol, string positionSide)
+        {
+            _logger?.LogWarning($"⚠️ RemoveContractConfig 已废弃：请使用 ContractMonitoringStateService 替代 (合约: {symbol}_{positionSide})");
+            // 不再执行任何操作，数据现在通过 contract_monitoring_states.json 管理
+        }
+        
+        /// <summary>
+        /// 批量移除已平仓合约的配置
+        /// ⚠️ 已废弃：请使用 ContractMonitoringStateService 替代
+        /// </summary>
+        /// <param name="activePositionKeys">当前活跃持仓的键值列表</param>
+        [Obsolete("已废弃：请使用 ContractMonitoringStateService 替代，数据现在统一在 contract_monitoring_states.json 中管理")]
+        public void RemoveClosedPositionConfigs(HashSet<string> activePositionKeys)
+        {
+            _logger?.LogWarning("⚠️ RemoveClosedPositionConfigs 已废弃：请使用 ContractMonitoringStateService 替代");
+            // 不再执行任何操作，数据现在通过 contract_monitoring_states.json 管理
         }
     }
 } 

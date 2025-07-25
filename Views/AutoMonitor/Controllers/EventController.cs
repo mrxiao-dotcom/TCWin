@@ -31,7 +31,7 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
         /// <summary>
         /// 监控状态改变事件
         /// </summary>
-        public event EventHandler<MonitorStatusChangedEventArgs>? MonitorStatusChanged;
+        public event EventHandler<MonitorStatusChangeEventArgs>? MonitorStatusChanged;
         
         /// <summary>
         /// 数据更新事件
@@ -91,7 +91,7 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
                 switch (e.PropertyName)
                 {
                     case nameof(AutoMonitorDataModel.MonitorStatus):
-                        OnMonitorStatusChanged(new MonitorStatusChangedEventArgs(_dataModel.MonitorStatus));
+                        OnMonitorStatusChanged(new MonitorStatusChangeEventArgs(_dataModel.MonitorStatus));
                         break;
                     
                     case nameof(AutoMonitorDataModel.ErrorCount):
@@ -142,7 +142,7 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
         /// <summary>
         /// 触发监控状态改变事件
         /// </summary>
-        protected virtual void OnMonitorStatusChanged(MonitorStatusChangedEventArgs e)
+        protected virtual void OnMonitorStatusChanged(MonitorStatusChangeEventArgs e)
         {
             MonitorStatusChanged?.Invoke(this, e);
         }
@@ -279,13 +279,13 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
     #region 事件参数类
     
     /// <summary>
-    /// 监控状态改变事件参数
+    /// 监控状态改变事件参数（本地版本）
     /// </summary>
-    public class MonitorStatusChangedEventArgs : EventArgs
+    public class MonitorStatusChangeEventArgs : EventArgs
     {
         public string NewStatus { get; }
         
-        public MonitorStatusChangedEventArgs(string newStatus)
+        public MonitorStatusChangeEventArgs(string newStatus)
         {
             NewStatus = newStatus;
         }

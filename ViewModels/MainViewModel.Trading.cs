@@ -1431,6 +1431,80 @@ namespace BinanceFuturesTrader.ViewModels
                     });
                 }
 
+                // 🔧 关键修复：重新加载新账户对应的自动盯盘配置
+                try
+                {
+                    // 🎯 优先从内存中的配置字典获取
+                    if (_accountAutoMonitorConfigs.TryGetValue(value.Name, out var accountConfig))
+                    {
+                        _currentAutoMonitorConfig = accountConfig;
+                        _logger.LogInformation($"📋 已为账户 '{value.Name}' 加载内存中的配置: {accountConfig.Name}");
+                    }
+                    else
+                    {
+                        // 🎯 如果内存中没有，尝试从配置文件直接加载
+                        try
+                        {
+                            // 🔧 【调试】添加详细的配置加载日志
+                            _logger.LogCritical($"🔍【配置加载】开始为账户 '{value.Name}' 加载配置文件");
+                            
+                            var filePathManager = new FilePathManager();
+                            var currentAccountFromFileManager = filePathManager.GetCurrentAccountName();
+                            var configFilePath = filePathManager.GetBaseConfigsFilePath();
+                            
+                            _logger.LogCritical($"🔍【配置加载】FilePathManager.GetCurrentAccountName(): '{currentAccountFromFileManager}'");
+                            _logger.LogCritical($"🔍【配置加载】选中账户名称: '{value.Name}'");
+                            _logger.LogCritical($"🔍【配置加载】配置文件路径: '{configFilePath}'");
+                            _logger.LogCritical($"🔍【配置加载】配置文件是否存在: {System.IO.File.Exists(configFilePath)}");
+                            
+                            // 🔧 【关键修复】强制使用正确的账户名，不依赖FilePathManager.GetCurrentAccountName()
+                            if (currentAccountFromFileManager != value.Name)
+                            {
+                                _logger.LogCritical($"⚠️【配置加载】账户名不匹配! FilePathManager返回'{currentAccountFromFileManager}'，但选中账户是'{value.Name}'");
+                                _logger.LogCritical($"🔧【配置加载】将直接使用选中账户名称'{value.Name}'进行配置加载");
+                            }
+                            
+                            var configPersistenceService = new AutoMonitorConfigPersistenceService(_logger as ILogger<AutoMonitorConfigPersistenceService>, filePathManager);
+                            
+                            // 🔧 【调试】检查所有账户的配置
+                            var allConfigs = configPersistenceService.LoadAccountConfigs();
+                            _logger.LogCritical($"🔍【配置加载】配置文件中总共有 {allConfigs.Count} 个账户配置");
+                            
+                            foreach (var kvp in allConfigs)
+                            {
+                                _logger.LogCritical($"🔍【配置加载】配置文件中的账户: '{kvp.Key}' -> 配置名称: '{kvp.Value.Name}'");
+                            }
+                            
+                            var savedConfig = configPersistenceService.GetAccountConfig(value.Name);
+                            if (savedConfig != null)
+                            {
+                                _currentAutoMonitorConfig = savedConfig;
+                                _accountAutoMonitorConfigs[value.Name] = savedConfig; // 更新内存缓存
+                                _logger.LogCritical($"✅【配置加载】成功为账户 '{value.Name}' 从文件加载配置: {savedConfig.Name}");
+                            }
+                            else
+                            {
+                                _currentAutoMonitorConfig = null;
+                                _logger.LogCritical($"⚠️【配置加载】账户 '{value.Name}' 在配置文件中没有找到对应配置");
+                            }
+                        }
+                        catch (Exception configEx)
+                        {
+                            _logger.LogError(configEx, $"从文件加载账户 '{value.Name}' 配置失败");
+                            _currentAutoMonitorConfig = null;
+                        }
+                    }
+                    
+                    // 通知配置变化，确保UI能够获取到最新配置
+                    OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ 重新加载账户 '{value.Name}' 的自动盯盘配置失败");
+                    _currentAutoMonitorConfig = null;
+                    OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
+                }
+
                 // 清空之前账户的条件单和订单数据
                 ConditionalOrders.Clear();
                 Positions.Clear();
@@ -1481,6 +1555,10 @@ namespace BinanceFuturesTrader.ViewModels
                         }
                     });
                 }
+
+                // 🔧 清空当前自动盯盘配置
+                _currentAutoMonitorConfig = null;
+                OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
 
                 StopTimers();
                 

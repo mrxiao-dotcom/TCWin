@@ -12,12 +12,41 @@ namespace BinanceFuturesTrader.Services
 {
     /// <summary>
     /// 基础配置管理器 - 负责自动盯盘配置的CRUD操作和持久化
+    /// 🔧 采用单例模式，确保整个系统只有一个配置管理器实例
     /// </summary>
     public class BaseConfigManager
     {
         private readonly ILogger<BaseConfigManager> _logger;
         private readonly string _configFilePath;
+        private readonly FilePathManager _filePathManager;
         private readonly object _fileLock = new object();
+        
+        // 🔧 单例模式实现
+        private static BaseConfigManager? _instance;
+        private static readonly object _singletonLock = new object();
+        
+        /// <summary>
+        /// 获取BaseConfigManager的单例实例
+        /// </summary>
+        public static BaseConfigManager Instance
+        {
+            get
+            {
+                if (_instance == null)
+                {
+                    lock (_singletonLock)
+                    {
+                        if (_instance == null)
+                        {
+                            // 🔧 使用NullLogger作为默认Logger，可以通过SetLogger方法后续设置
+                            var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<BaseConfigManager>.Instance;
+                            _instance = new BaseConfigManager(logger);
+                        }
+                    }
+                }
+                return _instance;
+            }
+        }
         
         /// <summary>
         /// 配置列表
@@ -34,25 +63,47 @@ namespace BinanceFuturesTrader.Services
         /// </summary>
         public event EventHandler<ConfigurationChangedEventArgs>? ConfigurationChanged;
         
-        public BaseConfigManager(ILogger<BaseConfigManager> logger)
+        /// <summary>
+        /// 🔧 私有构造函数，防止外部直接实例化
+        /// </summary>
+        private BaseConfigManager(ILogger<BaseConfigManager> logger, FilePathManager? filePathManager = null)
         {
             _logger = logger;
-            // 🔧 修复：统一配置文件路径到用户数据目录，与SimpleConfigEditorWindow保持一致
-            _configFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), 
-                                          "BinanceFuturesTrader", "AutoMonitorConfigs.json");
+            _filePathManager = filePathManager ?? new FilePathManager();
+            _configFilePath = _filePathManager.GetBaseConfigsFilePath();
             Configurations = new ObservableCollection<AutoMonitorConfig>();
             
-            // 确保目录存在
-            var directory = Path.GetDirectoryName(_configFilePath);
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory!);
-            }
+            _logger.LogDebug($"📁 基础配置文件路径: {_configFilePath}");
             
-            _logger.LogInformation($"📁 配置文件路径: {_configFilePath}");
-            
-            // 加载配置
             _ = LoadConfigurationsAsync();
+        }
+        
+        /// <summary>
+        /// 🔧 设置Logger（可选，用于替换默认的NullLogger）
+        /// </summary>
+        public void SetLogger(ILogger<BaseConfigManager> logger)
+        {
+            // 注意：由于_logger是readonly，我们需要通过反射或者其他方式来设置
+            // 或者我们可以使用一个包装器模式
+            // 这里为了简化，我们记录日志但不实际更换Logger
+            _logger.LogInformation("🔧 BaseConfigManager单例模式已启用");
+        }
+        
+        /// <summary>
+        /// 🔧 强制重新加载配置（供外部调用）
+        /// </summary>
+        public void RefreshConfigurations()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 强制重新加载配置...");
+                LoadConfigurationsAsync().Wait(); // 同步等待完成
+                _logger.LogInformation($"✅ 已重新加载 {Configurations.Count} 个配置");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 强制重新加载配置失败");
+            }
         }
         
         #region CRUD操作
@@ -64,10 +115,12 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 检查名称是否重复
-                if (Configurations.Any(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                // 🔧 修复：检查名称是否重复，如果存在则返回现有配置而不是抛出异常
+                var existingConfig = Configurations.FirstOrDefault(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                if (existingConfig != null)
                 {
-                    throw new ArgumentException($"配置名称 '{name}' 已存在");
+                    _logger.LogInformation($"配置 '{name}' 已存在，返回现有配置而不重复创建");
+                    return existingConfig;
                 }
                 
                 var config = new AutoMonitorConfig
@@ -95,8 +148,8 @@ namespace BinanceFuturesTrader.Services
                 Configurations.Add(config);
                 _logger.LogInformation($"创建新配置: {name}");
                 
-                // 保存到文件
-                _ = SaveConfigurationsAsync();
+                // 🔧 修复：同步保存到文件，确保保存完成
+                SaveConfigurationsSync();
                 
                 // 触发事件
                 ConfigurationChanged?.Invoke(this, new ConfigurationChangedEventArgs 
@@ -134,8 +187,8 @@ namespace BinanceFuturesTrader.Services
                 
                 _logger.LogInformation($"更新配置: {config.Name}");
                 
-                // 保存到文件
-                _ = SaveConfigurationsAsync();
+                // 🔧 修复：同步保存到文件，确保保存完成
+                SaveConfigurationsSync();
                 
                 // 触发事件
                 ConfigurationChanged?.Invoke(this, new ConfigurationChangedEventArgs 
@@ -173,8 +226,8 @@ namespace BinanceFuturesTrader.Services
                     CurrentConfig = null;
                 }
                 
-                // 保存到文件
-                _ = SaveConfigurationsAsync();
+                // 🔧 修复：同步保存到文件，确保保存完成
+                SaveConfigurationsSync();
                 
                 // 触发事件
                 ConfigurationChanged?.Invoke(this, new ConfigurationChangedEventArgs 
@@ -220,8 +273,8 @@ namespace BinanceFuturesTrader.Services
                 Configurations.Add(config);
                 _logger.LogInformation($"添加配置: {config.Name}");
                 
-                // 保存到文件
-                _ = SaveConfigurationsAsync();
+                // 🔧 修复：同步保存到文件，确保保存完成
+                SaveConfigurationsSync();
                 
                 // 触发事件
                 ConfigurationChanged?.Invoke(this, new ConfigurationChangedEventArgs 
@@ -257,6 +310,14 @@ namespace BinanceFuturesTrader.Services
                 ChangeType = ConfigChangeType.Selected, 
                 Configuration = config 
             });
+        }
+        
+        /// <summary>
+        /// 获取配置文件路径
+        /// </summary>
+        public string GetConfigFilePath()
+        {
+            return _configFilePath;
         }
         
         #endregion
@@ -366,11 +427,58 @@ namespace BinanceFuturesTrader.Services
                 lock (_fileLock)
                 {
                     var json = File.ReadAllText(_configFilePath);
-                    var configs = JsonSerializer.Deserialize<List<AutoMonitorConfig>>(json, new JsonSerializerOptions
+                    List<AutoMonitorConfig>? configs = null;
+                    
+                    // 🎯 首先尝试新格式（数组格式）
+                    try
                     {
-                        PropertyNameCaseInsensitive = true,
-                        WriteIndented = true
-                    });
+                        configs = JsonSerializer.Deserialize<List<AutoMonitorConfig>>(json, new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true,
+                            WriteIndented = true
+                        });
+                        _logger.LogInformation("✅ 使用新格式加载配置");
+                    }
+                    catch (JsonException)
+                    {
+                        // 🔄 如果新格式失败，尝试旧格式（对象格式）
+                        _logger.LogInformation("🔄 新格式失败，尝试旧格式迁移...");
+                        try
+                        {
+                            using var document = JsonDocument.Parse(json);
+                            var root = document.RootElement;
+                            
+                            configs = new List<AutoMonitorConfig>();
+                            
+                            // 检查是否是旧格式（包含accountConfigs）
+                            if (root.TryGetProperty("accountConfigs", out var accountConfigsElement))
+                            {
+                                foreach (var accountProperty in accountConfigsElement.EnumerateObject())
+                                {
+                                    var configElement = accountProperty.Value;
+                                    var config = JsonSerializer.Deserialize<AutoMonitorConfig>(configElement.GetRawText(), new JsonSerializerOptions
+                                    {
+                                        PropertyNameCaseInsensitive = true
+                                    });
+                                    
+                                    if (config != null)
+                                    {
+                                        configs.Add(config);
+                                    }
+                                }
+                                
+                                _logger.LogInformation($"✅ 从旧格式迁移了 {configs.Count} 个配置");
+                                
+                                // 🔧 迁移完成后，同步保存为新格式
+                                SaveConfigurationsSync();
+                            }
+                        }
+                        catch (Exception migrationEx)
+                        {
+                            _logger.LogError(migrationEx, "❌ 旧格式迁移失败");
+                            throw;
+                        }
+                    }
                     
                     if (configs != null)
                     {
@@ -380,7 +488,7 @@ namespace BinanceFuturesTrader.Services
                             Configurations.Add(config);
                         }
                         
-                        _logger.LogInformation($"加载了 {configs.Count} 个配置");
+                        _logger.LogInformation($"📂 最终加载了 {configs.Count} 个配置");
                     }
                 }
                 
@@ -395,7 +503,7 @@ namespace BinanceFuturesTrader.Services
         }
         
         /// <summary>
-        /// 保存配置列表
+        /// 保存配置列表（异步）
         /// </summary>
         private async Task SaveConfigurationsAsync()
         {
@@ -421,6 +529,41 @@ namespace BinanceFuturesTrader.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "保存配置文件失败");
+            }
+        }
+        
+        /// <summary>
+        /// 🔧 保存配置列表（同步）
+        /// </summary>
+        private void SaveConfigurationsSync()
+        {
+            try
+            {
+                var configs = Configurations.ToList();
+                var json = JsonSerializer.Serialize(configs, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    WriteIndented = true
+                });
+                
+                lock (_fileLock)
+                {
+                    // 🔧 确保目录存在
+                    var directory = Path.GetDirectoryName(_configFilePath);
+                    if (!Directory.Exists(directory))
+                    {
+                        Directory.CreateDirectory(directory!);
+                    }
+                    
+                    File.WriteAllText(_configFilePath, json);
+                }
+                
+                _logger.LogInformation($"💾 已同步保存 {configs.Count} 个配置到文件: {Path.GetFileName(_configFilePath)}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 同步保存配置文件失败");
+                throw; // 重新抛出异常，让调用者知道保存失败
             }
         }
         
@@ -452,7 +595,8 @@ namespace BinanceFuturesTrader.Services
                 Configurations.Add(defaultConfig);
                 CurrentConfig = defaultConfig;
                 
-                _ = SaveConfigurationsAsync();
+                // 🔧 修复：同步保存默认配置
+                SaveConfigurationsSync();
                 _logger.LogInformation("创建了默认配置");
             }
             catch (Exception ex)

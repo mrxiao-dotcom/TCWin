@@ -15,25 +15,20 @@ namespace BinanceFuturesTrader.Services
     public class AutoMonitorConfigPersistenceService
     {
         private readonly string _configFilePath;
+        private readonly FilePathManager _filePathManager;
         private readonly ILogger<AutoMonitorConfigPersistenceService>? _logger;
         
-        public AutoMonitorConfigPersistenceService(ILogger<AutoMonitorConfigPersistenceService>? logger = null)
+        public AutoMonitorConfigPersistenceService(
+            ILogger<AutoMonitorConfigPersistenceService>? logger = null,
+            FilePathManager? filePathManager = null)
         {
             _logger = logger;
+            _filePathManager = filePathManager ?? new FilePathManager();
             
-            // 创建配置目录
-            var appDataPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "BinanceFuturesTrader");
+            // 🔧 修复：使用统一路径管理，配置文件放在Global目录下
+            _configFilePath = _filePathManager.GetBaseConfigsFilePath();
             
-            if (!Directory.Exists(appDataPath))
-            {
-                Directory.CreateDirectory(appDataPath);
-            }
-            
-            _configFilePath = Path.Combine(appDataPath, "automonitor_configs.json");
-            
-            _logger?.LogDebug($"📁 自动盯盘配置文件路径: {_configFilePath}");
+            _logger?.LogDebug($"📁 自动盯盘配置文件路径 (Global): {_configFilePath}");
         }
         
         /// <summary>

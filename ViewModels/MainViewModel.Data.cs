@@ -66,29 +66,36 @@ namespace BinanceFuturesTrader.ViewModels
                 _logger.LogDebug("智能更新失败，执行完整数据重建");
                 
                 // 保存当前选择状态
-                var selectedPositionSymbols = Positions.Where(p => p.IsSelected).Select(p => p.Symbol).ToHashSet();
-                var selectedOrderIds = Orders.Where(o => o.IsSelected).Select(o => o.OrderId).ToHashSet();
-                
-                // 🔧 保存当前过滤状态，防止切换窗口时丢失
-                var currentSymbolFilter = SelectedPosition?.Symbol;
-                var hasReduceOnlyOrders = ReduceOnlyOrders.Count > 0;
-                var hasFilteredOrders = FilteredOrders.Count > 0;
+                var selectedPositionSymbols = new HashSet<string>();
+                var selectedOrderIds = new HashSet<long>();
+                string? currentSymbolFilter = null;
+                bool hasReduceOnlyOrders = false;
+                bool hasFilteredOrders = false;
 
-                // 获取新数据
+                // 🔧 在UI线程中获取当前状态
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    selectedPositionSymbols = Positions.Where(p => p.IsSelected).Select(p => p.Symbol).ToHashSet();
+                    selectedOrderIds = Orders.Where(o => o.IsSelected).Select(o => o.OrderId).ToHashSet();
+                    currentSymbolFilter = SelectedPosition?.Symbol;
+                    hasReduceOnlyOrders = ReduceOnlyOrders.Count > 0;
+                    hasFilteredOrders = FilteredOrders.Count > 0;
+                });
+
+                // 获取新数据（在后台线程）
                 var newAccountInfo = await _binanceService.GetAccountInfoAsync();
                 var newPositions = await _binanceService.GetPositionsAsync();
                 var newOrders = await _binanceService.GetOpenOrdersAsync();
 
                 if (newAccountInfo != null && newPositions != null && newOrders != null)
                 {
-                    // 使用Dispatcher确保UI更新在主线程批量进行
-                    Application.Current.Dispatcher.BeginInvoke(() =>
+                    // 🔧 在后台线程预处理数据
+                    newAccountInfo.CalculateMarginUsed(newPositions);
+                    
+                    // 🔧 关键修复：所有UI更新必须在主线程中执行
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
-                        // 🔧 防闪烁关键：先计算市值数据，再更新UI
-                        // 预先计算市值数据，避免显示中间的0值状态
-                        newAccountInfo.CalculateMarginUsed(newPositions);
-                        
-                        // 现在可以安全地更新AccountInfo，不会出现0值闪烁
+                        // 更新AccountInfo
                         AccountInfo = newAccountInfo;
                         
                         // 清空并重新填充集合
@@ -128,28 +135,7 @@ namespace BinanceFuturesTrader.ViewModels
                             }
                         }
                         
-                        // 🔧 修复：为所有订单添加选择状态监听
-                        foreach (var order in Orders)
-                        {
-                            order.SelectionChanged += OnOrderSelectionChanged;
-                        }
-                        
-                        // 强制通知选择状态属性更新
-                        OnPropertyChanged(nameof(SelectedOrders));
-                        OnPropertyChanged(nameof(HasSelectedOrders));
-                        OnPropertyChanged(nameof(SelectedOrderCount));
-                        OnPropertyChanged(nameof(SelectedPositions));
-                        OnPropertyChanged(nameof(HasSelectedPositions));
-                        OnPropertyChanged(nameof(SelectedPositionCount));
-                        
-                        // 🔧 新增：通知移动止损按钮工具提示更新
-                        OnPropertyChanged(nameof(TrailingStopButtonTooltip));
-                        
-                        // 重新加载条件单数据（从API订单中识别条件单）
-                        LoadConditionalOrdersFromApiOrders();
-                        
-                        // 🔧 重要：强制重新应用订单过滤，确保减仓型委托单正确显示
-                        // 使用保存的过滤条件来恢复正确的显示状态
+                        // 🔧 恢复过滤状态
                         if (!string.IsNullOrEmpty(currentSymbolFilter))
                         {
                             _logger.LogDebug($"🔄 恢复按合约过滤: {currentSymbolFilter}");
@@ -167,19 +153,25 @@ namespace BinanceFuturesTrader.ViewModels
                             _logger.LogWarning("⚠️ 检测到减仓型订单在刷新后消失，可能存在显示问题");
                         }
                         
-                        // 自动计算可用风险金
-                        if (SelectedAccount != null)
-                        {
-                            CalculateMaxRiskCapital();
-                        }
-                        
                         _logger.LogDebug($"完整数据重建完成，恢复了 {restoredPositionCount} 个持仓选择，{restoredOrderCount} 个订单选择");
                     });
+                    
+                    // 自动计算可用风险金（在后台线程）
+                    if (SelectedAccount != null)
+                    {
+                        CalculateMaxRiskCapital();
+                    }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "刷新账户数据时发生错误");
+                
+                // 🔧 错误时也需要在主线程中更新状态
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    StatusMessage = $"数据刷新失败: {ex.Message}";
+                });
             }
         }
 
@@ -207,7 +199,7 @@ namespace BinanceFuturesTrader.ViewModels
 
                 // 在UI线程中执行智能更新
                 bool updateResult = false;
-                Application.Current.Dispatcher.Invoke(() =>
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     updateResult = PerformIntelligentUpdate(newAccountInfo, newPositions, newOrders);
                 });
@@ -675,18 +667,29 @@ namespace BinanceFuturesTrader.ViewModels
                 
                 if (result == true)
                 {
+                    // 🔧 【关键修复】在重新加载前保存当前账户名称，防止空引用异常
+                    var currentAccountName = SelectedAccount?.Name;
+                    
                     // 用户保存了配置，重新加载账户列表
                     LoadAccounts();
                     
                     // 尝试重新选择当前编辑的账户
-                    var updatedAccount = Accounts.FirstOrDefault(a => a.Name == SelectedAccount.Name);
-                    if (updatedAccount != null)
+                    if (!string.IsNullOrEmpty(currentAccountName))
                     {
-                        SelectedAccount = updatedAccount;
+                        var updatedAccount = Accounts.FirstOrDefault(a => a.Name == currentAccountName);
+                        if (updatedAccount != null)
+                        {
+                            SelectedAccount = updatedAccount;
+                        }
+                        
+                        StatusMessage = $"账户 '{currentAccountName}' 配置已更新";
+                        _logger.LogInformation($"账户 '{currentAccountName}' 配置已更新");
                     }
-                    
-                    StatusMessage = $"账户 '{SelectedAccount.Name}' 配置已更新";
-                    _logger.LogInformation($"账户 '{SelectedAccount.Name}' 配置已更新");
+                    else
+                    {
+                        StatusMessage = "账户配置已更新";
+                        _logger.LogInformation("账户配置已更新");
+                    }
                 }
                 else
                 {

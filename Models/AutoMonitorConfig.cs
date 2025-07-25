@@ -79,10 +79,10 @@ namespace BinanceFuturesTrader.Models
                 {
                     Tiers = new List<AddPositionTier>
                     {
-                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(riskCapital * 1m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(riskCapital * 2m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = Math.Round(riskCapital * 3m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m },
-                        new AddPositionTier { TierIndex = 4, TriggerProfitAmount = Math.Round(riskCapital * 4m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m }
+                        new AddPositionTier { TierIndex = 1, TriggerProfitAmount = Math.Round(riskCapital * 1m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m, ExitTargetPnl = Math.Round(riskCapital * 5m, 0, MidpointRounding.AwayFromZero) },
+                        new AddPositionTier { TierIndex = 2, TriggerProfitAmount = Math.Round(riskCapital * 2m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m, ExitTargetPnl = Math.Round(riskCapital * 10m, 0, MidpointRounding.AwayFromZero) },
+                        new AddPositionTier { TierIndex = 3, TriggerProfitAmount = Math.Round(riskCapital * 3m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m, ExitTargetPnl = Math.Round(riskCapital * 15m, 0, MidpointRounding.AwayFromZero) },
+                        new AddPositionTier { TierIndex = 4, TriggerProfitAmount = Math.Round(riskCapital * 4m, 0, MidpointRounding.AwayFromZero), RiskMultiplier = 1.0m, StopLossRatio = 0.10m, ExitTargetPnl = Math.Round(riskCapital * 20m, 0, MidpointRounding.AwayFromZero) }
                     }
                 },
                 ProfitProtectionConfig = new AutoProfitProtectionConfig
@@ -114,6 +114,25 @@ namespace BinanceFuturesTrader.Models
         /// 触发盈利值（USDT）
         /// </summary>
         public decimal TriggerProfitAmount { get; set; } = 10.0m;
+        
+        /// <summary>
+        /// 执行状态 (0=未触发, 1=已执行)
+        /// </summary>
+        public ExecutionState ExecutionState { get; set; } = ExecutionState.NotTriggered;
+        
+        /// <summary>
+        /// 是否已执行 (兼容性属性)
+        /// </summary>
+        public bool IsExecuted 
+        { 
+            get => ExecutionState == ExecutionState.Executed;
+            set => ExecutionState = value ? ExecutionState.Executed : ExecutionState.NotTriggered;
+        }
+        
+        /// <summary>
+        /// 执行时间
+        /// </summary>
+        public DateTime? ExecutionTime { get; set; }
         
         /// <summary>
         /// 描述
@@ -184,6 +203,13 @@ namespace BinanceFuturesTrader.Models
         public decimal ProfitProtectionAmount { get; set; } = 0m;
         
         /// <summary>
+        /// 推仓止损目标（USDT）
+        /// 推仓成功后，当总浮盈达到此目标时，全部止损出场
+        /// 如果不设置（为0），则不进行此类止损
+        /// </summary>
+        public decimal ExitTargetPnl { get; set; } = 0m;
+        
+        /// <summary>
         /// 是否已触发
         /// </summary>
         public bool IsTriggered { get; set; } = false;
@@ -194,9 +220,28 @@ namespace BinanceFuturesTrader.Models
         public DateTime? TriggerTime { get; set; }
         
         /// <summary>
+        /// 执行状态 (0=未触发, 1=已执行)
+        /// </summary>
+        public ExecutionState ExecutionState { get; set; } = ExecutionState.NotTriggered;
+        
+        /// <summary>
+        /// 是否已执行 (兼容性属性)
+        /// </summary>
+        public bool IsExecuted 
+        { 
+            get => ExecutionState == ExecutionState.Executed;
+            set => ExecutionState = value ? ExecutionState.Executed : ExecutionState.NotTriggered;
+        }
+        
+        /// <summary>
+        /// 执行时间
+        /// </summary>
+        public DateTime? ExecutionTime { get; set; }
+        
+        /// <summary>
         /// 描述
         /// </summary>
-        public string Description => $"阶梯{TierIndex}: 盈利{TriggerProfitAmount:F2}U → 推仓{RiskMultiplier:F1}倍风险金, 止损{StopLossRatio * 100:F1}%, 保盈{ProfitProtectionAmount:F0}U";
+        public string Description => $"阶梯{TierIndex}: 盈利{TriggerProfitAmount:F2}U → 推仓{RiskMultiplier:F1}倍风险金, 止损{StopLossRatio * 100:F1}%, 保盈{ProfitProtectionAmount:F0}U, 目标{ExitTargetPnl:F0}U";
     }
 
     /// <summary>

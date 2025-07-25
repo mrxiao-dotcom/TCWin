@@ -25,10 +25,15 @@ namespace BinanceFuturesTrader
             // 注册服务（单例模式）
             services.AddSingleton<IBinanceService, BinanceService>();
             services.AddSingleton<ITradingCalculationService, TradingCalculationService>();
-            services.AddSingleton<AccountConfigService>();
+            services.AddSingleton<AccountConfigService>(); // 🔧 保留兼容性
             services.AddSingleton<TradingSettingsService>();
             services.AddSingleton<RecentContractsService>();
             services.AddSingleton<LogService>();
+            
+            // 🎯 新的双文件系统服务
+            services.AddSingleton<BaseConfigManager>();
+            services.AddSingleton<ContractMonitoringStateGenerator>();
+            services.AddSingleton<ContractMonitoringStateService>();
             
             // 注册新架构服务
             services.AddSingleton<IEventBus, EventBus>();

@@ -103,6 +103,31 @@
                            Click="RefreshRiskCapitalButton_Click"/>
                 </Grid>
                 
+                <!-- 监控状态和倒计时信息栏 -->
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <TextBlock Grid.Column="0" Text="📡 监控状态：" VerticalAlignment="Center" Margin="0,0,10,0" 
+                              FontWeight="Bold" Foreground="DarkGreen"/>
+                    
+                    <TextBlock Grid.Column="1" Name="MonitorStatusText" Text="未启动" FontWeight="Bold" 
+                              VerticalAlignment="Center" Margin="0,0,20,0" Foreground="Gray"/>
+                    
+                    <TextBlock Grid.Column="2" Name="CountdownLabelText" Text="下次扫描：" VerticalAlignment="Center" 
+                              Margin="0,0,5,0" Visibility="Collapsed"/>
+                    <TextBlock Grid.Column="3" Name="CountdownTimerText" Text="--" FontWeight="Bold" 
+                              VerticalAlignment="Center" Margin="0,0,20,0" Foreground="Orange" Visibility="Collapsed"/>
+                    
+                    <TextBlock Grid.Column="4" Name="MonitorInfoText" Text="请选择基础配置并启动监控" 
+                              VerticalAlignment="Center" FontStyle="Italic" Foreground="Gray"/>
+                </Grid>
+                
 
             </StackPanel>
         </Border>
