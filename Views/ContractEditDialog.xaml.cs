@@ -524,7 +524,7 @@ namespace BinanceFuturesTrader.Views
 
             var statusText = new TextBlock
             {
-                Text = condition.Status == TriggerExecutionStatus.Executed ? "已执行" : "未触发",
+                                                Text = condition.Status == TriggerExecutionStatus.Executed ? StatusConstants.Executed : StatusConstants.Waiting,
                 FontSize = 10,
                 Foreground = new SolidColorBrush(Colors.White),
                 FontWeight = FontWeights.Bold,
@@ -572,7 +572,7 @@ namespace BinanceFuturesTrader.Views
                     // 隐藏重置按钮
                     resetButton.Visibility = Visibility.Collapsed;
                     
-                    MessageBox.Show("状态已重置为\"未触发\"，保存后生效", "状态重置", MessageBoxButton.OK, MessageBoxImage.Information);
+                                                MessageBox.Show($"状态已重置为\"{StatusConstants.Waiting}\"，保存后生效", "状态重置", MessageBoxButton.OK, MessageBoxImage.Information);
                 };
 
                 panel.Children.Add(label);

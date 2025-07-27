@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace BinanceFuturesTrader.Models
 {
@@ -10,8 +11,10 @@ namespace BinanceFuturesTrader.Models
     {
         /// <summary>未触发</summary>
         NotTriggered = 0,
+        /// <summary>执行中</summary>
+        Executing = 1,
         /// <summary>已执行</summary>
-        Executed = 1
+        Executed = 2
     }
     /// <summary>
     /// 合约监控状态 - 基于持仓数据+基础配置生成的完整监控状态
@@ -705,20 +708,23 @@ namespace BinanceFuturesTrader.Models
         /// <summary>
         /// 执行状态显示文本
         /// </summary>
-        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
+        [JsonIgnore]
+        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
         
         /// <summary>
         /// UI显示符号 (0="-", 1="✓")
         /// </summary>
-        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? "-" : "✓";
+        [JsonIgnore]
+        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.WaitingSymbol : StatusConstants.ExecutedSymbol;
         
         /// <summary>
         /// 执行状态描述 (兼容性属性)
         /// </summary>
+        [JsonIgnore]
         public string ExecutionStatus
         {
-            get => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
-            set => ExecutionState = value == "已执行" ? ExecutionState.Executed : ExecutionState.NotTriggered;
+            get => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
+            set => ExecutionState = value == StatusConstants.ExecutedChinese ? ExecutionState.Executed : ExecutionState.NotTriggered;
         }
         
         /// <summary>
@@ -815,25 +821,29 @@ namespace BinanceFuturesTrader.Models
         /// <summary>
         /// 执行状态显示文本
         /// </summary>
-        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
+        [JsonIgnore]
+        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
         
         /// <summary>
         /// UI显示符号 (0="-", 1="✓")
         /// </summary>
-        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? "-" : "✓";
+        [JsonIgnore]
+        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.WaitingSymbol : StatusConstants.ExecutedSymbol;
         
         /// <summary>
         /// 执行状态描述 (兼容性属性)
         /// </summary>
+        [JsonIgnore]
         public string ExecutionStatus
         {
-            get => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
-            set => ExecutionState = value == "已执行" ? ExecutionState.Executed : ExecutionState.NotTriggered;
+            get => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
+            set => ExecutionState = value == StatusConstants.ExecutedChinese ? ExecutionState.Executed : ExecutionState.NotTriggered;
         }
         
         /// <summary>
         /// 加仓数量
         /// </summary>
+        [JsonIgnore]
         public decimal AddPositionQuantity { get; set; } = 0m;
         
         /// <summary>
@@ -915,25 +925,29 @@ namespace BinanceFuturesTrader.Models
         /// <summary>
         /// 执行状态显示文本
         /// </summary>
-        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
+        [JsonIgnore]
+        public string ExecutionStatusDisplay => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
         
         /// <summary>
         /// UI显示符号 (0="-", 1="✓")
         /// </summary>
-        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? "-" : "✓";
+        [JsonIgnore]
+        public string StatusSymbol => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.WaitingSymbol : StatusConstants.ExecutedSymbol;
         
         /// <summary>
         /// 执行状态描述 (兼容性属性)
         /// </summary>
+        [JsonIgnore]
         public string ExecutionStatus
         {
-            get => ExecutionState == ExecutionState.NotTriggered ? "未触发" : "已执行";
-            set => ExecutionState = value == "已执行" ? ExecutionState.Executed : ExecutionState.NotTriggered;
+            get => ExecutionState == ExecutionState.NotTriggered ? StatusConstants.Waiting : StatusConstants.Executed;
+            set => ExecutionState = value == StatusConstants.ExecutedChinese ? ExecutionState.Executed : ExecutionState.NotTriggered;
         }
         
         /// <summary>
         /// 止损价格
         /// </summary>
+        [JsonIgnore]
         public decimal StopLossPrice { get; set; } = 0m;
     }
 } 

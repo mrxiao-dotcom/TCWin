@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using BinanceFuturesTrader.Models;
 using Microsoft.Extensions.Logging;
@@ -503,14 +504,65 @@ namespace BinanceFuturesTrader.Services
         }
         
         /// <summary>
-        /// 保存配置列表（异步）
+        /// 保存配置列表（异步）- 简化版：只保存基础配置信息，不保存状态
         /// </summary>
         private async Task SaveConfigurationsAsync()
         {
             try
             {
                 var configs = Configurations.ToList();
-                var json = JsonSerializer.Serialize(configs, new JsonSerializerOptions
+                
+                // 🔧 创建简化配置：移除所有状态信息，只保留基础配置
+                var simplifiedConfigs = configs.Select(config => new AutoMonitorConfig
+                {
+                    Name = config.Name,
+                    IsEnabled = config.IsEnabled,
+                    ScanIntervalSeconds = config.ScanIntervalSeconds,
+                    CooldownSeconds = config.CooldownSeconds,
+                    CreateTime = config.CreateTime,
+                    LastModifiedTime = config.LastModifiedTime,
+                    
+                    // 保本配置 - 只保留基础设置
+                    BreakEvenConfig = new AutoBreakEvenConfig
+                    {
+                        IsEnabled = config.BreakEvenConfig.IsEnabled,
+                        TriggerProfitAmount = config.BreakEvenConfig.TriggerProfitAmount
+                        // 不保存状态信息
+                    },
+                    
+                    // 推仓配置 - 只保留基础设置
+                    AddPositionConfig = new AutoAddPositionConfig
+                    {
+                        IsEnabled = config.AddPositionConfig.IsEnabled,
+                        Tiers = config.AddPositionConfig.Tiers.Select(tier => new AddPositionTier
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            RiskMultiplier = tier.RiskMultiplier,
+                            StopLossRatio = tier.StopLossRatio,
+                            ProfitProtectionAmount = tier.ProfitProtectionAmount,
+                            ExitTargetPnl = tier.ExitTargetPnl
+                            // 不保存执行状态
+                        }).ToList()
+                    },
+                    
+                    // 保盈配置 - 只保留基础设置
+                    ProfitProtectionConfig = new AutoProfitProtectionConfig
+                    {
+                        IsEnabled = config.ProfitProtectionConfig.IsEnabled,
+                        Tiers = config.ProfitProtectionConfig.Tiers.Select(tier => new ProfitProtectionTier
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            ProtectionAmount = tier.ProtectionAmount
+                            // 不保存执行状态
+                        }).ToList()
+                    }
+                }).ToList();
+                
+                var json = JsonSerializer.Serialize(simplifiedConfigs, new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true,
                     WriteIndented = true
@@ -524,7 +576,7 @@ namespace BinanceFuturesTrader.Services
                     }
                 });
                 
-                _logger.LogDebug($"保存了 {configs.Count} 个配置到文件");
+                _logger.LogDebug($"💾 异步保存了 {simplifiedConfigs.Count} 个简化基础配置到文件（不含状态信息）");
             }
             catch (Exception ex)
             {
@@ -533,37 +585,81 @@ namespace BinanceFuturesTrader.Services
         }
         
         /// <summary>
-        /// 🔧 保存配置列表（同步）
+        /// 🔧 保存配置列表（同步）- 简化版：只保存基础配置信息，不保存状态
         /// </summary>
         private void SaveConfigurationsSync()
         {
             try
             {
                 var configs = Configurations.ToList();
-                var json = JsonSerializer.Serialize(configs, new JsonSerializerOptions
+                
+                // 🔧 创建完全简化的配置：只保留基础配置信息，完全排除状态字段
+                var simplifiedConfigs = configs.Select(config => new
+                {
+                    Name = config.Name,
+                    IsEnabled = config.IsEnabled,
+                    ScanIntervalSeconds = config.ScanIntervalSeconds,
+                    CooldownSeconds = config.CooldownSeconds,
+                    CreateTime = config.CreateTime,
+                    LastModifiedTime = config.LastModifiedTime,
+                    
+                    // 保本配置 - 只保留基础设置
+                    BreakEvenConfig = new
+                    {
+                        IsEnabled = config.BreakEvenConfig.IsEnabled,
+                        TriggerProfitAmount = config.BreakEvenConfig.TriggerProfitAmount,
+                        Description = config.BreakEvenConfig.Description
+                    },
+                    
+                    // 推仓配置 - 只保留基础设置
+                    AddPositionConfig = new
+                    {
+                        IsEnabled = config.AddPositionConfig.IsEnabled,
+                        Tiers = config.AddPositionConfig.Tiers.Select(tier => new
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            RiskMultiplier = tier.RiskMultiplier,
+                            StopLossRatio = tier.StopLossRatio,
+                            ProfitProtectionAmount = tier.ProfitProtectionAmount,
+                            Description = tier.Description
+                        }).ToList()
+                    },
+                    
+                    // 保盈配置 - 只保留基础设置
+                    ProfitProtectionConfig = new
+                    {
+                        IsEnabled = config.ProfitProtectionConfig.IsEnabled,
+                        Tiers = config.ProfitProtectionConfig.Tiers.Select(tier => new
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            ProtectionAmount = tier.ProtectionAmount,
+                            Description = tier.Description
+                        }).ToList()
+                    }
+                }).ToList();
+                
+                var json = JsonSerializer.Serialize(simplifiedConfigs, new JsonSerializerOptions
                 {
                     PropertyNameCaseInsensitive = true,
-                    WriteIndented = true
+                    WriteIndented = true,
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
+                    Converters = { new JsonStringEnumConverter() }
                 });
                 
                 lock (_fileLock)
                 {
-                    // 🔧 确保目录存在
-                    var directory = Path.GetDirectoryName(_configFilePath);
-                    if (!Directory.Exists(directory))
-                    {
-                        Directory.CreateDirectory(directory!);
-                    }
-                    
                     File.WriteAllText(_configFilePath, json);
                 }
                 
-                _logger.LogInformation($"💾 已同步保存 {configs.Count} 个配置到文件: {Path.GetFileName(_configFilePath)}");
+                _logger.LogDebug($"💾 保存了 {simplifiedConfigs.Count} 个简化基础配置到文件（不含状态信息）");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 同步保存配置文件失败");
-                throw; // 重新抛出异常，让调用者知道保存失败
+                _logger.LogError(ex, "保存配置文件失败");
             }
         }
         

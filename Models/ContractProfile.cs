@@ -243,7 +243,7 @@ namespace BinanceFuturesTrader.Models
         /// <summary>
         /// 执行状态
         /// </summary>
-        public string ExecutionStatus { get; set; } = "未触发"; // 未触发、触发中、已执行、执行失败
+        public string ExecutionStatus { get; set; } = StatusConstants.Waiting; // waiting、executing、executed、failed
         
         /// <summary>
         /// 执行结果

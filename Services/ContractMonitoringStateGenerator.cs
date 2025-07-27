@@ -180,7 +180,7 @@ namespace BinanceFuturesTrader.Services
             string result)
         {
             var now = DateTime.Now;
-            var status = isSuccess ? "已执行" : "执行失败";
+            var status = isSuccess ? StatusConstants.Executed : StatusConstants.Failed;
             
             _logger.LogCritical($"🔧【StateGenerator】更新执行状态: {state.Symbol}_{state.PositionSide} {operationType}_{tierIndex}");
             _logger.LogCritical($"   🎯 操作类型: {operationType}, 阶梯: {tierIndex}, 成功: {isSuccess}");

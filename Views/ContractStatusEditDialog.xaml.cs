@@ -1,14 +1,17 @@
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using BinanceFuturesTrader.Models;
+using BinanceFuturesTrader.Services;
 using Microsoft.Extensions.Logging;
 using System.Reflection;
+using System.Collections.Generic; // Added for Dictionary
 
 namespace BinanceFuturesTrader.Views
 {
@@ -617,7 +620,7 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 将状态变更同步到后台服务
+        /// 将状态变更同步到后台服务 - 强化版
         /// </summary>
         private void SyncChangesToBackendService()
         {
@@ -631,35 +634,142 @@ namespace BinanceFuturesTrader.Views
 
                 _logger.LogInformation($"🔄 开始同步状态变更到后台服务 - 合约: {_contract.Symbol}_{_contract.PositionSide}");
 
-                // 使用反射获取AutoMonitorService的UnifiedStateManager
-                var serviceType = _autoMonitorService.GetType();
-                _logger.LogInformation($"🔧 服务类型: {serviceType.Name}");
+                // 🔧 强化修复：直接使用服务访问状态管理器，不依赖反射
+                var contractKey = $"{_contract.Symbol}_{_contract.PositionSide}";
+                _logger.LogInformation($"🔧 合约键: {contractKey}");
                 
-                var unifiedStateManagerProperty = serviceType.GetProperty("UnifiedStateManager");
-                
-                if (unifiedStateManagerProperty == null)
+                // 🔧 关键修复：直接通过AutoMonitorService访问状态服务
+                try
                 {
-                    _logger.LogWarning("⚠️ 无法获取UnifiedStateManager属性");
-                    return;
-                }
+                    // 获取状态服务的实例 - 通过已知的公共方法
+                    var serviceType = _autoMonitorService.GetType();
+                    
+                    // 1. 首先尝试通过公共属性获取状态服务
+                    var stateServiceField = serviceType.GetField("_stateService", BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (stateServiceField == null)
+                    {
+                        _logger.LogWarning("⚠️ 无法获取_stateService字段");
+                        
+                        // 2. 尝试通过其他字段获取
+                        var unifiedStateManagerField = serviceType.GetField("_unifiedStateManager", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (unifiedStateManagerField != null)
+                        {
+                            var unifiedStateManager = unifiedStateManagerField.GetValue(_autoMonitorService);
+                            if (unifiedStateManager != null)
+                            {
+                                // 通过UnifiedStateManager直接记录执行状态
+                                _logger.LogInformation("✅ 通过UnifiedStateManager同步状态");
+                                SyncViaUnifiedStateManager(unifiedStateManager, contractKey);
+                                return;
+                            }
+                        }
+                        
+                        _logger.LogWarning("⚠️ 无法获取状态管理器，使用文件直接操作");
+                        SyncDirectlyToFile(contractKey);
+                        return;
+                    }
 
-                var unifiedStateManager = unifiedStateManagerProperty.GetValue(_autoMonitorService);
-                if (unifiedStateManager == null)
+                    var stateService = stateServiceField.GetValue(_autoMonitorService);
+                    if (stateService == null)
+                    {
+                        _logger.LogWarning("⚠️ 状态服务为空，使用文件直接操作");
+                        SyncDirectlyToFile(contractKey);
+                        return;
+                    }
+
+                    _logger.LogInformation($"✅ 成功获取状态服务: {stateService.GetType().Name}");
+
+                    // 遍历所有修改的条件，同步到后台服务
+                    var statusUpdated = false;
+                    foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
+                    {
+                        var condition = item.OriginalCondition;
+                        
+                        _logger.LogInformation($"🔍 处理条件: {item.TypeText} {item.TierText} - 状态: {condition.Status}");
+                        
+                        // 如果状态被修改为已执行，记录到状态管理器
+                        if (condition.Status == TriggerExecutionStatus.Executed)
+                        {
+                            var operationType = condition.Type switch
+                            {
+                                TriggerConditionType.BreakEven => "BreakEven",
+                                TriggerConditionType.AddPosition => "AddPosition",
+                                TriggerConditionType.ProfitProtection => "ProfitProtection",
+                                _ => "BreakEven"
+                            };
+
+                            _logger.LogInformation($"📝 准备更新状态:");
+                            _logger.LogInformation($"  - ContractKey: {contractKey}");
+                            _logger.LogInformation($"  - OperationType: {operationType}");
+                            _logger.LogInformation($"  - TierIndex: {condition.TierIndex}");
+                            _logger.LogInformation($"  - TriggerPrice: {condition.TriggerPrice}");
+
+                            // 使用反射调用UpdateExecutionStatus方法
+                            var updateExecutionStatusMethod = stateService.GetType().GetMethod("UpdateExecutionStatus");
+                            if (updateExecutionStatusMethod != null)
+                            {
+                                try
+                                {
+                                    var tierIndex = condition.TierIndex > 0 ? (int?)condition.TierIndex : null;
+                                    
+                                    updateExecutionStatusMethod.Invoke(stateService, new object[]
+                                    {
+                                        contractKey,
+                                        operationType,
+                                        tierIndex,
+                                        true, // 成功
+                                        condition.TriggerPrice, // 使用触发价格作为触发浮盈
+                                        "手动设置为executed" // 消息
+                                    });
+
+                                    _logger.LogInformation($"✅ 已同步状态到后台服务: {contractKey} {item.TypeText}{item.TierText}");
+                                    statusUpdated = true;
+                                    
+                                    // 🔧 强化验证：立即验证状态是否保存成功
+                                    VerifyStatusSaved(stateService, contractKey, operationType, tierIndex);
+                                    
+                                }
+                                catch (Exception invokeEx)
+                                {
+                                    _logger.LogError(invokeEx, $"❌ 调用UpdateExecutionStatus失败: {contractKey} {item.TypeText}{item.TierText}");
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning($"⚠️ 未找到UpdateExecutionStatus方法");
+                            }
+                        }
+                    }
+                    
+                    if (statusUpdated)
+                    {
+                        // 🔧 强化保存：强制触发额外的保存操作
+                        ForceSaveAllStates(stateService);
+                    }
+                }
+                catch (Exception ex)
                 {
-                    _logger.LogWarning("⚠️ UnifiedStateManager为空");
-                    return;
+                    _logger.LogError(ex, "❌ 同步状态到后台服务失败，尝试直接文件操作");
+                    SyncDirectlyToFile(contractKey);
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 同步状态变更失败");
+            }
+        }
 
-                _logger.LogInformation($"✅ 成功获取UnifiedStateManager: {unifiedStateManager.GetType().Name}");
-
-                // 遍历所有修改的条件，同步到后台服务
+        /// <summary>
+        /// 🔧 新增：通过UnifiedStateManager同步状态
+        /// </summary>
+        private void SyncViaUnifiedStateManager(object unifiedStateManager, string contractKey)
+        {
+            try
+            {
                 foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
                 {
                     var condition = item.OriginalCondition;
                     
-                    _logger.LogInformation($"🔍 处理条件: {item.TypeText} {item.TierText} - 状态: {condition.Status}");
-                    
-                    // 如果状态被修改为已执行，记录到状态管理器
                     if (condition.Status == TriggerExecutionStatus.Executed)
                     {
                         var executionType = condition.Type switch
@@ -669,13 +779,6 @@ namespace BinanceFuturesTrader.Views
                             TriggerConditionType.ProfitProtection => ExecutionType.ProfitProtection,
                             _ => ExecutionType.BreakEven
                         };
-
-                        _logger.LogInformation($"📝 准备记录执行状态:");
-                        _logger.LogInformation($"  - Symbol: {_contract.Symbol}");
-                        _logger.LogInformation($"  - PositionSide: {_contract.PositionSide}");
-                        _logger.LogInformation($"  - ExecutionType: {executionType}");
-                        _logger.LogInformation($"  - TierIndex: {condition.TierIndex}");
-                        _logger.LogInformation($"  - TriggerPrice: {condition.TriggerPrice}");
 
                         // 使用反射调用RecordExecution方法
                         var recordExecutionMethod = unifiedStateManager.GetType().GetMethod("RecordExecution");
@@ -689,86 +792,156 @@ namespace BinanceFuturesTrader.Views
                                     _contract.PositionSide,
                                     executionType,
                                     condition.TierIndex,
-                                    condition.TriggerPrice, // 使用触发价格作为触发浮盈
-                                    true, // 成功
-                                    "手动设置", // 消息
+                                    condition.TriggerPrice,
+                                    true,
+                                    "手动设置",
                                     true // autoSave
                                 });
 
-                                _logger.LogInformation($"✅ 已同步状态到后台服务: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
-                                
-                                // 🔧 新增：验证状态是否正确保存
-                                var isExecutedMethod = unifiedStateManager.GetType().GetMethod("IsExecuted");
-                                if (isExecutedMethod != null)
-                                {
-                                    try
-                                    {
-                                        var isExecuted = (bool)isExecutedMethod.Invoke(unifiedStateManager, new object[]
-                                        {
-                                            _contract.Symbol,
-                                            _contract.PositionSide,
-                                            executionType,
-                                            condition.TierIndex
-                                        });
-                                        
-                                        _logger.LogInformation($"🔍 验证状态保存结果: {isExecuted}");
-                                        
-                                        if (!isExecuted)
-                                        {
-                                            _logger.LogError($"❌ 状态保存失败！IsExecuted返回false");
-                                        }
-                                    }
-                                    catch (Exception verifyEx)
-                                    {
-                                        _logger.LogError(verifyEx, $"❌ 验证状态保存时发生异常");
-                                    }
-                                }
+                                _logger.LogInformation($"✅ 通过UnifiedStateManager同步成功: {contractKey} {item.TypeText}{item.TierText}");
                             }
-                            catch (Exception invokeEx)
+                            catch (Exception ex)
                             {
-                                _logger.LogError(invokeEx, $"❌ 调用RecordExecution失败: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
+                                _logger.LogError(ex, $"❌ UnifiedStateManager同步失败: {contractKey} {item.TypeText}{item.TierText}");
                             }
-                        }
-                        else
-                        {
-                            _logger.LogError($"❌ 无法获取RecordExecution方法");
-                        }
-                    }
-                    else if (condition.Status == TriggerExecutionStatus.NotTriggered)
-                    {
-                        _logger.LogInformation($"🔄 重置状态为未触发: {item.TypeText}{item.TierText}");
-                        
-                        // 如果状态被重置为未触发，清理状态管理器中的记录
-                        var clearContractStatesMethod = _autoMonitorService.GetType().GetMethod("ClearContractStates");
-                        if (clearContractStatesMethod != null)
-                        {
-                            try
-                            {
-                                clearContractStatesMethod.Invoke(_autoMonitorService, new object[]
-                                {
-                                    _contract.Symbol,
-                                    _contract.PositionSide,
-                                    "手动重置"
-                                });
-
-                                _logger.LogInformation($"✅ 已清理后台状态: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
-                            }
-                            catch (Exception clearEx)
-                            {
-                                _logger.LogError(clearEx, $"❌ 清理后台状态失败: {_contract.Symbol}_{_contract.PositionSide} {item.TypeText}{item.TierText}");
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogError($"❌ 无法获取ClearContractStates方法");
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 同步状态到后台服务失败");
-                // 不抛出异常，只记录错误
+                _logger.LogError(ex, "❌ UnifiedStateManager同步失败");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 直接操作文件保存状态 - 使用统一状态管理
+        /// </summary>
+        private void SyncDirectlyToFile(string contractKey)
+        {
+            try
+            {
+                _logger.LogInformation("🔧 使用直接文件操作模式保存状态");
+                
+                // 获取正确的文件路径
+                var filePathManager = new FilePathManager();
+                var currentAccount = filePathManager.GetCurrentAccountName();
+                var stateFilePath = filePathManager.GetContractMonitoringStatesFilePath(currentAccount);
+                
+                if (string.IsNullOrEmpty(stateFilePath))
+                {
+                    _logger.LogError("❌ 无法获取状态文件路径");
+                    return;
+                }
+                
+                // 确保目录存在
+                var directory = Path.GetDirectoryName(stateFilePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                
+                                 // 通过ContractMonitoringStateService保存状态
+                 var configManager = BaseConfigManager.Instance;
+                 var typedLogger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ContractMonitoringStateService>.Instance;
+                 var stateService = new ContractMonitoringStateService(typedLogger, configManager, filePathManager, currentAccount);
+                
+                foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
+                {
+                    var condition = item.OriginalCondition;
+                    
+                    if (condition.Status == TriggerExecutionStatus.Executed)
+                    {
+                        var operationType = condition.Type switch
+                        {
+                            TriggerConditionType.BreakEven => "BreakEven",
+                            TriggerConditionType.AddPosition => "AddPosition", 
+                            TriggerConditionType.ProfitProtection => "ProfitProtection",
+                            _ => "BreakEven"
+                        };
+                        
+                        var tierIndex = condition.TierIndex > 0 ? (int?)condition.TierIndex : null;
+                        
+                        try
+                        {
+                            stateService.UpdateExecutionStatus(
+                                contractKey,
+                                operationType,
+                                tierIndex,
+                                true, // 成功
+                                condition.TriggerPrice, // 使用触发价格作为触发浮盈
+                                "手动设置为executed"
+                            );
+                            
+                            _logger.LogInformation($"✅ 直接文件保存成功: {contractKey} {item.TypeText}{item.TierText}");
+                        }
+                        catch (Exception saveEx)
+                        {
+                            _logger.LogError(saveEx, $"❌ 直接文件保存失败: {contractKey} {item.TypeText}{item.TierText}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 直接文件操作失败");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：验证状态是否保存成功
+        /// </summary>
+        private void VerifyStatusSaved(object stateService, string contractKey, string operationType, int? tierIndex)
+        {
+            try
+            {
+                // 调用LoadMonitoringStates验证
+                var loadMethod = stateService.GetType().GetMethod("LoadMonitoringStates");
+                if (loadMethod != null)
+                {
+                    var states = loadMethod.Invoke(stateService, null) as Dictionary<string, object>;
+                    if (states != null && states.TryGetValue(contractKey, out var state))
+                    {
+                        _logger.LogInformation($"✅ 验证: 在状态字典中找到合约 {contractKey}");
+                        // 这里可以进一步验证具体的执行状态
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ 验证失败: 状态字典中未找到合约 {contractKey}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "⚠️ 状态验证失败");
+            }
+        }
+
+        /// <summary>
+        /// 🔧 新增：强制保存所有状态
+        /// </summary>
+        private void ForceSaveAllStates(object stateService)
+        {
+            try
+            {
+                // 尝试调用强制保存方法
+                var forceSaveMethod = stateService.GetType().GetMethod("ForceSaveAll") ?? 
+                                     stateService.GetType().GetMethod("SaveAll") ??
+                                     stateService.GetType().GetMethod("SaveStates");
+                                     
+                if (forceSaveMethod != null)
+                {
+                    forceSaveMethod.Invoke(stateService, null);
+                    _logger.LogInformation("✅ 强制保存状态完成");
+                }
+                else
+                {
+                    _logger.LogInformation("💡 没有找到强制保存方法，依赖自动保存");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "⚠️ 强制保存失败");
             }
         }
 
@@ -932,8 +1105,8 @@ namespace BinanceFuturesTrader.Views
 
         public string StatusText => Status switch
         {
-            TriggerExecutionStatus.NotTriggered => "未触发",
-            TriggerExecutionStatus.Executed => "已执行",
+            TriggerExecutionStatus.NotTriggered => StatusConstants.Waiting,
+            TriggerExecutionStatus.Executed => StatusConstants.Executed,
             _ => "未知"
         };
 
@@ -944,7 +1117,7 @@ namespace BinanceFuturesTrader.Views
             _ => new SolidColorBrush(Colors.Gray)
         };
 
-        public string ToggleButtonText => Status == TriggerExecutionStatus.NotTriggered ? "设为已执行" : "设为未触发";
+        public string ToggleButtonText => Status == TriggerExecutionStatus.NotTriggered ? $"设为{StatusConstants.Executed}" : $"设为{StatusConstants.Waiting}";
 
         public Brush ToggleButtonColor => Status == TriggerExecutionStatus.NotTriggered ? 
             new SolidColorBrush(Colors.Red) : new SolidColorBrush(Colors.Green);

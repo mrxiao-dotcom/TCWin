@@ -451,11 +451,12 @@ namespace BinanceFuturesTrader.Views
                     // 🔧 修复：强制刷新当前持仓数据
                     RefreshCurrentPositionsData();
                     
-                    // 🎯 如果没有数据，创建示例数据确保表格有内容显示
+                    // 🎯 如果没有数据，检查状态文件是否存在，不存在则生成
                     if (ContractMonitors.Count == 0)
                     {
-                        _logger.LogInformation("📝 没有实际数据，创建示例数据进行展示");
-                        CreateExampleContractData();
+                        _logger.LogInformation("📝 没有合约监控数据，检查是否需要生成状态文件");
+                        // ❌ 移除创建示例数据的后门路径
+                        // CreateExampleContractData(); // 已移除
                     }
                         
                         // 🎯 添加详细的图标测试日志
@@ -485,8 +486,9 @@ namespace BinanceFuturesTrader.Views
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "❌ 延迟加载数据时发生错误");
-                    // 如果加载失败，至少创建示例数据
-                    CreateExampleContractData();
+                    // ❌ 移除创建示例数据的后门路径 
+                    // CreateExampleContractData(); // 已移除
+                    _logger.LogWarning("⚠️ 数据加载失败，需要检查状态文件或重新生成");
                 }
             }), System.Windows.Threading.DispatcherPriority.Loaded);
             
@@ -2251,7 +2253,7 @@ namespace BinanceFuturesTrader.Views
                     _logger.LogInformation($"✅ 合约配置编辑完成: {contract.ContractKey}");
                     
                     // 保存到文件
-                    SaveContractConfigsToFile();
+                    // SaveContractConfigsToFile(); // 已废弃：使用统一状态管理
                     
                     return true;
                 }
@@ -2289,7 +2291,7 @@ namespace BinanceFuturesTrader.Views
                     try
                     {
                         // 保存到持久化存储
-                        SaveContractConfigsToFile();
+                        // SaveContractConfigsToFile(); // 已废弃：使用统一状态管理
                         _logger.LogInformation("💾 状态修改已保存到本地文件");
                     }
                     catch (Exception saveEx)
@@ -2438,10 +2440,10 @@ namespace BinanceFuturesTrader.Views
                 return;
             }
 
-            SaveContractConfigsToFile();
+            // SaveContractConfigsToFile(); // 已废弃：使用统一状态管理
             var filePathManager = new FilePathManager();
             var currentAccount = filePathManager.GetCurrentAccountName();
-            MessageBox.Show($"✅ 合约配置更新成功！\n📊 已更新 {ContractMonitors.Count} 个合约配置到本地文件\n📁 保存位置：%AppData%\\BinanceFuturesTrader\\Accounts\\{currentAccount}\\\n\n💡 配置已持久化，重新启动程序后仍然有效", 
+            MessageBox.Show($"✅ 合约配置更新成功！\n📊 已更新 {ContractMonitors.Count} 个合约配置\n📁 数据保存在统一状态文件中\n\n💡 配置已持久化，重新启动程序后仍然有效", 
                 "配置更新成功", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -2529,7 +2531,7 @@ namespace BinanceFuturesTrader.Views
                     }
                     
                     // 🔧 第3步：保存到文件
-                    SaveContractConfigsToFile();
+                    // SaveContractConfigsToFile(); // 已废弃：使用统一状态管理
                     
                     // 🔧 第4步：更新统计信息
                     UpdateNewInterfaceStats();
@@ -4294,90 +4296,95 @@ namespace BinanceFuturesTrader.Views
             {
                 _logger.LogInformation("🔄 刷新当前持仓数据");
                 
-                // 🔧 简化版：直接从简化服务获取状态数据
-                var positionProfiles = _autoMonitorService.GetPositionProfiles();
-                
-                _logger.LogDebug($"📊 获取到 {positionProfiles.Count} 个持仓档案");
-                
                 Application.Current?.Dispatcher?.Invoke(() =>
                 {
                     try
                     {
-                        // 🔧 关键修复：如果ContractMonitors为空但有持仓，重新创建合约监控
-                        if (ContractMonitors.Count == 0 && positionProfiles.Count > 0)
+                        // 🎯 【关键修复】统一数据源：只从contract_monitoring_states.json加载数据
+                        var stateService = CreateContractMonitoringStateService();
+                        var monitoringStates = stateService.LoadMonitoringStates();
+                        
+                        _logger.LogInformation($"📊 从状态文件获取到 {monitoringStates.Count} 个合约状态");
+                        
+                        if (ContractMonitors.Count == 0 && monitoringStates.Count == 0)
                         {
-                            _logger.LogInformation("🔄 ContractMonitors为空，从持仓重新创建合约监控模型");
+                            // 🎯 状态文件不存在或为空，检查是否有实际持仓需要生成状态文件
+                            _logger.LogInformation("📝 状态文件为空，检查是否有实际持仓需要处理");
                             
-                            // 获取当前配置
-                            var currentConfig = GetCurrentAutoMonitorConfig();
-                            if (currentConfig != null)
+                            // ⚠️ 暂时使用旧系统作为过渡，但需要明确标记为待移除
+                            var positionProfiles = _autoMonitorService.GetPositionProfiles();
+                            _logger.LogWarning($"⚠️ 【待移除】使用旧的PositionProfile系统获取到 {positionProfiles.Count} 个档案");
+                            
+                            if (positionProfiles.Count > 0)
                             {
-                                // 为每个持仓创建合约监控模型
-                                foreach (var kvp in positionProfiles)
-                                {
-                                    var contractKey = kvp.Key;
-                                    var profile = kvp.Value;
-                                    
-                                    var contractMonitor = GenerateContractConfigFromBaseConfig(profile, currentConfig);
-                                    ContractMonitors.Add(contractMonitor);
-                                    _logger.LogInformation($"🔄 从持仓创建合约监控: {contractKey}，触发条件数量: {contractMonitor.TriggerConditions.Count}");
-                                }
+                                _logger.LogInformation($"🔍 发现 {positionProfiles.Count} 个持仓档案，生成状态文件");
+                                GenerateContractMonitoringStatesFile(positionProfiles);
+                                
+                                // 重新加载生成的状态文件
+                                monitoringStates = stateService.LoadMonitoringStates();
                             }
                             else
                             {
-                                // 如果没有配置，使用默认配置
-                                var defaultConfig = CreateDefaultAutoMonitorConfig();
-                                foreach (var kvp in positionProfiles)
-                                {
-                                    var contractKey = kvp.Key;
-                                    var profile = kvp.Value;
-                                    
-                                    var contractMonitor = GenerateContractConfigFromBaseConfig(profile, defaultConfig);
-                                    ContractMonitors.Add(contractMonitor);
-                                    _logger.LogInformation($"🔄 使用默认配置创建合约监控: {contractKey}");
-                                }
+                                _logger.LogInformation("📝 没有持仓档案，无需生成状态文件");
+                                return;
+                            }
+                        }
+                        
+                        // 🔧 从状态文件创建UI模型
+                        if (ContractMonitors.Count == 0 && monitoringStates.Count > 0)
+                        {
+                            _logger.LogInformation("🔄 ContractMonitors为空，从状态文件创建合约监控模型");
+                            
+                            var currentPositions = new List<PositionInfo>();
+                            
+                            foreach (var kvp in monitoringStates)
+                            {
+                                var contractKey = kvp.Key;
+                                var state = kvp.Value;
+                                
+                                var contractMonitor = ConvertStateToContractMonitor(state, currentPositions);
+                                ContractMonitors.Add(contractMonitor);
+                                _logger.LogInformation($"🔄 从状态文件创建合约监控: {contractKey}，触发条件数量: {contractMonitor.TriggerConditions.Count}");
                             }
                         }
                         else
                         {
-                            // 🔧 更新现有合约的状态，而不是重新创建
+                            // 🔧 当已有UI数据时，从状态文件同步更新
+                            _logger.LogInformation("🔄 已有合约监控数据，从状态文件同步状态");
+                            
                             foreach (var contract in ContractMonitors.ToList())
                             {
                                 var contractKey = $"{contract.Symbol}_{contract.PositionSide}";
                                 
-                                if (positionProfiles.TryGetValue(contractKey, out var profile))
+                                if (monitoringStates.TryGetValue(contractKey, out var state))
                                 {
-                                    // 更新基本信息
-                                    contract.IsActive = profile.IsActive;
-                                    
-                                    // 🔧 关键修复：同步触发条件的执行状态
-                                    UpdateContractTriggerConditionsFromProfile(contract, profile, null);
-                                    
-                                    _logger.LogDebug($"🔄 已更新合约状态: {contractKey}");
+                                    // 从状态文件更新UI数据
+                                    contract.IsActive = state.IsActive;
+                                    _logger.LogDebug($"🔄 已从状态文件更新合约状态: {contractKey}");
                                 }
                                 else
                                 {
-                                    // 持仓已关闭，标记为非活跃
+                                    // 状态文件中不存在，标记为非活跃
                                     contract.IsActive = false;
-                                    _logger.LogDebug($"❌ 合约已非活跃: {contractKey}");
+                                    _logger.LogDebug($"❌ 状态文件中未找到合约，标记为非活跃: {contractKey}");
                                 }
                             }
                             
-                            // 🔧 添加新的合约（如果有）
-                            foreach (var kvp in positionProfiles)
+                            // 🔧 添加状态文件中有但UI中没有的新合约
+                            foreach (var kvp in monitoringStates)
                             {
                                 var contractKey = kvp.Key;
-                                var profile = kvp.Value;
+                                var state = kvp.Value;
                                 
                                 var existingContract = ContractMonitors.FirstOrDefault(c => 
                                     $"{c.Symbol}_{c.PositionSide}" == contractKey);
                                 
                                 if (existingContract == null)
                                 {
-                                    // 创建新的合约监控模型
-                                    var newContract = CreateContractMonitorFromProfile(profile);
+                                    // 从状态文件创建新的合约监控模型
+                                    var newContract = ConvertStateToContractMonitor(state, new List<PositionInfo>());
                                     ContractMonitors.Add(newContract);
-                                    _logger.LogInformation($"🆕 添加新合约监控: {contractKey}");
+                                    _logger.LogInformation($"🆕 从状态文件添加新合约监控: {contractKey}");
                                 }
                             }
                         }
@@ -5572,28 +5579,14 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 保存合约配置到文件
+        /// 保存合约配置到文件 - 已废弃：现在使用统一状态管理
         /// </summary>
+        [Obsolete("已废弃：现在使用ContractMonitoringStateService进行统一状态管理，不再需要单独的ContractConfigs.json文件")]
         private void SaveContractConfigsToFile()
         {
-            try
-            {
-                _logger.LogInformation("💾 保存合约配置到文件");
-                
-                var filePathManager = new FilePathManager();
-                var persistenceService = new AutoMonitorPersistenceService(
-                    null, // 使用null logger，AutoMonitorPersistenceService支持nullable logger
-                    filePathManager,
-                    filePathManager.GetCurrentAccountName());
-                var contractList = ContractMonitors.ToList();
-                
-                persistenceService.SaveContractConfigs(contractList);
-                _logger.LogInformation($"✅ 已保存 {contractList.Count} 个合约配置");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 保存合约配置到文件失败");
-            }
+            _logger.LogWarning("⚠️ SaveContractConfigsToFile 已废弃：现在使用统一状态管理，无需单独保存ContractConfigs.json");
+            // 已废弃：合约配置现在通过 ContractMonitoringStateService 统一管理
+            // 数据保存在 contract_monitoring_states.json 文件中
         }
         
         /// <summary>
@@ -7172,6 +7165,115 @@ namespace BinanceFuturesTrader.Views
         {
             _logger.LogError(ex, "❌ 导出日志时发生错误");
             MessageBox.Show($"导出日志失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// 🎯 关键修复：根据持仓和基础配置生成合约监控状态文件
+    /// </summary>
+    private void GenerateContractMonitoringStatesFile(Dictionary<string, PositionProfile> positionProfiles)
+    {
+        try
+        {
+            _logger.LogInformation("🔄 开始生成合约监控状态文件...");
+            
+            // 创建状态服务
+            var stateService = CreateContractMonitoringStateService();
+            
+            // 获取当前选中的基础配置
+            var currentConfig = GetCurrentAutoMonitorConfig();
+            if (currentConfig == null)
+            {
+                _logger.LogWarning("⚠️ 未找到基础配置，使用默认配置");
+                currentConfig = CreateDefaultAutoMonitorConfig();
+            }
+            
+            _logger.LogInformation($"📋 使用基础配置: {currentConfig.Name}");
+            _logger.LogInformation($"📋 保本配置: 启用={currentConfig.BreakEvenConfig.IsEnabled}, 触发金额={currentConfig.BreakEvenConfig.TriggerProfitAmount}");
+            
+            // 为每个持仓生成状态
+            var monitoringStates = new Dictionary<string, ContractMonitoringState>();
+            
+            foreach (var kvp in positionProfiles)
+            {
+                var contractKey = kvp.Key;
+                var profile = kvp.Value;
+                
+                _logger.LogInformation($"🔄 为合约 {contractKey} 生成监控状态");
+                
+                // 从基础配置和持仓信息生成监控状态
+                var monitoringState = new ContractMonitoringState
+                {
+                    Symbol = profile.Symbol,
+                    PositionSide = profile.PositionSide,
+                    BaseConfigName = currentConfig.Name,
+                    Name = currentConfig.Name,
+                    IsEnabled = currentConfig.IsEnabled,
+                    ScanIntervalSeconds = currentConfig.ScanIntervalSeconds,
+                    CooldownSeconds = currentConfig.CooldownSeconds,
+                    
+                    // 持仓信息
+                    InitialQuantity = profile.InitialQuantity,
+                    InitialEntryPrice = profile.InitialEntryPrice,
+                    CurrentQuantity = profile.InitialQuantity, // 使用初始数量作为当前数量
+                    CurrentEntryPrice = profile.InitialEntryPrice, // 使用初始价格作为当前价格
+                    CurrentMarkPrice = 0m, // 需要从实时数据获取
+                    CurrentUnrealizedPnl = 0m, // 需要从实时数据获取
+                    IsActive = profile.IsActive,
+                    
+                    // 配置信息
+                    BreakEvenConfig = new StatefulBreakEvenConfig
+                    {
+                        IsEnabled = currentConfig.BreakEvenConfig.IsEnabled,
+                        TriggerProfitAmount = currentConfig.BreakEvenConfig.TriggerProfitAmount,
+                        ExecutionState = ExecutionState.NotTriggered
+                    },
+                    
+                    AddPositionConfig = new StatefulAddPositionConfig
+                    {
+                        IsEnabled = currentConfig.AddPositionConfig.IsEnabled,
+                        Tiers = currentConfig.AddPositionConfig.Tiers.Select(tier => new StatefulAddPositionTier
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            RiskMultiplier = tier.RiskMultiplier,
+                            StopLossRatio = tier.StopLossRatio,
+                            ProfitProtectionAmount = tier.ProfitProtectionAmount,
+                            ExecutionState = ExecutionState.NotTriggered
+                        }).ToList()
+                    },
+                    
+                    ProfitProtectionConfig = new StatefulProfitProtectionConfig
+                    {
+                        IsEnabled = currentConfig.ProfitProtectionConfig.IsEnabled,
+                        Tiers = currentConfig.ProfitProtectionConfig.Tiers.Select(tier => new StatefulProfitProtectionTier
+                        {
+                            TierIndex = tier.TierIndex,
+                            IsEnabled = tier.IsEnabled,
+                            TriggerProfitAmount = tier.TriggerProfitAmount,
+                            ProtectionAmount = tier.ProtectionAmount,
+                            ExecutionState = ExecutionState.NotTriggered
+                        }).ToList()
+                    },
+                    
+                    ExecutionHistories = new List<ExecutionHistory>()
+                };
+                
+                monitoringStates[contractKey] = monitoringState;
+                _logger.LogDebug($"✅ 生成状态: {contractKey}");
+            }
+            
+            // 保存到文件
+            stateService.SaveMonitoringStates(monitoringStates);
+            
+            _logger.LogInformation($"✅ 合约监控状态文件生成完成，共 {monitoringStates.Count} 个合约");
+            AppendLog($"📄 已生成合约监控状态文件: {monitoringStates.Count} 个合约");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 生成合约监控状态文件失败");
+            AppendLog($"❌ 生成状态文件失败: {ex.Message}");
         }
     }
 }

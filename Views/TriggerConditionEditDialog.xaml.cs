@@ -161,8 +161,8 @@ namespace BinanceFuturesTrader.Views
         // 显示属性
         public string StatusText => Status switch
         {
-            TriggerExecutionStatus.NotTriggered => "未触发",
-            TriggerExecutionStatus.Executed => "已执行",
+            TriggerExecutionStatus.NotTriggered => StatusConstants.Waiting,
+            TriggerExecutionStatus.Executed => StatusConstants.Executed,
             _ => "未知"
         };
 

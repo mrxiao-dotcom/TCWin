@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using BinanceFuturesTrader.Models;
+using BinanceFuturesTrader.Services;
 using Microsoft.Extensions.Logging;
 
 namespace BinanceFuturesTrader.Views
@@ -355,12 +356,14 @@ namespace BinanceFuturesTrader.Views
         {
             var comboBox = new ComboBox { Width = 80, Margin = new Thickness(0, 0, 5, 0) };
             
-            // 🔧 修复：手工设置只需要两个状态，移除"执行中"
-            var item1 = new ComboBoxItem { Content = "未触发", Tag = "-" };
-            var item2 = new ComboBoxItem { Content = "已执行", Tag = "√" };
+            // 🔧 修复：添加三个状态选项，包括执行中
+            var item1 = new ComboBoxItem { Content = StatusConstants.Waiting, Tag = StatusConstants.WaitingSymbol };
+            var item2 = new ComboBoxItem { Content = StatusConstants.Executing, Tag = "⚡" }; // 执行中用闪电符号
+            var item3 = new ComboBoxItem { Content = StatusConstants.Executed, Tag = StatusConstants.ExecutedSymbol };
             
             comboBox.Items.Add(item1);
             comboBox.Items.Add(item2);
+            comboBox.Items.Add(item3);
             
             comboBox.SelectedItem = item1; // 默认选择"未触发"
             
@@ -368,34 +371,43 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 从本地文件加载已保存的合约配置
+        /// 从统一状态文件加载已保存的合约配置
         /// </summary>
         private void LoadSavedContractConfig()
         {
             try
             {
-                var configPath = GetContractConfigFilePath();
-                if (File.Exists(configPath))
+                // 🔧 修复：使用统一状态管理服务加载配置
+                var filePathManager = new FilePathManager();
+                var currentAccount = filePathManager.GetCurrentAccountName();
+                var configManager = BaseConfigManager.Instance;
+                var typedLogger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ContractMonitoringStateService>.Instance;
+                var stateService = new ContractMonitoringStateService(typedLogger, configManager, filePathManager, currentAccount);
+
+                var contractKey = _originalConfig.ContractName.Replace(" ", "_"); // 将 "BTCUSDT LONG" 转换为 "BTCUSDT_LONG"
+                var state = stateService.GetMonitoringState(contractKey);
+                
+                _logger?.LogInformation($"🔍 尝试加载状态: 原始={_originalConfig.ContractName}, 标准化={contractKey}");
+                
+                if (state != null)
                 {
-                    var json = File.ReadAllText(configPath);
-                    var savedConfigs = JsonSerializer.Deserialize<Dictionary<string, ContractConfigData>>(json);
-                    
-                    if (savedConfigs != null && savedConfigs.TryGetValue(_originalConfig.ContractName, out var savedConfig))
-                    {
-                        // 应用已保存的配置到当前编辑配置
-                        ApplySavedConfig(savedConfig);
-                        _logger?.LogInformation($"从本地文件加载了合约配置: {_originalConfig.ContractName}");
-                    }
+                    // 应用已保存的状态到当前编辑配置
+                    ApplySavedStateFromUnifiedFile(state);
+                    _logger?.LogInformation($"✅ 从统一状态文件加载了合约配置: {contractKey}");
+                }
+                else
+                {
+                    _logger?.LogInformation($"📋 未找到合约状态记录，使用默认配置: {contractKey}");
                 }
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "加载本地合约配置失败，使用默认配置");
+                _logger?.LogWarning(ex, "加载合约状态失败，使用默认配置");
             }
         }
 
         /// <summary>
-        /// 应用已保存的配置
+        /// 应用已保存的配置（旧格式兼容）
         /// </summary>
         private void ApplySavedConfig(ContractConfigData savedConfig)
         {
@@ -429,80 +441,131 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 保存合约配置到本地文件
+        /// 从统一状态文件应用已保存的状态
+        /// </summary>
+        private void ApplySavedStateFromUnifiedFile(ContractMonitoringState state)
+        {
+            // 应用保本状态
+            _editedConfig.BreakEvenStatus = state.BreakEvenConfig.IsExecuted ? "✓" : "-";
+            
+            // 应用推仓状态
+            var pushTiers = state.AddPositionConfig.Tiers.OrderBy(t => t.TierIndex).Take(4).ToArray();
+            for (int i = 0; i < pushTiers.Length; i++)
+            {
+                var status = pushTiers[i].IsExecuted ? "✓" : "-";
+                switch (i)
+                {
+                    case 0: _editedConfig.PushTier1Status = status; break;
+                    case 1: _editedConfig.PushTier2Status = status; break;
+                    case 2: _editedConfig.PushTier3Status = status; break;
+                    case 3: _editedConfig.PushTier4Status = status; break;
+                }
+            }
+
+            // 应用保盈状态
+            var profitTiers = state.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex).Take(3).ToArray();
+            for (int i = 0; i < profitTiers.Length; i++)
+            {
+                var status = profitTiers[i].IsExecuted ? "✓" : "-";
+                switch (i)
+                {
+                    case 0: _editedConfig.ProfitTier1Status = status; break;
+                    case 1: _editedConfig.ProfitTier2Status = status; break;
+                    case 2: _editedConfig.ProfitTier3Status = status; break;
+                }
+            }
+            
+            _logger?.LogInformation($"📋 应用统一状态: 保本={_editedConfig.BreakEvenStatus}, 推仓=T1:{_editedConfig.PushTier1Status}|T2:{_editedConfig.PushTier2Status}|T3:{_editedConfig.PushTier3Status}|T4:{_editedConfig.PushTier4Status}, 保盈=T1:{_editedConfig.ProfitTier1Status}|T2:{_editedConfig.ProfitTier2Status}|T3:{_editedConfig.ProfitTier3Status}");
+        }
+
+        /// <summary>
+        /// 保存合约配置到本地文件 - 使用统一状态管理正确更新状态
         /// </summary>
         private void SaveContractConfigToFile()
         {
             try
             {
-                var configPath = GetContractConfigFilePath();
-                var directory = Path.GetDirectoryName(configPath);
-                if (!Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory!);
-                }
+                // 🔧 修复：使用正确的统一状态管理服务
+                var filePathManager = new FilePathManager();
+                var currentAccount = filePathManager.GetCurrentAccountName();
+                var configManager = BaseConfigManager.Instance;
+                var typedLogger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ContractMonitoringStateService>.Instance;
+                var stateService = new ContractMonitoringStateService(typedLogger, configManager, filePathManager, currentAccount);
 
-                Dictionary<string, ContractConfigData> allConfigs;
+                // 🔧 修复：解析合约名称获取正确的合约键格式（确保使用下划线格式）
+                var contractKey = _editedConfig.ContractName.Replace(" ", "_"); // 将 "BTCUSDT LONG" 转换为 "BTCUSDT_LONG"
                 
-                // 读取现有配置
-                if (File.Exists(configPath))
+                _logger?.LogInformation($"🔧 开始更新合约状态: {contractKey}");
+                _logger?.LogInformation($"🔧 原始合约名: {_editedConfig.ContractName}");
+                _logger?.LogInformation($"🔧 标准化合约键: {contractKey}");
+                _logger?.LogInformation($"🔧 当前账号: {currentAccount}");
+                _logger?.LogInformation($"🔧 待更新状态: 保本={_editedConfig.BreakEvenStatus}, 推仓=T1:{_editedConfig.PushTier1Status}|T2:{_editedConfig.PushTier2Status}|T3:{_editedConfig.PushTier3Status}|T4:{_editedConfig.PushTier4Status}, 保盈=T1:{_editedConfig.ProfitTier1Status}|T2:{_editedConfig.ProfitTier2Status}|T3:{_editedConfig.ProfitTier3Status}");
+                
+                // 更新保本状态（处理三种状态：waiting, executing, executed）
+                if (_editedConfig.BreakEvenStatus == "✓")
                 {
-                    var existingJson = File.ReadAllText(configPath);
-                    allConfigs = JsonSerializer.Deserialize<Dictionary<string, ContractConfigData>>(existingJson) ?? new Dictionary<string, ContractConfigData>();
+                    stateService.UpdateExecutionStatus(contractKey, "BreakEven", null, true, 0, "手动设置为executed");
+                    _logger?.LogInformation($"   ✅ 保本状态更新为executed");
                 }
-                else
+                else if (_editedConfig.BreakEvenStatus == "⚡")
                 {
-                    allConfigs = new Dictionary<string, ContractConfigData>();
+                    // 需要特殊处理executing状态 - 暂时使用executing标记
+                    stateService.UpdateExecutionStatusToExecuting(contractKey, "BreakEven", null, 0, "手动设置为executing");
+                    _logger?.LogInformation($"   ⚡ 保本状态更新为executing");
+                }
+                else if (_editedConfig.BreakEvenStatus == "-")
+                {
+                    stateService.UpdateExecutionStatus(contractKey, "BreakEven", null, false, 0, "手动重置为waiting");
+                    _logger?.LogInformation($"   🔄 保本状态重置为waiting");
+                }
+                
+                // 更新推仓状态（处理三种状态：waiting, executing, executed）
+                var pushStatuses = new[] { _editedConfig.PushTier1Status, _editedConfig.PushTier2Status, _editedConfig.PushTier3Status, _editedConfig.PushTier4Status };
+                for (int i = 0; i < pushStatuses.Length; i++)
+                {
+                    if (pushStatuses[i] == "✓")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "AddPosition", i + 1, true, 0, "手动设置为executed");
+                        _logger?.LogInformation($"   ✅ 推仓阶梯{i + 1}状态更新为executed");
+                    }
+                    else if (pushStatuses[i] == "⚡")
+                    {
+                        stateService.UpdateExecutionStatusToExecuting(contractKey, "AddPosition", i + 1, 0, "手动设置为executing");
+                        _logger?.LogInformation($"   ⚡ 推仓阶梯{i + 1}状态更新为executing");
+                    }
+                    else if (pushStatuses[i] == "-")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "AddPosition", i + 1, false, 0, "手动重置为waiting");
+                        _logger?.LogInformation($"   🔄 推仓阶梯{i + 1}状态重置为waiting");
+                    }
+                }
+                
+                // 更新保盈状态（处理三种状态：waiting, executing, executed）
+                var profitStatuses = new[] { _editedConfig.ProfitTier1Status, _editedConfig.ProfitTier2Status, _editedConfig.ProfitTier3Status };
+                for (int i = 0; i < profitStatuses.Length; i++)
+                {
+                    if (profitStatuses[i] == "✓")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "ProfitProtection", i + 1, true, 0, "手动设置为executed");
+                        _logger?.LogInformation($"   ✅ 保盈阶梯{i + 1}状态更新为executed");
+                    }
+                    else if (profitStatuses[i] == "⚡")
+                    {
+                        stateService.UpdateExecutionStatusToExecuting(contractKey, "ProfitProtection", i + 1, 0, "手动设置为executing");
+                        _logger?.LogInformation($"   ⚡ 保盈阶梯{i + 1}状态更新为executing");
+                    }
+                    else if (profitStatuses[i] == "-")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "ProfitProtection", i + 1, false, 0, "手动重置为waiting");
+                        _logger?.LogInformation($"   🔄 保盈阶梯{i + 1}状态重置为waiting");
+                    }
                 }
 
-                // 🔧 修复：创建包含完整配置数据的对象
-                var configData = new ContractConfigData
-                {
-                    ContractName = _editedConfig.ContractName,
-                    
-                    // 保本配置
-                    BreakEvenTarget = _editedConfig.BreakEvenTarget,
-                    BreakEvenStatus = _editedConfig.BreakEvenStatus,
-                    
-                    // 推仓配置 - 从基础配置和用户输入获取
-                    PushTier1Amount = GetPushTierAmount(1),
-                    PushTier1Status = _editedConfig.PushTier1Status,
-                    PushTier2Amount = GetPushTierAmount(2),
-                    PushTier2Status = _editedConfig.PushTier2Status,
-                    PushTier3Amount = GetPushTierAmount(3),
-                    PushTier3Status = _editedConfig.PushTier3Status,
-                    PushTier4Amount = GetPushTierAmount(4),
-                    PushTier4Status = _editedConfig.PushTier4Status,
-                    
-                    // 保盈配置 - 从基础配置获取
-                    ProfitTier1TriggerAmount = GetProfitTierTriggerAmount(1),
-                    ProfitTier1ProtectionAmount = GetProfitTierProtectionAmount(1),
-                    ProfitTier1Status = _editedConfig.ProfitTier1Status,
-                    ProfitTier2TriggerAmount = GetProfitTierTriggerAmount(2),
-                    ProfitTier2ProtectionAmount = GetProfitTierProtectionAmount(2),
-                    ProfitTier2Status = _editedConfig.ProfitTier2Status,
-                    ProfitTier3TriggerAmount = GetProfitTierTriggerAmount(3),
-                    ProfitTier3ProtectionAmount = GetProfitTierProtectionAmount(3),
-                    ProfitTier3Status = _editedConfig.ProfitTier3Status,
-                    
-                    LastModified = DateTime.Now
-                };
-
-                allConfigs[_editedConfig.ContractName] = configData;
-
-                // 保存到文件
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                var json = JsonSerializer.Serialize(allConfigs, options);
-                File.WriteAllText(configPath, json);
-
-                _logger?.LogInformation($"✅ 已保存完整合约配置到本地文件: {_editedConfig.ContractName}");
-                _logger?.LogInformation($"   保本: {configData.BreakEvenTarget}U ({configData.BreakEvenStatus})");
-                _logger?.LogInformation($"   推仓: T1={configData.PushTier1Amount}U, T2={configData.PushTier2Amount}U, T3={configData.PushTier3Amount}U, T4={configData.PushTier4Amount}U");
-                _logger?.LogInformation($"   保盈: T1={configData.ProfitTier1TriggerAmount}|{configData.ProfitTier1ProtectionAmount}U, T2={configData.ProfitTier2TriggerAmount}|{configData.ProfitTier2ProtectionAmount}U, T3={configData.ProfitTier3TriggerAmount}|{configData.ProfitTier3ProtectionAmount}U");
+                _logger?.LogInformation($"✅ 合约状态更新完成: {contractKey}");
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "保存合约配置到本地文件失败");
+                _logger?.LogError(ex, "更新合约状态失败");
                 throw;
             }
         }
@@ -603,12 +666,13 @@ namespace BinanceFuturesTrader.Views
         }
 
         /// <summary>
-        /// 获取合约配置文件路径
+        /// 获取合约配置文件路径 - 已废弃：现在使用统一状态管理
         /// </summary>
+        [Obsolete("已废弃：不再使用ContractConfigs.json文件，现在使用ContractMonitoringStateService进行统一状态管理")]
         private string GetContractConfigFilePath()
         {
-            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            return Path.Combine(appDataPath, "BinanceFuturesTrader", "ContractConfigs.json");
+            // 已废弃：返回空路径
+            return string.Empty;
         }
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)

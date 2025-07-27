@@ -437,7 +437,7 @@ namespace BinanceFuturesTrader.Services
                         TierIndex = tier.TierIndex,
                         TierType = "AddPosition",
                         IsTriggered = false,
-                        ExecutionStatus = "未触发"
+                        ExecutionStatus = StatusConstants.Waiting
                     });
                 }
                 
@@ -450,7 +450,7 @@ namespace BinanceFuturesTrader.Services
                         TierIndex = tier.TierIndex,
                         TierType = "ProfitProtection",
                         IsTriggered = false,
-                        ExecutionStatus = "未触发"
+                        ExecutionStatus = StatusConstants.Waiting
                     });
                 }
                 

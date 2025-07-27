@@ -95,7 +95,7 @@ namespace BinanceFuturesTrader.Services
                     config.ExecutionMessage = $"保本止损已设置，价格: {breakEvenPrice:F4}";
                     
                     // 更新档案状态
-                    profile.BreakEvenState.ExecutionStatus = "已执行";
+                    profile.BreakEvenState.ExecutionStatus = StatusConstants.Executed;
                     profile.BreakEvenState.ExecutionResult = config.ExecutionMessage;
                     
                     profile.AddOperationHistory("保本执行", "成功", config.ExecutionMessage);
@@ -258,7 +258,7 @@ namespace BinanceFuturesTrader.Services
                     tier.StopLossPrice = protectionPrice;
                     tier.IsExecuted = true;
                     tier.ExecutionTime = DateTime.Now;
-                    tier.ExecutionMessage = $"模拟保盈阶梯{tier.TierIndex}已执行，保护价格: {protectionPrice:F4}";
+                    tier.ExecutionMessage = $"模拟保盈阶梯{tier.TierIndex}已{StatusConstants.Executed}，保护价格: {protectionPrice:F4}";
                     
                     // 更新档案状态
                     var tierState = profile.ProfitProtectionStates.Find(s => s.TierIndex == tier.TierIndex);
@@ -285,13 +285,13 @@ namespace BinanceFuturesTrader.Services
                     tier.StopLossPrice = protectionPrice;
                     tier.IsExecuted = true;
                     tier.ExecutionTime = DateTime.Now;
-                    tier.ExecutionMessage = $"保盈阶梯{tier.TierIndex}已执行，保护价格: {protectionPrice:F4}";
+                    tier.ExecutionMessage = $"保盈阶梯{tier.TierIndex}已{StatusConstants.Executed}，保护价格: {protectionPrice:F4}";
                     
                     // 更新档案状态
                     var tierState = profile.ProfitProtectionStates.Find(s => s.TierIndex == tier.TierIndex);
                     if (tierState != null)
                     {
-                        tierState.ExecutionStatus = "已执行";
+                        tierState.ExecutionStatus = StatusConstants.Executed;
                         tierState.ExecutionResult = tier.ExecutionMessage;
                     }
                     
@@ -734,7 +734,7 @@ namespace BinanceFuturesTrader.Services
                     if (orderResult)
                     {
                         _logger.LogInformation($"✅ 市价单执行成功: {symbol}");
-                        return TradingExecutionResult.Success($"市价单已执行，数量: {quantity:F4}");
+                        return TradingExecutionResult.Success($"市价单已{StatusConstants.Executed}，数量: {quantity:F4}");
                     }
                     else
                     {
@@ -1060,7 +1060,7 @@ namespace BinanceFuturesTrader.Services
             tier.StopLossPrice = stopLossPrice;
             tier.IsExecuted = true;
             tier.ExecutionTime = DateTime.Now;
-            tier.ExecutionMessage = $"推仓阶梯{tier.TierIndex}已执行: 市值{positionValue:F2}U, 数量{addQuantity:F6}, 价格{currentPrice:F4}, 止损{stopLossPrice:F4}";
+                            tier.ExecutionMessage = $"推仓阶梯{tier.TierIndex}已{StatusConstants.Executed}: 市值{positionValue:F2}U, 数量{addQuantity:F6}, 价格{currentPrice:F4}, 止损{stopLossPrice:F4}";
         }
         
         /// <summary>

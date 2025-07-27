@@ -148,7 +148,7 @@ namespace BinanceFuturesTrader.Services
                 
                 // 🔧 【新增】检查profile内部的保本状态
                 var isExecutedInProfile = profile.BreakEvenState.IsTriggered && 
-                                         (profile.BreakEvenState.ExecutionStatus == "已执行" || profile.BreakEvenState.ExecutionStatus == "模拟执行");
+                                         (profile.BreakEvenState.ExecutionStatus == StatusConstants.Executed || profile.BreakEvenState.ExecutionStatus == "模拟执行");
                 
                 // 🔧 【关键修复】从统一状态文件检查是否已执行 - 使用标准化格式
                 var contractKey = $"{profile.Symbol}_{(profile.PositionSize > 0 ? "LONG" : "SHORT")}";
@@ -218,7 +218,7 @@ namespace BinanceFuturesTrader.Services
                         profile.BreakEvenState.TriggerTime = DateTime.Now;
                         profile.BreakEvenState.TriggerPrice = profile.CurrentPrice;
                         profile.BreakEvenState.TriggerPnl = currentPnl;
-                        profile.BreakEvenState.ExecutionStatus = isSimulationMode ? "模拟执行" : "已执行";
+                        profile.BreakEvenState.ExecutionStatus = isSimulationMode ? "模拟执行" : StatusConstants.Executed;
                         _logger.LogCritical($"     IsTriggered: false → true");
                         _logger.LogCritical($"     TriggerTime: {profile.BreakEvenState.TriggerTime}");
                         _logger.LogCritical($"     ExecutionStatus: {profile.BreakEvenState.ExecutionStatus}");
@@ -345,7 +345,7 @@ namespace BinanceFuturesTrader.Services
                     // 🔧 【新增】检查profile内部的阶梯状态
                     var tierState = profile.AddPositionStates.FirstOrDefault(s => s.TierIndex == tier.TierIndex);
                     var isExecutedInProfile = tierState?.IsTriggered == true && 
-                                             (tierState.ExecutionStatus == "已执行" || tierState.ExecutionStatus == "模拟执行");
+                                             (tierState.ExecutionStatus == StatusConstants.Executed || tierState.ExecutionStatus == "模拟执行");
                     
                     // 🔧 【关键修复】从统一状态文件检查是否已执行
                     var isExecutedInUnifiedFile = _contractStateService?.IsExecuted(contractKey, "AddPosition", tier.TierIndex) ?? false;

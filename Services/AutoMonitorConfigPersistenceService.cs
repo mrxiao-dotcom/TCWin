@@ -120,6 +120,8 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
+                _logger?.LogInformation($"🔍 尝试加载配置文件: {_configFilePath}");
+                
                 if (!File.Exists(_configFilePath))
                 {
                     _logger?.LogDebug("💡 配置文件不存在，返回空配置");
@@ -127,6 +129,9 @@ namespace BinanceFuturesTrader.Services
                 }
                 
                 var json = File.ReadAllText(_configFilePath);
+                _logger?.LogInformation($"📄 读取到JSON内容长度: {json.Length} 字符");
+                _logger?.LogInformation($"📄 JSON内容前100字符: {json.Substring(0, Math.Min(100, json.Length))}");
+                
                 if (string.IsNullOrWhiteSpace(json))
                 {
                     _logger?.LogDebug("💡 配置文件为空，返回空配置");
@@ -140,7 +145,16 @@ namespace BinanceFuturesTrader.Services
                         PropertyNamingPolicy = JsonNamingPolicy.CamelCase 
                     });
                 
+                _logger?.LogInformation($"🔍 JSON根元素类型: {configData.ValueKind}");
+                
                 var accountConfigs = new Dictionary<string, AutoMonitorConfig>();
+                
+                // 🔧 检查JSON结构是否正确
+                if (configData.ValueKind != JsonValueKind.Object)
+                {
+                    _logger?.LogError($"❌ 配置文件格式错误：期望Object，实际为{configData.ValueKind}");
+                    return new Dictionary<string, AutoMonitorConfig>();
+                }
                 
                 if (configData.TryGetProperty("accountConfigs", out var accountConfigsElement))
                 {

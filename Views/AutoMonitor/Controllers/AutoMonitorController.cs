@@ -570,26 +570,16 @@ namespace BinanceFuturesTrader.Views.AutoMonitor.Controllers
             }
         }
 
+        /// <summary>
+        /// 保存合约配置 - 已废弃：现在使用统一状态管理
+        /// </summary>
+        [Obsolete("已废弃：现在使用ContractMonitoringStateService进行统一状态管理，不再需要单独的ContractConfigs.json文件")]
         public async Task SaveContractConfigurationsAsync()
         {
-            try
-            {
-                // 🔧 修复：在UI线程中安全获取集合副本
-                List<ContractMonitorModel> contractsToSave = null;
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    contractsToSave = _dataModel.ContractMonitors.ToList();
-                });
-                
-                _persistenceService.SaveContractConfigs(contractsToSave);
-                await Task.CompletedTask;
-                _logger.LogDebug("合约配置保存成功");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "保存合约配置失败");
-                throw;
-            }
+            _logger.LogWarning("⚠️ SaveContractConfigurationsAsync 已废弃：现在使用统一状态管理");
+            // 已废弃：合约配置现在通过 ContractMonitoringStateService 统一管理
+            // 数据保存在 contract_monitoring_states.json 文件中
+            await Task.CompletedTask;
         }
 
         private List<BinanceFuturesTrader.Models.PositionInfo> GetCurrentPositions()

@@ -306,6 +306,95 @@ namespace BinanceFuturesTrader.Services
         }
 
         /// <summary>
+        /// 更新执行状态为执行中
+        /// </summary>
+        public void UpdateExecutionStatusToExecuting(
+            string contractKey,
+            string operationType,
+            int? tierIndex,
+            decimal triggerPnl,
+            string result)
+        {
+            try
+            {
+                _logger.LogCritical($"🔍【状态更新开始】{contractKey} {operationType}_{tierIndex} = Executing");
+                
+                var states = LoadMonitoringStates();
+                _logger.LogCritical($"   📂 加载到 {states.Count} 个状态");
+                
+                if (states.TryGetValue(contractKey, out var state))
+                {
+                    _logger.LogCritical($"   ✅ 找到合约状态: {contractKey}");
+                    
+                    // 直接设置为Executing状态
+                    var now = DateTime.Now;
+                    switch (operationType.ToLower())
+                    {
+                        case "breakeven":
+                        case "保本":
+                            _logger.LogCritical($"   📊 保本状态更新: 更新前={state.BreakEvenConfig.ExecutionState}");
+                            state.BreakEvenConfig.ExecutionState = ExecutionState.Executing;
+                            state.BreakEvenConfig.ExecutionTime = now;
+                            state.BreakEvenConfig.ExecutionPnl = triggerPnl;
+                            state.BreakEvenConfig.ExecutionResult = result;
+                            _logger.LogCritical($"   📊 保本状态更新: 更新后={state.BreakEvenConfig.ExecutionState}");
+                            break;
+
+                        case "addposition":
+                        case "推仓":
+                            if (tierIndex.HasValue)
+                            {
+                                var tier = state.AddPositionConfig.Tiers.FirstOrDefault(t => t.TierIndex == tierIndex.Value);
+                                if (tier != null)
+                                {
+                                    _logger.LogCritical($"   📊 推仓阶梯{tierIndex}状态更新: 更新前={tier.ExecutionState}");
+                                    tier.ExecutionState = ExecutionState.Executing;
+                                    tier.ExecutionTime = now;
+                                    tier.ExecutionPnl = triggerPnl;
+                                    tier.ExecutionResult = result;
+                                    _logger.LogCritical($"   📊 推仓阶梯{tierIndex}状态更新: 更新后={tier.ExecutionState}");
+                                }
+                            }
+                            break;
+
+                        case "profitprotection":
+                        case "保盈":
+                            if (tierIndex.HasValue)
+                            {
+                                var tier = state.ProfitProtectionConfig.Tiers.FirstOrDefault(t => t.TierIndex == tierIndex.Value);
+                                if (tier != null)
+                                {
+                                    _logger.LogCritical($"   📊 保盈阶梯{tierIndex}状态更新: 更新前={tier.ExecutionState}");
+                                    tier.ExecutionState = ExecutionState.Executing;
+                                    tier.ExecutionTime = now;
+                                    tier.ExecutionPnl = triggerPnl;
+                                    tier.ExecutionResult = result;
+                                    _logger.LogCritical($"   📊 保盈阶梯{tierIndex}状态更新: 更新后={tier.ExecutionState}");
+                                }
+                            }
+                            break;
+                    }
+                    
+                    states[contractKey] = state;
+                    
+                    _logger.LogCritical($"   💾 开始保存到文件...");
+                    SaveMonitoringStates(states);
+                    _logger.LogCritical($"   ✅ 文件保存完成");
+                    
+                    _logger.LogInformation($"⚡ 已更新执行状态为执行中: {contractKey} {operationType}_{tierIndex}");
+                }
+                else
+                {
+                    _logger.LogCritical($"   ❌ 未找到合约状态: {contractKey}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ 更新执行状态为执行中失败: {contractKey} {operationType}_{tierIndex}");
+            }
+        }
+
+        /// <summary>
         /// 检查是否已执行
         /// </summary>
         public bool IsExecuted(string contractKey, string operationType, int? tierIndex = null)
