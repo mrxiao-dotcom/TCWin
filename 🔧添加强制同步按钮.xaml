@@ -1,0 +1,7 @@
+<Button Name="ForceSyncButton" 
+        Content="🔧 强制同步状态" 
+        Click="ForceSyncButton_Click"
+        Margin="5,0"
+        ToolTip="强制从状态文件同步执行状态到界面显示"
+        Background="Orange"
+        Foreground="White"/> 
