@@ -21,7 +21,7 @@ namespace BinanceFuturesTrader.Services
         private readonly BaseConfigManager _configManager;
         private readonly RiskCapitalService _riskCapitalService;
         private readonly string _profileFilePath;
-        private readonly object _fileLock = new object();
+        private static readonly object _fileLock = new object(); // 🔧 改为静态锁，避免多实例文件访问冲突
         
         /// <summary>
         /// 合约档案列表
@@ -645,22 +645,39 @@ namespace BinanceFuturesTrader.Services
                 {
                     lock (_fileLock)
                     {
-                        var json = File.ReadAllText(_profileFilePath);
-                        var profiles = JsonSerializer.Deserialize<List<ContractProfile>>(json, new JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true,
-                            WriteIndented = true
-                        });
+                        // 🔧 添加重试机制和更安全的文件访问
+                        var retryCount = 0;
+                        const int maxRetries = 3;
                         
-                        if (profiles != null)
+                        while (retryCount < maxRetries)
                         {
-                            ContractProfiles.Clear();
-                            foreach (var profile in profiles)
+                            try
                             {
-                                ContractProfiles.Add(profile);
+                                var json = File.ReadAllText(_profileFilePath);
+                                var profiles = JsonSerializer.Deserialize<List<ContractProfile>>(json, new JsonSerializerOptions
+                                {
+                                    PropertyNameCaseInsensitive = true,
+                                    WriteIndented = true
+                                });
+                                
+                                if (profiles != null)
+                                {
+                                    ContractProfiles.Clear();
+                                    foreach (var profile in profiles)
+                                    {
+                                        ContractProfiles.Add(profile);
+                                    }
+                                    
+                                    _logger.LogInformation($"加载了 {profiles.Count} 个合约档案");
+                                }
+                                break; // 成功则退出重试循环
                             }
-                            
-                            _logger.LogInformation($"加载了 {profiles.Count} 个合约档案");
+                            catch (IOException ioEx) when (retryCount < maxRetries - 1)
+                            {
+                                retryCount++;
+                                _logger.LogWarning($"文件读取失败，重试 {retryCount}/{maxRetries}: {ioEx.Message}");
+                                Task.Delay(100 * retryCount).Wait(); // 递增延迟
+                            }
                         }
                     }
                 });
@@ -689,7 +706,24 @@ namespace BinanceFuturesTrader.Services
                 {
                     lock (_fileLock)
                     {
-                        File.WriteAllText(_profileFilePath, json);
+                        // 🔧 添加重试机制和更安全的文件写入
+                        var retryCount = 0;
+                        const int maxRetries = 3;
+                        
+                        while (retryCount < maxRetries)
+                        {
+                            try
+                            {
+                                File.WriteAllText(_profileFilePath, json);
+                                break; // 成功则退出重试循环
+                            }
+                            catch (IOException ioEx) when (retryCount < maxRetries - 1)
+                            {
+                                retryCount++;
+                                _logger.LogWarning($"文件写入失败，重试 {retryCount}/{maxRetries}: {ioEx.Message}");
+                                Task.Delay(100 * retryCount).Wait(); // 递增延迟
+                            }
+                        }
                     }
                 });
                 

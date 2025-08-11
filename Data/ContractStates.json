@@ -1,0 +1,228 @@
+{
+  "states": {
+    "ZKJUSDT_LONG": {
+      "symbol": "ZKJUSDT",
+      "positionSide": "LONG",
+      "configName": "基础",
+      "lastUpdateTime": "2025-01-10T16:14:29.000Z",
+      "breakEvenConfig": {
+        "triggerProfitAmount": 42.0,
+        "executionState": 0,
+        "executionTime": null,
+        "executionResult": ""
+      },
+      "addPositionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 1.00,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10,
+            "executionState": 2,
+            "executionTime": "2025-01-10T16:14:27.000Z",
+            "executionResult": "推仓执行成功"
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 9.03,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 13.55,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 18.06,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 5,
+            "triggerProfitAmount": 22.58,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 45.16,
+            "protectionAmount": 36.13,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 90.32,
+            "protectionAmount": 72.26,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 135.48,
+            "protectionAmount": 108.39,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      }
+    },
+    "BTCUSDT_SHORT": {
+      "symbol": "BTCUSDT",
+      "positionSide": "SHORT",
+      "configName": "保守",
+      "lastUpdateTime": "2025-01-10T16:10:15.000Z",
+      "breakEvenConfig": {
+        "triggerProfitAmount": 50.0,
+        "executionState": 1,
+        "executionTime": "2025-01-10T16:10:12.000Z",
+        "executionResult": "保本执行中"
+      },
+      "addPositionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 2.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 10.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 18.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 60.00,
+            "protectionAmount": 50.00,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 120.00,
+            "protectionAmount": 100.00,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      }
+    },
+    "ETHUSDT_LONG": {
+      "symbol": "ETHUSDT",
+      "positionSide": "LONG",
+      "configName": "激进",
+      "lastUpdateTime": "2025-01-10T15:45:30.000Z",
+      "breakEvenConfig": {
+        "triggerProfitAmount": 30.0,
+        "executionState": 2,
+        "executionTime": "2025-01-10T15:43:15.000Z",
+        "executionResult": "保本执行成功"
+      },
+      "addPositionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 0.50,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12,
+            "executionState": 2,
+            "executionTime": "2025-01-10T15:30:20.000Z",
+            "executionResult": "推仓执行成功"
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 5.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12,
+            "executionState": 2,
+            "executionTime": "2025-01-10T15:35:45.000Z",
+            "executionResult": "推仓执行成功"
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 10.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 15.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 60.00,
+            "protectionAmount": 45.00,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 120.00,
+            "protectionAmount": 96.00,
+            "executionState": 0,
+            "executionTime": null,
+            "executionResult": ""
+          }
+        ]
+      }
+    }
+  }
+} 

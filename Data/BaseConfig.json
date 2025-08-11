@@ -1,0 +1,263 @@
+{
+  "configs": {
+    "基础": {
+      "name": "基础",
+      "description": "基础交易策略配置",
+      "breakEvenConfig": {
+        "isEnabled": true,
+        "triggerProfitAmount": 42.0
+      },
+      "addPositionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 1.00,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 9.03,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 13.55,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 18.06,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 5,
+            "triggerProfitAmount": 22.58,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 6,
+            "triggerProfitAmount": 27.10,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          },
+          {
+            "tierIndex": 7,
+            "triggerProfitAmount": 31.61,
+            "riskMultiplier": 1.0,
+            "stopLossRatio": 0.10
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 45.16,
+            "protectionAmount": 36.13
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 90.32,
+            "protectionAmount": 72.26
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 135.48,
+            "protectionAmount": 108.39
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 180.64,
+            "protectionAmount": 144.51
+          },
+          {
+            "tierIndex": 5,
+            "triggerProfitAmount": 225.80,
+            "protectionAmount": 180.64
+          }
+        ]
+      }
+    },
+    "保守": {
+      "name": "保守",
+      "description": "保守交易策略配置",
+      "breakEvenConfig": {
+        "isEnabled": true,
+        "triggerProfitAmount": 50.0
+      },
+      "addPositionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 2.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 10.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 18.00,
+            "riskMultiplier": 0.5,
+            "stopLossRatio": 0.08
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 60.00,
+            "protectionAmount": 50.00
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 120.00,
+            "protectionAmount": 100.00
+          }
+        ]
+      }
+    },
+    "激进": {
+      "name": "激进",
+      "description": "激进交易策略配置",
+      "breakEvenConfig": {
+        "isEnabled": true,
+        "triggerProfitAmount": 30.0
+      },
+      "addPositionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 0.50,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 5.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 10.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 15.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 5,
+            "triggerProfitAmount": 20.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 6,
+            "triggerProfitAmount": 25.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 7,
+            "triggerProfitAmount": 30.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 8,
+            "triggerProfitAmount": 35.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 9,
+            "triggerProfitAmount": 40.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          },
+          {
+            "tierIndex": 10,
+            "triggerProfitAmount": 45.00,
+            "riskMultiplier": 1.5,
+            "stopLossRatio": 0.12
+          }
+        ]
+      },
+      "profitProtectionConfig": {
+        "isEnabled": true,
+        "tiers": [
+          {
+            "tierIndex": 1,
+            "triggerProfitAmount": 60.00,
+            "protectionAmount": 45.00
+          },
+          {
+            "tierIndex": 2,
+            "triggerProfitAmount": 120.00,
+            "protectionAmount": 96.00
+          },
+          {
+            "tierIndex": 3,
+            "triggerProfitAmount": 180.00,
+            "protectionAmount": 150.00
+          },
+          {
+            "tierIndex": 4,
+            "triggerProfitAmount": 240.00,
+            "protectionAmount": 200.00
+          },
+          {
+            "tierIndex": 5,
+            "triggerProfitAmount": 300.00,
+            "protectionAmount": 250.00
+          },
+          {
+            "tierIndex": 6,
+            "triggerProfitAmount": 360.00,
+            "protectionAmount": 300.00
+          },
+          {
+            "tierIndex": 7,
+            "triggerProfitAmount": 420.00,
+            "protectionAmount": 350.00
+          },
+          {
+            "tierIndex": 8,
+            "triggerProfitAmount": 480.00,
+            "protectionAmount": 400.00
+          },
+          {
+            "tierIndex": 9,
+            "triggerProfitAmount": 540.00,
+            "protectionAmount": 450.00
+          },
+          {
+            "tierIndex": 10,
+            "triggerProfitAmount": 600.00,
+            "protectionAmount": 500.00
+          }
+        ]
+      }
+    }
+  }
+} 

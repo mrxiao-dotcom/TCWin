@@ -122,6 +122,26 @@
                             </Button.Content>
                         </Button>
                     
+                    <!-- 模式控制开关 -->
+                    <Rectangle Fill="LightGray" Width="1" Height="20" Margin="8,0"/>
+                    <Button Command="{Binding ToggleGlobalModeCommand}" Margin="6,0,0,0"
+                           Width="90" Height="28" FontSize="11" FontWeight="Bold"
+                           ToolTip="{Binding GlobalModeDescription}">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource MaterialDesignRaisedButton}">
+                                <Setter Property="Content" Value="🧪 模拟模式"/>
+                                <Setter Property="Background" Value="#FF9800"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsGlobalSimulationMode}" Value="False">
+                                        <Setter Property="Content" Value="💰 实盘模式"/>
+                                        <Setter Property="Background" Value="#4CAF50"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                    
                     <!-- 日志操作按钮 -->
                     <Rectangle Fill="LightGray" Width="1" Height="20" Margin="8,0"/>
                     <Button Content="查看日志" Command="{Binding OpenLogFileCommand}" Margin="6,0,0,0"

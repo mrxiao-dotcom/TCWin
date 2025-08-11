@@ -168,6 +168,9 @@ namespace BinanceFuturesTrader.Services
             var riskLogger = loggerFactory.CreateLogger<RiskCapitalService>();
             var riskCapitalService = new RiskCapitalService(riskLogger, mainViewModel);
             var tradingService = new TradingExecutionService(tradingLogger, binanceService);
+            // 🚨 【关键诊断】订阅交易服务的工作日志事件
+            tradingService.WorkLogRequested += (level, message) => AddWorkLog(level, message);
+            
             var profileService = new ContractProfileService(profileLogger, binanceService, configManager, riskCapitalService);
             
             _executionEngine = new AutoMonitorExecutionEngine(
@@ -178,6 +181,9 @@ namespace BinanceFuturesTrader.Services
                 _persistenceService,
                 _unifiedStateManager,
                 _stateService); // 🔧【关键修复】传入ContractMonitoringStateService，确保状态同步到contract_monitoring_states.json
+            
+            // 🚨 【关键诊断】订阅执行引擎的工作日志事件
+            _executionEngine.WorkLogRequested += (level, message) => AddWorkLog(level, message);
         }
 
         /// <summary>
@@ -361,8 +367,22 @@ namespace BinanceFuturesTrader.Services
                     using var saveTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                     await Task.Run(() =>
                     {
-                        _persistenceService.SavePositionProfiles(_positionProfiles);
-                        _persistenceService.SaveExecutionHistory(_executionHistory);
+                        // 🔧 使用新的统一状态服务保存状态，避免过时方法警告
+                        try
+                        {
+                            // 使用统一状态管理器保存状态
+                            _unifiedStateManager?.SaveToPersistence();
+                            _logger.LogInformation("💾 已保存状态到统一状态文件");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "使用统一状态服务保存失败，尝试使用备用方法");
+                            // 作为备用，仍保留原有保存方法，但忽略过时警告
+                            #pragma warning disable CS0618
+                            _persistenceService.SavePositionProfiles(_positionProfiles);
+                            _persistenceService.SaveExecutionHistory(_executionHistory);
+                            #pragma warning restore CS0618
+                        }
                     }, saveTimeoutCts.Token);
                     _logger.LogInformation("💾 已保存自动盯盘状态到持久化存储");
                 }
@@ -438,17 +458,17 @@ namespace BinanceFuturesTrader.Services
             }
             finally
             {
-                // 🔧 步骤6：确保状态变更事件能够触发（最后的保障）
+                // 🔧 确保关键事件能够触发（即使前面有异常）
                 try
                 {
-                    OnMonitorStatusChanged(new MonitorStatusChangedEventArgs { 
-                        IsRunning = false, 
-                        Message = "自动监控已停止" 
-                    });
+                    var statusArgs = new MonitorStatusChangedEventArgs();
+                    statusArgs.IsRunning = false;
+                    statusArgs.Message = "自动监控服务已停止";
+                    OnMonitorStatusChanged(statusArgs);
                 }
                 catch (Exception eventEx)
                 {
-                    _logger.LogWarning(eventEx, "❌ 触发最终状态变更事件失败");
+                    _logger.LogWarning(eventEx, "触发最终状态事件失败");
                 }
             }
         }
@@ -1565,7 +1585,68 @@ namespace BinanceFuturesTrader.Services
                         _logger.LogWarning($"💡 如需真实下单，请设置有效的API Key和Secret Key");
                     }
                     
-                    var success = await ExecuteAddPositionAsync(position, stage);
+                    // 🔧 【关键修复】使用执行引擎而不是自己的方法，确保调用TradingExecutionService
+                    _logger.LogCritical("🚨【关键确认】AutoMonitorService即将通过执行引擎调用推仓");
+                    
+                    // 先创建ContractProfile
+                    var contractProfile = new ContractProfile
+                    {
+                        Symbol = position.Symbol,
+                        Side = position.PositionAmt > 0 ? "LONG" : "SHORT",
+                        PositionSize = Math.Abs(position.PositionAmt),
+                        EntryPrice = position.EntryPrice,
+                        CurrentPrice = position.MarkPrice,
+                        UnrealizedPnl = position.UnrealizedProfit,
+                        LastUpdateTime = DateTime.Now,
+                        UseIndependentConfig = true,
+                        BaseConfigName = _config?.Name ?? "基础"
+                    };
+                    
+                    // 设置推仓配置
+                    if (_config?.AddPositionConfig?.IsEnabled == true)
+                    {
+                        contractProfile.IndependentAddPositionConfig = new ContractAddPositionConfig
+                        {
+                            IsEnabled = true,
+                            Tiers = _config.AddPositionConfig.Tiers.Select(t => new ContractAddPositionTier
+                            {
+                                TierIndex = t.TierIndex,
+                                IsEnabled = t.IsEnabled,
+                                TriggerProfitAmount = t.TriggerProfitAmount,
+                                RiskMultiplier = t.RiskMultiplier,
+                                StopLossRatio = t.StopLossRatio,
+                                AddPositionQuantity = 0,
+                                StopLossPrice = 0,
+                                IsExecuted = false
+                            }).ToList()
+                        };
+                    }
+                    
+                    // 通过执行引擎执行推仓（这将调用TradingExecutionService.ExecuteAddPositionAsync）
+                    var executionResult = await _executionEngine.ExecuteContractMonitoringAsync(contractProfile);
+                    
+                    // 检查推仓是否成功
+                    bool success = false;
+                    if (executionResult?.AddPositionResults != null)
+                    {
+                        success = executionResult.AddPositionResults.Any(r => r != null && r.IsSuccess);
+                    }
+                    
+                    // 🚨 【关键修复】确保状态正确保存到统一状态文件
+                    if (success && _stateService != null)
+                    {
+                        var contractKey = $"{position.Symbol}_{standardizedPositionSide}";
+                        _logger.LogCritical($"🚨【状态强制同步】推仓成功，强制更新统一状态文件: {contractKey}-阶梯{stage.TierIndex}");
+                        try
+                        {
+                            _stateService.UpdateExecutionStatus(contractKey, "AddPosition", stage.TierIndex, true, currentPnl, "推仓执行成功");
+                            _logger.LogCritical($"✅【状态强制同步】成功更新统一状态文件: {contractKey}-阶梯{stage.TierIndex}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogCritical($"❌【状态强制同步】失败: {contractKey}-阶梯{stage.TierIndex} - {ex.Message}");
+                        }
+                    }
                     
                     // 🔄 根据执行结果更新最终状态
                     // 🚨 关键修复：使用标准化的持仓方向，确保键值一致性
@@ -1875,6 +1956,54 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
+                _logger.LogCritical($"🚨 【关键确认】AutoMonitorService.ExecuteAddPositionAsync 被调用！");
+                
+                // 🔧 【模拟模式检查】
+                var isSimulation = IsSimulationEnvironment();
+                _logger.LogCritical($"🎯 【重要】推仓执行模式检查: {(isSimulation ? "模拟模式" : "实盘模式")}");
+                
+                // 🚨 【紧急诊断】如果是模拟模式，输出详细原因
+                if (isSimulation)
+                {
+                    _logger.LogCritical($"🔍 【模拟模式原因诊断】");
+                    _logger.LogCritical($"   全局模式管理器状态: {GlobalModeManager.Instance.ModeDisplayText}");
+                    _logger.LogCritical($"   IP限制状态: {BinanceService.IsIpRestricted}");
+                    _logger.LogCritical($"   BinanceService初始化: {(_binanceService != null ? "已初始化" : "未初始化")}");
+                    
+                    // ⚠️ 【模拟模式执行】
+                    _logger.LogWarning($"⚠️ 【模拟模式】推仓不会进行真实下单，仅更新状态和日志");
+                    _logger.LogWarning($"💡 如需真实下单，请确保API配置有效并切换到实盘模式");
+                    
+                    // 🎯 模拟计算和日志
+                    var simAccountEquity = _mainViewModel.AccountInfo?.TotalEquity ?? 0;
+                    var simRiskTimes = _mainViewModel.SelectedAccount?.RiskCapitalTimes ?? 8;
+                    var simSingleRiskCapital = simAccountEquity / simRiskTimes;
+                    var simRiskMultiplier = stage.RiskMultiplier;
+                    var simStopLossRatio = stage.StopLossRatio;
+                    var simAddPositionValue = simRiskMultiplier * simSingleRiskCapital / simStopLossRatio;
+                    
+                    // 获取模拟价格
+                    decimal simLatestPrice = 0;
+                    try
+                    {
+                        simLatestPrice = await _binanceService.GetLatestPriceAsync(position.Symbol);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, $"模拟模式获取价格失败，使用默认价格: {position.Symbol}");
+                        simLatestPrice = 1; // 使用默认价格避免除零错误
+                    }
+                    
+                    if (simLatestPrice > 0)
+                    {
+                        var simulatedQuantity = simAddPositionValue / simLatestPrice;
+                        _logger.LogInformation($"🎯 【模拟计算】推仓数量={simulatedQuantity:F6}, 市值={simAddPositionValue:F2}U, 价格={simLatestPrice:F4}");
+                    }
+                    
+                    _logger.LogInformation($"✅ 【模拟执行】推仓状态已更新为\"已执行\"");
+                    return true; // 模拟执行总是返回成功
+                }
+                
                 _logger.LogInformation($"💰 开始执行推仓: {position.Symbol}, 风险倍数: {stage.RiskMultiplier}倍, 止损比例: {stage.StopLossRatio * 100:F1}%");
 
                 // 🔧 修正加仓数量计算逻辑
@@ -2215,6 +2344,23 @@ namespace BinanceFuturesTrader.Services
                 // 🔧 修复：推仓成功与否应该以推仓下单为准，而不是止损单创建
                 // 推仓下单已经成功（第938行验证），即使止损单失败，推仓操作也应该被认为是成功的
                 _logger.LogInformation($"✅ 推仓操作总结: {position.Symbol} 推仓下单=成功, 止损单创建={(stopSuccess ? "成功" : "失败")}");
+                
+                // 🚨 【关键修复】旧执行路径的状态强制同步
+                if (_stateService != null)
+                {
+                    var standardizedPositionSide = position.PositionAmt > 0 ? "LONG" : "SHORT";
+                    var contractKey = $"{position.Symbol}_{standardizedPositionSide}";
+                    _logger.LogCritical($"🚨【旧路径状态同步】推仓成功，强制更新统一状态文件: {contractKey}-阶梯{stage.TierIndex}");
+                    try
+                    {
+                        _stateService.UpdateExecutionStatus(contractKey, "AddPosition", stage.TierIndex, true, position.UnrealizedProfit, "推仓执行成功");
+                        _logger.LogCritical($"✅【旧路径状态同步】成功更新统一状态文件: {contractKey}-阶梯{stage.TierIndex}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogCritical($"❌【旧路径状态同步】失败: {contractKey}-阶梯{stage.TierIndex} - {ex.Message}");
+                    }
+                }
                 
                 // 🔄 推仓成功后，通知UI更新合约配置状态
                 try
@@ -2704,7 +2850,7 @@ namespace BinanceFuturesTrader.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "💾 保存档案清理结果到持久化存储失败");
+                    _logger.LogWarning(ex, "保存档案清理结果失败");
                 }
                 
                 // 📊 输出清理汇总
@@ -3256,11 +3402,10 @@ namespace BinanceFuturesTrader.Services
                 // 🔧 确保关键事件能够触发（即使前面有异常）
                 try
                 {
-                    OnMonitorStatusChanged(new MonitorStatusChangedEventArgs 
-                    { 
-                        IsRunning = false, 
-                        Message = "自动监控服务已停止" 
-                    });
+                    var statusArgs = new MonitorStatusChangedEventArgs();
+                    statusArgs.IsRunning = false;
+                    statusArgs.Message = "自动监控服务已停止";
+                    OnMonitorStatusChanged(statusArgs);
                 }
                 catch (Exception eventEx)
                 {
@@ -3559,27 +3704,18 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 🔧 通过检查BinanceService的API配置来判断是否为模拟环境
-                if (_binanceService == null) return true;
+                // 🔧 【重构】直接使用全局模式管理器
+                var globalMode = GlobalModeManager.Instance;
+                bool isGlobalSimulation = globalMode.IsSimulationMode;
                 
-                // 检查是否有有效的API配置
-                var currentAccount = _binanceService.GetType().GetProperty("CurrentAccount")?.GetValue(_binanceService);
-                if (currentAccount == null) return true;
+                _logger?.LogDebug($"🎯 AutoMonitorService模拟环境检查: 全局模式={globalMode.ModeDisplayText}");
                 
-                var apiKey = currentAccount.GetType().GetProperty("ApiKey")?.GetValue(currentAccount) as string;
-                var secretKey = currentAccount.GetType().GetProperty("SecretKey")?.GetValue(currentAccount) as string;
-                
-                // 如果API Key或Secret Key为空，或者长度不足，认为是模拟环境
-                bool isSimulation = string.IsNullOrEmpty(apiKey) || 
-                                   string.IsNullOrEmpty(secretKey) ||
-                                   apiKey.Length < 10 || 
-                                   secretKey.Length < 10;
-                
-                return isSimulation;
+                return isGlobalSimulation;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // 出现异常时，为了安全起见，默认认为是模拟环境
+                _logger?.LogError(ex, "AutoMonitorService检查模拟环境失败，默认返回模拟模式");
                 return true;
             }
         }

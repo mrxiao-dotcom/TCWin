@@ -33,7 +33,10 @@
                            Click="EditConfigButton_Click" Margin="0,0,5,0"/>
                     <Button Name="DeleteConfigButton" Content="🗑️ 删除" Width="80" Height="35" 
                            Background="#E74C3C" Foreground="White" FontWeight="Bold" FontSize="11"
-                           Click="DeleteConfigButton_Click"/>
+                           Click="DeleteConfigButton_Click" Margin="0,0,5,0"/>
+                    <Button Name="DebugConfigButton" Content="🔍 调试" Width="80" Height="35" 
+                           Background="#9B59B6" Foreground="White" FontWeight="Bold" FontSize="11"
+                           Click="DebugConfigButton_Click"/>
                 </StackPanel>
                 
                 <ListBox Grid.Row="2" Name="ConfigListBox" 

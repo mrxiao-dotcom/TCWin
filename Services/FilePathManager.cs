@@ -108,11 +108,44 @@ namespace BinanceFuturesTrader.Services
         #region 全局配置文件路径 (不按账号分离)
 
         /// <summary>
-        /// 获取基础配置文件路径 (全局)
+        /// 获取基础配置文件路径 (全局) - 所有配置的统一文件
         /// </summary>
         public string GetBaseConfigsFilePath()
         {
             return Path.Combine(GetGlobalConfigDirectory(), "auto_monitor_configs.json");
+        }
+
+        /// <summary>
+        /// 获取单个基础配置文件路径 (全局) - 一个配置一个文件
+        /// </summary>
+        /// <param name="configName">配置名称</param>
+        /// <returns>单个配置文件路径</returns>
+        public string GetSingleBaseConfigFilePath(string configName)
+        {
+            // 配置名称清理，确保文件名安全
+            var safeConfigName = configName.Replace(" ", "_")
+                                           .Replace("/", "_")
+                                           .Replace("\\", "_")
+                                           .Replace(":", "_")
+                                           .Replace("*", "_")
+                                           .Replace("?", "_")
+                                           .Replace("\"", "_")
+                                           .Replace("<", "_")
+                                           .Replace(">", "_")
+                                           .Replace("|", "_");
+            
+            return Path.Combine(GetGlobalConfigDirectory(), "BaseConfigs", $"{safeConfigName}.json");
+        }
+
+        /// <summary>
+        /// 获取基础配置目录路径
+        /// </summary>
+        /// <returns>基础配置目录路径</returns>
+        public string GetBaseConfigsDirectory()
+        {
+            var configsDir = Path.Combine(GetGlobalConfigDirectory(), "BaseConfigs");
+            EnsureDirectoryExists(configsDir);
+            return configsDir;
         }
 
         /// <summary>

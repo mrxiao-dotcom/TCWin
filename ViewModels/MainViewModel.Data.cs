@@ -107,6 +107,98 @@ namespace BinanceFuturesTrader.ViewModels
                             Positions.Add(position);
                         }
                         
+                        // 🔄 【关键新功能】持仓与统一配置文件同步 - 后台执行
+                        _ = Task.Run(() => SyncPositionsWithConfigFileAsync());
+                        
+                        // 🎯 【测试模式】为Test账户添加多品种测试数据
+                        if (SelectedAccount?.Name == "Test")
+                        {
+                            _logger.LogInformation("🧪 检测到Test账户，检查并补充测试数据");
+                            
+                            // 检查现有持仓，避免重复添加
+                            var existingSymbols = Positions.Select(p => p.Symbol).ToHashSet();
+                            var testPositionsToAdd = new List<PositionInfo>();
+                            
+                            // 定义需要的测试合约
+                            var requiredTestPositions = new[]
+                            {
+                                // BTC - 正常盈利
+                                new PositionInfo
+                                {
+                                    Symbol = "BTCUSDT",
+                                    PositionSideString = "LONG",
+                                    PositionAmt = 0.050m,
+                                    EntryPrice = 49500.00m,
+                                    MarkPrice = 50055.15m,
+                                    UnrealizedProfit = 250.75m,
+                                    Leverage = 10,
+                                    PositionSide = 1, // 1表示多头
+                                    MarginType = "isolated",
+                                    UpdateTime = DateTime.Now
+                                },
+                                
+                                // ETH - 大幅盈利 (用户要求1000)
+                                new PositionInfo
+                                {
+                                    Symbol = "ETHUSDT", 
+                                    PositionSideString = "LONG",
+                                    PositionAmt = 5.0m,
+                                    EntryPrice = 3000.00m,
+                                    MarkPrice = 3200.00m,
+                                    UnrealizedProfit = 1000.00m,
+                                    Leverage = 10,
+                                    PositionSide = 1, // 1表示多头
+                                    MarginType = "isolated",
+                                    UpdateTime = DateTime.Now
+                                },
+                                
+                                // XRP - 亏损场景 (用户要求-100)
+                                new PositionInfo
+                                {
+                                    Symbol = "XRPUSDT",
+                                    PositionSideString = "SHORT", 
+                                    PositionAmt = -2000.0m,
+                                    EntryPrice = 0.67m,
+                                    MarkPrice = 0.62m,
+                                    UnrealizedProfit = -100.00m,
+                                    Leverage = 10,
+                                    PositionSide = 2, // 2表示空头
+                                    MarginType = "isolated",
+                                    UpdateTime = DateTime.Now
+                                }
+                            };
+                            
+                            // 只添加不存在的测试合约
+                            foreach (var requiredPosition in requiredTestPositions)
+                            {
+                                if (!existingSymbols.Contains(requiredPosition.Symbol))
+                                {
+                                    testPositionsToAdd.Add(requiredPosition);
+                                    existingSymbols.Add(requiredPosition.Symbol); // 防止同一次添加重复
+                                }
+                            }
+                            
+                            // 添加缺失的测试持仓
+                            if (testPositionsToAdd.Count > 0)
+                            {
+                                foreach (var testPosition in testPositionsToAdd)
+                                {
+                                    Positions.Add(testPosition);
+                                    _logger.LogInformation($"📊 添加缺失的测试持仓: {testPosition.Symbol}_{testPosition.PositionSideString}, 浮盈: {testPosition.UnrealizedProfit:F2}U");
+                                }
+                                
+                                _logger.LogInformation($"✅ 成功添加 {testPositionsToAdd.Count} 个测试持仓数据，总持仓数: {Positions.Count}");
+                                
+                                // 🎯 【新功能】为新增的测试持仓自动生成统一状态配置
+                                // 注意：在UI线程中，将此任务推迟到后台线程执行  
+                                _ = Task.Run(() => GenerateUnifiedStateConfigsForNewPositions(testPositionsToAdd));
+                            }
+                            else
+                            {
+                                _logger.LogInformation("📋 Test账户已有完整的测试数据，无需添加");
+                            }
+                        }
+                        
                         foreach (var order in newOrders)
                         {
                             Orders.Add(order);
@@ -875,6 +967,94 @@ namespace BinanceFuturesTrader.ViewModels
             {
                 _logger.LogError(ex, "强制刷新订单显示失败");
                 StatusMessage = $"❌ 刷新失败: {ex.Message}";
+            }
+        }
+        
+        /// <summary>
+        /// 🎯 【新功能】为新增的持仓自动生成统一状态配置
+        /// 注意：当前简化实现，记录需要生成配置的持仓信息
+        /// TODO: 完整实现需要集成现有的配置和状态管理服务
+        /// </summary>
+        private void GenerateUnifiedStateConfigsForNewPositions(List<PositionInfo> newPositions)
+        {
+            try
+            {
+                _logger.LogInformation($"🎯 需要为 {newPositions.Count} 个新增持仓生成统一状态配置");
+                
+                foreach (var position in newPositions)
+                {
+                    var contractKey = $"{position.Symbol}_{position.PositionSideString}";
+                    _logger.LogInformation($"📋 新增持仓: {contractKey}, 浮盈: {position.UnrealizedProfit:F2}U");
+                    _logger.LogInformation($"💡 建议：点击'启动盯盘'时将基于当前基础配置为此合约生成统一状态配置");
+                }
+                
+                _logger.LogInformation("✅ 新增持仓信息记录完成，等待用户启动盯盘时自动生成配置");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 记录新增持仓信息失败");
+            }
+        }
+        
+        /// <summary>
+        /// 🔄 【核心功能】持仓与统一配置文件同步
+        /// 确保统一配置文件与当前持仓保持一致
+        /// </summary>
+        private async Task SyncPositionsWithConfigFileAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔄 开始执行持仓与统一配置文件同步");
+                
+                // 获取当前账户名
+                var currentAccountName = SelectedAccount?.Name ?? "Test";
+                
+                // 创建同步服务
+                var loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole());
+                var syncLogger = loggerFactory.CreateLogger<Services.PositionConfigSyncService>();
+                var syncService = new Services.PositionConfigSyncService(syncLogger, currentAccountName);
+                
+                // 获取当前持仓数据（在UI线程中获取）
+                List<PositionInfo> currentPositions = null;
+                await Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    currentPositions = Positions?.Where(p => Math.Abs(p.PositionAmt) > 0).ToList() ?? new List<PositionInfo>();
+                });
+                
+                if (currentPositions == null || !currentPositions.Any())
+                {
+                    _logger.LogInformation("📊 当前无持仓数据，跳过同步");
+                    return;
+                }
+                
+                _logger.LogInformation($"📊 检测到 {currentPositions.Count} 个活跃持仓，开始同步配置");
+                
+                // 执行同步
+                var hasChanges = await syncService.SyncConfigWithPositionsAsync(currentPositions);
+                
+                if (hasChanges)
+                {
+                    _logger.LogInformation("✅ 持仓配置同步完成，配置文件已更新");
+                    
+                    // 🔄 通知界面数据可能已变更，需要刷新
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        OnPropertyChanged(nameof(Positions));
+                        
+                        // 🔧 【关键修复】通知盯盘配置界面刷新以显示新的配置
+                        NotifyAutoMonitorDashboardRefresh();
+                        
+                        _logger.LogInformation("🔄 已通知界面刷新以反映配置文件变更");
+                    });
+                }
+                else
+                {
+                    _logger.LogInformation("✅ 持仓配置已同步，无需更新");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 持仓配置同步失败");
             }
         }
         #endregion

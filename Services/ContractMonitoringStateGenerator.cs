@@ -30,16 +30,20 @@ namespace BinanceFuturesTrader.Services
             PositionInfo position, 
             ContractMonitoringState? existingState = null)
         {
-            _logger.LogDebug($"🔄 生成监控状态: {position.Symbol}_{position.PositionSideString}");
+            // 🔧 【标准化】强制使用统一格式
+            var symbol = position.Symbol.ToUpperInvariant();
+            var side = position.PositionAmt > 0 ? "LONG" : "SHORT";
+            
+            _logger.LogDebug($"🔄 生成监控状态: {symbol}_{side}");
 
             var state = existingState ?? new ContractMonitoringState();
             var now = DateTime.Now;
 
-            // 基本信息
-            state.Symbol = position.Symbol;
-            state.PositionSide = position.PositionAmt > 0 ? "LONG" : "SHORT"; // 标准化持仓方向
+            // 🔧 【重要】基本信息标准化
+            state.Symbol = symbol;  // 强制大写
+            state.PositionSide = side;  // 强制LONG/SHORT
             state.BaseConfigName = baseConfig.Name;
-            state.Name = $"{baseConfig.Name}_{position.Symbol}";
+            state.Name = $"{baseConfig.Name}_{symbol}";
             state.IsEnabled = baseConfig.IsEnabled;
             state.ScanIntervalSeconds = baseConfig.ScanIntervalSeconds;
             state.CooldownSeconds = baseConfig.CooldownSeconds;
@@ -68,7 +72,7 @@ namespace BinanceFuturesTrader.Services
             // 生成保盈配置状态
             state.ProfitProtectionConfig = GenerateProfitProtectionState(baseConfig.ProfitProtectionConfig, state.ProfitProtectionConfig);
 
-            _logger.LogDebug($"✅ 监控状态生成完成: {state.Symbol}_{state.PositionSide}");
+            _logger.LogDebug($"✅ 监控状态生成完成: {symbol}_{side}");
             return state;
         }
 
@@ -189,12 +193,20 @@ namespace BinanceFuturesTrader.Services
             {
                 case "breakeven":
                 case "保本":
-                    _logger.LogCritical($"   📊 保本状态更新: 更新前={state.BreakEvenConfig.IsExecuted}");
-                    state.BreakEvenConfig.ExecutionState = isSuccess ? ExecutionState.Executed : ExecutionState.NotTriggered;
+                    _logger.LogCritical($"   📊 保本状态更新: 更新前ExecutionState={(int)state.BreakEvenConfig.ExecutionState}({state.BreakEvenConfig.ExecutionState}), IsExecuted={state.BreakEvenConfig.IsExecuted}");
+                    _logger.LogCritical($"   🎯 传入参数: isSuccess={isSuccess}, triggerPnl={triggerPnl}, result='{result}'");
+                    
+                    // 设置ExecutionState
+                    var newExecutionState = isSuccess ? ExecutionState.Executed : ExecutionState.NotTriggered;
+                    _logger.LogCritical($"   🔄 设置ExecutionState: {(int)newExecutionState}({newExecutionState})");
+                    state.BreakEvenConfig.ExecutionState = newExecutionState;
+                    
                     state.BreakEvenConfig.ExecutionTime = now;
                     state.BreakEvenConfig.ExecutionPnl = triggerPnl;
                     state.BreakEvenConfig.ExecutionResult = result;
-                    _logger.LogCritical($"   📊 保本状态更新: 更新后={state.BreakEvenConfig.IsExecuted}");
+                    
+                    _logger.LogCritical($"   📊 保本状态更新: 更新后ExecutionState={(int)state.BreakEvenConfig.ExecutionState}({state.BreakEvenConfig.ExecutionState}), IsExecuted={state.BreakEvenConfig.IsExecuted}");
+                    _logger.LogCritical($"   🔍 验证对象引用: {state.BreakEvenConfig.GetHashCode()}");
                     break;
 
                 case "addposition":

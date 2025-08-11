@@ -2061,7 +2061,7 @@ namespace BinanceFuturesTrader.Views
         /// <summary>
         /// 打开合约状态编辑对话框
         /// </summary>
-        private void OpenContractStatusEditDialog(ContractMonitorModel contract)
+        private async void OpenContractStatusEditDialog(ContractMonitorModel contract)
         {
             try
             {
@@ -2078,6 +2078,9 @@ namespace BinanceFuturesTrader.Views
                 if (result == true && statusEditDialog.HasChanges)
                 {
                     _logger.LogInformation($"✅ 状态编辑完成，有更改 - {contract.Symbol}");
+                    
+                    // 🔧 【关键修复】状态已在ContractStatusEditDialog中保存到统一状态文件
+                    _logger.LogInformation($"✅ 状态变更已保存到统一状态文件: {contract.Symbol}_{contract.PositionSide}");
                     
                     // 触发UI更新
                     contract.OnPropertyChanged(""); // 触发所有属性更新
@@ -5303,7 +5306,55 @@ namespace BinanceFuturesTrader.Views
                     _logger.LogWarning("⚠️ 未选择账户，无法获取配置");
                 }
 
-                // 🎯 第四优先级：从配置持久化文件中直接加载
+                // 🎯 第四优先级：从BaseConfigManager获取Global目录下的基础配置文件
+                try
+                {
+                    var baseConfigManager = BaseConfigManager.Instance;
+                    _logger.LogInformation($"🔍 从BaseConfigManager获取基础配置，当前配置数量: {baseConfigManager.Configurations.Count}");
+                    
+                    if (baseConfigManager.Configurations.Count > 0)
+                    {
+                        // 🔧 优先使用当前选中的配置
+                        var selectedConfig = baseConfigManager.CurrentConfig;
+                        if (selectedConfig != null)
+                        {
+                            _logger.LogInformation($"✅ 从BaseConfigManager获取到当前选中配置：{selectedConfig.Name}");
+                            
+                            // 🔧 关键修复：将获取到的配置设置为MainViewModel的当前配置
+                            if (_mainViewModel != null)
+                            {
+                                _mainViewModel.SetCurrentAutoMonitorConfig(selectedConfig);
+                            }
+                            
+                            return selectedConfig;
+                        }
+                        
+                        // 🔧 如果没有选中配置，使用第一个可用的配置
+                        var firstConfig = baseConfigManager.Configurations.FirstOrDefault();
+                        if (firstConfig != null)
+                        {
+                            _logger.LogInformation($"✅ 从BaseConfigManager获取到第一个配置：{firstConfig.Name}");
+                            
+                            // 🔧 关键修复：将获取到的配置设置为MainViewModel的当前配置
+                            if (_mainViewModel != null)
+                            {
+                                _mainViewModel.SetCurrentAutoMonitorConfig(firstConfig);
+                            }
+                            
+                            return firstConfig;
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ BaseConfigManager中没有基础配置，请检查Global目录下的auto_monitor_configs.json文件");
+                    }
+                }
+                catch (Exception baseConfigEx)
+                {
+                    _logger.LogError(baseConfigEx, "❌ 从BaseConfigManager获取基础配置失败");
+                }
+
+                // 🎯 第五优先级：从配置持久化文件中直接加载
                 if (_mainViewModel?.SelectedAccount != null)
                 {
                     try

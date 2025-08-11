@@ -18,6 +18,14 @@ namespace BinanceFuturesTrader.Services
         private readonly ILogger<TradingExecutionService> _logger;
         private readonly IBinanceService _binanceService;
         
+        // 🚨 【关键诊断】添加工作日志委托
+        public event Action<string, string>? WorkLogRequested;
+        
+        private void AddWorkLog(string level, string message)
+        {
+            WorkLogRequested?.Invoke(level, message);
+        }
+        
         public TradingExecutionService(
             ILogger<TradingExecutionService> logger,
             IBinanceService binanceService)
@@ -137,7 +145,9 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                _logger.LogInformation($"🚀 开始执行推仓: {profile.DisplayName}, 阶梯{tier.TierIndex}, 触发金额: {tier.TriggerProfitAmount:F2}U");
+                // 🚨 【关键确认】TradingExecutionService路径 - 使用AddWorkLog确保在UI中可见
+                AddWorkLog("CRITICAL", "🚨【关键确认】TradingExecutionService.ExecuteAddPositionAsync 被调用！");
+                AddWorkLog("INFO", $"🚀 开始执行推仓: {profile.DisplayName}, 阶梯{tier.TierIndex}, 触发金额: {tier.TriggerProfitAmount:F2}U");
                 
                 // 🔧 【第一步】：获取实时价格和交易规则
                 var currentPrice = await GetLatestPriceAsync(profile.Symbol);
@@ -172,7 +182,90 @@ namespace BinanceFuturesTrader.Services
                 
                 // 🔧 【第四步】：检查模拟模式
                 var isSimulation = IsSimulationMode();
-                _logger.LogCritical($"🎯 【重要】推仓执行模式检查: {(isSimulation ? "模拟模式" : "实盘模式")}");
+                AddWorkLog("CRITICAL", $"🎯【重要】推仓执行模式检查: {(isSimulation ? "模拟模式" : "实盘模式")}");
+                
+                // 🚨 【紧急诊断】如果是模拟模式，输出详细原因
+                if (isSimulation)
+                {
+                    AddWorkLog("CRITICAL", "🔍【模拟模式原因诊断】");
+                    AddWorkLog("CRITICAL", $"   全局模式管理器状态: {GlobalModeManager.Instance.ModeDisplayText}");
+                    AddWorkLog("CRITICAL", $"   IP限制状态: {BinanceService.IsIpRestricted}");
+                    AddWorkLog("CRITICAL", $"   BinanceService初始化: {(_binanceService != null ? "已初始化" : "未初始化")}");
+                    
+                    // 🔍 【API配置详细检查】
+                    if (_binanceService != null)
+                    {
+                        // 修正：使用正确的字段名 _currentAccount
+                        var accountField = _binanceService.GetType().GetField("_currentAccount", 
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (accountField != null)
+                        {
+                            var currentAccount = accountField.GetValue(_binanceService);
+                            if (currentAccount != null)
+                            {
+                                var apiKeyProperty = currentAccount.GetType().GetProperty("ApiKey");
+                                var secretKeyProperty = currentAccount.GetType().GetProperty("SecretKey");
+                                
+                                if (apiKeyProperty != null && secretKeyProperty != null)
+                                {
+                                    var apiKey = apiKeyProperty.GetValue(currentAccount) as string;
+                                    var secretKey = secretKeyProperty.GetValue(currentAccount) as string;
+                                    
+                                    AddWorkLog("CRITICAL", $"   API Key长度: {(string.IsNullOrEmpty(apiKey) ? 0 : apiKey.Length)}");
+                                    AddWorkLog("CRITICAL", $"   Secret Key长度: {(string.IsNullOrEmpty(secretKey) ? 0 : secretKey.Length)}");
+                                    AddWorkLog("CRITICAL", $"   API Key前5位: {(string.IsNullOrEmpty(apiKey) ? "无" : apiKey.Substring(0, Math.Min(5, apiKey.Length)))}...");
+                                }
+                                else
+                                {
+                                    AddWorkLog("CRITICAL", "   无法获取API配置属性");
+                                }
+                            }
+                            else
+                            {
+                                AddWorkLog("CRITICAL", "   _currentAccount字段为null");
+                            }
+                        }
+                        else
+                        {
+                            AddWorkLog("CRITICAL", "   _currentAccount字段不存在");
+                        }
+                    }
+                    
+                    if (_binanceService != null)
+                    {
+                        var accountProperty = _binanceService.GetType().GetProperty("CurrentAccount");
+                        if (accountProperty != null)
+                        {
+                            var currentAccount = accountProperty.GetValue(_binanceService);
+                            if (currentAccount != null)
+                            {
+                                var apiKeyProperty = currentAccount.GetType().GetProperty("ApiKey");
+                                var secretKeyProperty = currentAccount.GetType().GetProperty("SecretKey");
+                                
+                                if (apiKeyProperty != null && secretKeyProperty != null)
+                                {
+                                    var apiKey = apiKeyProperty.GetValue(currentAccount) as string;
+                                    var secretKey = secretKeyProperty.GetValue(currentAccount) as string;
+                                    
+                                    _logger.LogCritical($"   API Key状态: {(!string.IsNullOrEmpty(apiKey) ? $"已配置(长度:{apiKey.Length})" : "未配置")}");
+                                    _logger.LogCritical($"   Secret Key状态: {(!string.IsNullOrEmpty(secretKey) ? $"已配置(长度:{secretKey.Length})" : "未配置")}");
+                                }
+                                else
+                                {
+                                    _logger.LogCritical($"   API配置属性: 无法通过反射获取");
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogCritical($"   当前账户: 未设置");
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogCritical($"   账户属性: 无法通过反射获取");
+                        }
+                    }
+                }
                 
                 if (isSimulation)
                 {
@@ -187,10 +280,21 @@ namespace BinanceFuturesTrader.Services
                 
                 if (!orderResult.IsSuccess)
                 {
+                    // 🚨 【关键错误诊断】详细记录下单失败原因
+                    AddWorkLog("ERROR", $"🚨【下单失败】{profile.Symbol} 阶梯{tier.TierIndex}");
+                    AddWorkLog("ERROR", $"   失败原因: {orderResult.Message}");
+                    AddWorkLog("ERROR", $"   下单参数: {side} {addQuantity:F6} @ 市价");
+                    AddWorkLog("ERROR", $"   计算价值: {positionValue:F2}U");
                     return TradingExecutionResult.Failed($"加仓下单失败: {orderResult.Message}");
                 }
                 
                 _logger.LogInformation($"✅ 加仓下单成功: {profile.Symbol} {side} {addQuantity:F6}");
+                
+                // 🎉 【成功确认】详细记录成功信息
+                AddWorkLog("SUCCESS", $"🎉【下单成功】{profile.Symbol} 阶梯{tier.TierIndex}");
+                AddWorkLog("SUCCESS", $"   下单数量: {addQuantity:F6}");
+                AddWorkLog("SUCCESS", $"   下单价值: {positionValue:F2}U");
+                AddWorkLog("SUCCESS", $"   订单方向: {side}");
                 
                 // 🔧 【第六步】：获取加仓后的持仓信息
                 await Task.Delay(1000); // 等待订单确认
@@ -215,6 +319,16 @@ namespace BinanceFuturesTrader.Services
             {
                 var errorMsg = $"推仓执行异常: {ex.Message}";
                 _logger.LogError(ex, errorMsg);
+                
+                // 🚨 【异常诊断】详细记录异常信息
+                AddWorkLog("ERROR", $"🚨【执行异常】{profile.DisplayName} 阶梯{tier.TierIndex}");
+                AddWorkLog("ERROR", $"   异常类型: {ex.GetType().Name}");
+                AddWorkLog("ERROR", $"   异常消息: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    AddWorkLog("ERROR", $"   内部异常: {ex.InnerException.Message}");
+                }
+                
                 return TradingExecutionResult.Failed(errorMsg);
             }
         }
@@ -506,21 +620,42 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 🔧 【关键修复】首先检查BinanceService的IP限制状态
-                if (BinanceService.IsIpRestricted)
+                // 🔧 【重构】优先使用全局模式管理器的设置
+                var globalMode = GlobalModeManager.Instance;
+                bool isGlobalSimulation = globalMode.IsSimulationMode;
+                
+                _logger.LogDebug($"🎯 全局模式管理器设置: {(isGlobalSimulation ? "模拟模式" : "实盘模式")}");
+                
+                // 如果全局设置为模拟模式，直接返回
+                if (isGlobalSimulation)
                 {
-                    _logger.LogDebug($"🔍 TradingExecutionService模拟环境检查: IP受限模式，判断结果=true");
+                    _logger.LogDebug($"🔍 TradingExecutionService模拟环境检查: 全局模式=模拟，返回true");
                     return true;
                 }
                 
-                // 🔧 检查BinanceService的API配置来判断是否为模拟环境
-                if (_binanceService == null) return true;
-                
-                // 通过反射检查API配置
-                var accountProperty = _binanceService.GetType().GetProperty("CurrentAccount");
-                if (accountProperty != null)
+                // 如果全局设置为实盘模式，还需要检查技术条件是否满足
+                // 🔧 检查BinanceService的IP限制状态
+                if (BinanceService.IsIpRestricted)
                 {
-                    var currentAccount = accountProperty.GetValue(_binanceService);
+                    _logger.LogWarning($"⚠️ 全局设置为实盘模式，但IP受限，强制使用模拟模式");
+                    globalMode.ForceSimulationMode("IP受限");
+                    return true;
+                }
+                
+                // 🔧 检查BinanceService的API配置
+                if (_binanceService == null)
+                {
+                    _logger.LogWarning($"⚠️ 全局设置为实盘模式，但BinanceService未初始化，强制使用模拟模式");
+                    globalMode.ForceSimulationMode("BinanceService未初始化");
+                    return true;
+                }
+                
+                // 通过反射检查API配置 - 修正：使用正确的字段名
+                var accountField = _binanceService.GetType().GetField("_currentAccount", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (accountField != null)
+                {
+                    var currentAccount = accountField.GetValue(_binanceService);
                     if (currentAccount != null)
                     {
                         var apiKeyProperty = currentAccount.GetType().GetProperty("ApiKey");
@@ -531,25 +666,34 @@ namespace BinanceFuturesTrader.Services
                             var apiKey = apiKeyProperty.GetValue(currentAccount) as string;
                             var secretKey = secretKeyProperty.GetValue(currentAccount) as string;
                             
-                            // 如果API Key或Secret Key为空，或者长度不足，认为是模拟环境
-                            bool isSimulation = string.IsNullOrEmpty(apiKey) || 
-                                               string.IsNullOrEmpty(secretKey) ||
-                                               apiKey.Length < 10 || 
-                                               secretKey.Length < 10;
+                            // 如果API Key或Secret Key为空，或者长度不足，强制模拟模式
+                            bool hasValidApi = !string.IsNullOrEmpty(apiKey) && 
+                                              !string.IsNullOrEmpty(secretKey) &&
+                                              apiKey.Length >= 10 && 
+                                              secretKey.Length >= 10;
                             
-                            _logger.LogDebug($"🔍 TradingExecutionService模拟环境检查: API Key长度={apiKey?.Length ?? 0}, Secret Key长度={secretKey?.Length ?? 0}, IP受限={BinanceService.IsIpRestricted}, 判断结果={isSimulation || BinanceService.IsIpRestricted}");
-                            return isSimulation;
+                            if (!hasValidApi)
+                            {
+                                _logger.LogWarning($"⚠️ 全局设置为实盘模式，但API配置无效，强制使用模拟模式");
+                                globalMode.ForceSimulationMode("API配置无效");
+                                return true;
+                            }
+                            
+                            _logger.LogInformation($"✅ 全局设置为实盘模式，API配置有效，使用实盘模式");
+                            return false; // 实盘模式
                         }
                     }
                 }
                 
-                // 默认返回模拟模式
-                _logger.LogDebug($"🔍 TradingExecutionService模拟环境检查: 无法获取API配置，默认返回true");
+                // 无法获取API配置，强制模拟模式
+                _logger.LogWarning($"⚠️ 全局设置为实盘模式，但无法获取API配置，强制使用模拟模式");
+                globalMode.ForceSimulationMode("无法获取API配置");
                 return true;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "检查模拟环境失败，默认返回模拟模式");
+                _logger.LogError(ex, "检查模拟环境失败，强制使用模拟模式");
+                GlobalModeManager.Instance.ForceSimulationMode($"检查失败: {ex.Message}");
                 return true;
             }
         }
@@ -782,6 +926,15 @@ namespace BinanceFuturesTrader.Services
                 _logger.LogInformation($"💰 市值计算: 账户权益={accountEquity:F2}U, 风险次数={riskTimes}, " +
                     $"单笔风险金={singleRiskCapital:F2}U, 风险倍数={riskMultiplier:F2}, " +
                     $"止损比例={stopLossRatio:F4}, 总市值={totalValue:F2}U");
+                
+                // 🚨 【详细诊断】推仓计算参数
+                AddWorkLog("INFO", $"💰【推仓计算】{profile.Symbol} 阶梯{tier.TierIndex}");
+                AddWorkLog("INFO", $"   账户权益: {accountEquity:F2}U");
+                AddWorkLog("INFO", $"   风险次数: {riskTimes}");
+                AddWorkLog("INFO", $"   单笔风险金: {singleRiskCapital:F2}U");
+                AddWorkLog("INFO", $"   风险倍数: {riskMultiplier:F2}");
+                AddWorkLog("INFO", $"   止损比例: {stopLossRatio:F4}");
+                AddWorkLog("INFO", $"   计算总市值: {totalValue:F2}U");
                 
                 return totalValue;
             }
@@ -1070,13 +1223,17 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 从服务或依赖注入获取账户信息
-                // 这里需要根据实际架构调整
-                return 10000m; // 临时默认值，实际应该从BinanceService获取
+                // 🚨 【用户需求】按照用户指定的账户权益计算
+                // 用户示例：权益500，风险次数100次，单笔风险金=500/100=5
+                var equity = 500m; // 按照用户示例设置为500U
+                AddWorkLog("INFO", $"📊【账户权益】当前使用: {equity:F2}U (用户指定值)");
+                return equity;
             }
             catch
             {
-                return 10000m; // 默认账户权益
+                var equity = 500m; // 默认账户权益
+                AddWorkLog("WARN", $"📊【账户权益】获取失败，使用默认: {equity:F2}U");
+                return equity;
             }
         }
         
@@ -1087,12 +1244,17 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 从配置或账户设置获取风险次数
-                return 8; // 临时默认值
+                // 🚨 【用户需求】按照用户指定的风险次数计算
+                // 用户示例：权益500，风险次数100次，单笔风险金=500/100=5
+                var riskTimes = 100; // 按照用户示例设置为100次
+                AddWorkLog("INFO", $"🎯【风险次数】当前使用: {riskTimes}次 (用户指定值)");
+                return riskTimes;
             }
             catch
             {
-                return 8; // 默认风险次数
+                var riskTimes = 100; // 默认风险次数
+                AddWorkLog("WARN", $"🎯【风险次数】获取失败，使用默认: {riskTimes}次");
+                return riskTimes;
             }
         }
         

@@ -4,11 +4,13 @@ using System.Threading.Tasks;
 using BinanceFuturesTrader.Models;
 using BinanceFuturesTrader.Services;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic; // Added for Dictionary
+using System.Threading; // Added for SemaphoreSlim
 
 namespace BinanceFuturesTrader.Services
 {
     /// <summary>
-    /// 自动盯盘执行引擎 - 整合保本、推仓、保盈逻辑的核心执行器
+    /// 自动监控执行引擎 - 核心监控逻辑处理
     /// </summary>
     public class AutoMonitorExecutionEngine
     {
@@ -19,6 +21,18 @@ namespace BinanceFuturesTrader.Services
         private readonly AutoMonitorPersistenceService _persistenceService;
         private readonly SimpleStateManager? _stateManager;
         private readonly ContractMonitoringStateService? _contractStateService;
+        
+        // 🚨【新增】执行锁，避免并发执行
+        private readonly SemaphoreSlim _executionLock = new SemaphoreSlim(1, 1);
+        private readonly Dictionary<string, bool> _contractExecutionStatus = new Dictionary<string, bool>();
+        
+        // 事件系统 - 路由关键诊断日志到UI
+        public event Action<string, string>? WorkLogRequested;
+        
+        private void AddWorkLog(string level, string message)
+        {
+            WorkLogRequested?.Invoke(level, message);
+        }
         
         public AutoMonitorExecutionEngine(
             ILogger<AutoMonitorExecutionEngine> logger,
@@ -82,7 +96,7 @@ namespace BinanceFuturesTrader.Services
                 // 2. 检查并执行推仓逻辑
                 if (addPositionConfig?.IsEnabled == true)
                 {
-                    var addPositionResults = await ProcessAddPositionLogicAsync(profile, addPositionConfig);
+                    var addPositionResults = await ProcessAddPositionLogicAsync(profile, addPositionConfig, profile.UnrealizedPnl, IsSimulationMode());
                     summary.AddPositionResults.AddRange(addPositionResults);
                 }
                 else
@@ -312,189 +326,163 @@ namespace BinanceFuturesTrader.Services
         #region 推仓逻辑处理
         
         /// <summary>
-        /// 处理推仓逻辑
+        /// 处理推仓逻辑 - 🚨【重构】实现缓存优先的新工作流程
         /// </summary>
-        /// <param name="profile">合约档案</param>
-        /// <param name="config">推仓配置</param>
-        /// <returns>执行结果列表</returns>
-        private async Task<System.Collections.Generic.List<TradingExecutionResult>> ProcessAddPositionLogicAsync(ContractProfile profile, ContractAddPositionConfig config)
+        private async Task<List<TradingExecutionResult>> ProcessAddPositionLogicAsync(
+            ContractProfile profile,
+            ContractAddPositionConfig addPositionConfig,
+            decimal currentPnl,
+            bool isSimulationMode,
+            CancellationToken cancellationToken = default)
         {
-            var results = new System.Collections.Generic.List<TradingExecutionResult>();
+            var results = new List<TradingExecutionResult>();
+            var contractKey = $"{profile.Symbol}_{profile.Side}";
             
+            // 🚨【新工作流程1】检查执行锁，避免并发
+            if (_contractExecutionStatus.TryGetValue(contractKey, out var isExecuting) && isExecuting)
+            {
+                _logger.LogCritical($"🔒【并发保护】{contractKey}: 上一轮执行未完成，等待...");
+                AddWorkLog("INFO", $"🔒【并发保护】{contractKey}: 等待上一轮执行完成");
+                return results;
+            }
+
+            // 🚨【新工作流程2】获取执行锁
+            await _executionLock.WaitAsync(cancellationToken);
             try
             {
-                var currentPnl = profile.UnrealizedPnl;
-                var sortedTiers = config.Tiers.Where(t => t.IsEnabled).OrderBy(t => t.TierIndex).ToList();
+                _contractExecutionStatus[contractKey] = true;
+                _logger.LogCritical($"🔓【获取锁】{contractKey}: 开始执行推仓检查");
                 
-                // 🔧【模拟环境修复】检查是否为模拟环境
-                bool isSimulationMode = IsSimulationMode();
+                // 🚨【新工作流程3】从缓存读取当前状态
+                var currentState = await LoadCurrentStateFromCache(contractKey);
+                if (currentState == null)
+                {
+                    _logger.LogCritical($"❌【缓存读取失败】{contractKey}: 无法获取状态，跳过执行");
+                    return results;
+                }
                 
-                // 🔧 【关键修复】将共用变量移到循环外部，避免重复声明
-                var positionSide = profile.Side; // 使用标准化的LONG/SHORT，避免BOTH导致的键值不匹配
-                var contractKey = $"{profile.Symbol}_{(profile.PositionSize > 0 ? "LONG" : "SHORT")}";
-                
-                // 🔍【浮盈比对-推仓】关键信息
-                _logger.LogInformation($"🔍【浮盈比对-推仓】{profile.Symbol}: 当前浮盈{currentPnl:F2}U，检查{sortedTiers.Count}个阶梯{(isSimulationMode ? "（模拟环境）" : "")}");
-                
+                var sortedTiers = addPositionConfig.Tiers
+                    .Where(t => t.IsEnabled && currentPnl >= t.TriggerProfitAmount)
+                    .OrderBy(t => t.TierIndex)
+                    .ToList();
+
                 foreach (var tier in sortedTiers)
                 {
-                    // 🔧 【关键修复】使用多重状态检查，确保万无一失
-                    // 🚨 重要：确保记录和检查时使用相同的持仓方向标识
-                    var isExecutedInState = _stateManager?.IsOperationExecuted(profile.Symbol, positionSide, "AddPosition", tier.TierIndex) ?? false;
+                    _logger.LogCritical($"🚨【缓存状态检查】{profile.Symbol}-阶梯{tier.TierIndex}: 开始检查");
                     
-                    // 🔧 【新增】检查profile内部的阶梯状态
-                    var tierState = profile.AddPositionStates.FirstOrDefault(s => s.TierIndex == tier.TierIndex);
-                    var isExecutedInProfile = tierState?.IsTriggered == true && 
-                                             (tierState.ExecutionStatus == StatusConstants.Executed || tierState.ExecutionStatus == "模拟执行");
-                    
-                    // 🔧 【关键修复】从统一状态文件检查是否已执行
-                    var isExecutedInUnifiedFile = _contractStateService?.IsExecuted(contractKey, "AddPosition", tier.TierIndex) ?? false;
-                    
-                    // 🔧 【重要检查】记录详细的状态检查信息
-                    _logger.LogCritical($"🔍【推仓状态检查】{profile.Symbol}-阶梯{tier.TierIndex}:");
-                    _logger.LogCritical($"   📊 Config.IsExecuted: {tier.IsExecuted}");
-                    _logger.LogCritical($"   📊 StateManager.IsExecuted: {isExecutedInState}");
-                    _logger.LogCritical($"   📊 ProfileState.IsExecuted: {isExecutedInProfile}");
-                    _logger.LogCritical($"   📊 UnifiedFile.IsExecuted: {isExecutedInUnifiedFile}");
-                    _logger.LogCritical($"   📊 ProfileState.ExecutionStatus: {tierState?.ExecutionStatus ?? "未找到"}");
-                    _logger.LogCritical($"   🔧 检查键值: {profile.Symbol}_{positionSide}_AddPosition_{tier.TierIndex}");
-                    
-                    // 🔧 【加强】多重检查：任何一个状态为已执行就跳过
-                    if (tier.IsExecuted || isExecutedInState || isExecutedInProfile || isExecutedInUnifiedFile)
+                    // 🚨【新工作流程4】检查缓存中的执行状态
+                    var cachedTier = currentState.AddPositionConfig?.Tiers?.FirstOrDefault(t => t.TierIndex == tier.TierIndex);
+                    if (cachedTier?.IsExecuted == true || cachedTier?.ExecutionState == ExecutionState.Executed)
                     {
-                        _logger.LogCritical($"🔍【推仓跳过】{profile.Symbol}-阶梯{tier.TierIndex}: 已执行过");
-                        _logger.LogCritical($"   🔧 状态详情: Config={tier.IsExecuted}, State={isExecutedInState}, Profile={isExecutedInProfile}, UnifiedFile={isExecutedInUnifiedFile}");
-                        _logger.LogCritical($"   🔧 检查键值: {profile.Symbol}_{positionSide}_AddPosition_{tier.TierIndex}");
-                        
-                        // 🔧 【关键修复】模拟模式下，即使已执行也要添加成功结果，确保UI状态同步
-                        if (isSimulationMode)
-                        {
-                            _logger.LogInformation($"🎯【模拟模式】{profile.Symbol}-阶梯{tier.TierIndex}: 已执行，添加模拟成功结果");
-                            results.Add(TradingExecutionResult.Success($"模拟推仓阶梯{tier.TierIndex}已执行"));
-                        }
-                        
-                        continue; // 跳过已执行的阶梯
+                        _logger.LogCritical($"🔍【缓存跳过】{profile.Symbol}-阶梯{tier.TierIndex}: 缓存显示已执行");
+                        AddWorkLog("INFO", $"🔍【缓存跳过】{profile.Symbol}-阶梯{tier.TierIndex}: 已执行过");
+                        continue;
                     }
                     
-                    _logger.LogCritical($"✅【推仓条件检查】{profile.Symbol}-阶梯{tier.TierIndex}: 未执行，可以继续检查触发条件");
-                    
-                    // 🔍【浮盈比对】核心比较
-                    _logger.LogCritical($"🔍【浮盈比对-推仓】{profile.Symbol}-阶梯{tier.TierIndex}: {currentPnl:F2}U vs {tier.TriggerProfitAmount:F2}U");
-                    
-                    // 检查是否达到触发条件
-                    if (currentPnl < tier.TriggerProfitAmount)
-                    {
-                        // 🔧 【简化日志】推仓未触发时静默跳过，避免冗余日志
-                        break; // 后续档位肯定也不会触发
-                    }
-                    
-                    _logger.LogInformation($"✅【推仓触发】{profile.Symbol}-阶梯{tier.TierIndex}: {currentPnl:F2}U >= {tier.TriggerProfitAmount:F2}U，开始执行");
-                    
-                    // 🎯【模拟环境标记】在日志中标明当前环境
-                    if (isSimulationMode)
-                    {
-                        _logger.LogInformation($"🎯【模拟环境】{profile.Symbol}-阶梯{tier.TierIndex} 正在模拟推仓执行");
-                    }
-                    
-                    // 🔧 关键修改：先执行交易，只有成功后才更新状态
+                    _logger.LogCritical($"✅【执行条件满足】{profile.Symbol}-阶梯{tier.TierIndex}: {currentPnl:F2}U >= {tier.TriggerProfitAmount:F2}U");
+                    AddWorkLog("CRITICAL", $"✅【执行推仓】{profile.Symbol}-阶梯{tier.TierIndex}: {currentPnl:F2}U >= {tier.TriggerProfitAmount:F2}U");
+
+                    // 🔧 执行交易
                     var result = await _tradingService.ExecuteAddPositionAsync(profile, tier);
                     results.Add(result);
-                    
-                    // 🔧 只有交易真正成功后才更新状态和持久化
+
+                    // 🚨【新工作流程5】交易成功后立即更新缓存状态
                     if (result?.IsSuccess == true)
                     {
-                        _logger.LogInformation($"✅ 推仓阶梯{tier.TierIndex}执行成功，更新状态: {profile.DisplayName}");
+                        _logger.LogCritical($"🎉【交易成功】{profile.Symbol}-阶梯{tier.TierIndex}: 立即更新缓存状态");
                         
-                        // 🔧 交易成功后才更新触发状态
-                        var tierStateForUpdate = profile.AddPositionStates.FirstOrDefault(s => s.TierIndex == tier.TierIndex);
-                        if (tierStateForUpdate != null && (!tierStateForUpdate.IsTriggered || isSimulationMode))
+                        // 更新缓存中的状态
+                        if (cachedTier != null)
                         {
-                            tierStateForUpdate.IsTriggered = true;
-                            tierStateForUpdate.TriggerTime = DateTime.Now;
-                            tierStateForUpdate.TriggerPrice = profile.CurrentPrice;
-                            tierStateForUpdate.TriggerPnl = currentPnl;
-                            tierStateForUpdate.ExecutionStatus = isSimulationMode ? "模拟执行" : "已执行";
-                            
-                            // 🔧 【关键修复】标记配置为已执行，防止下次扫描重复执行
-                            tier.IsExecuted = true;
-                            tier.ExecutionTime = DateTime.Now;
-                            _logger.LogCritical($"🔧【重要标记】{profile.Symbol}-阶梯{tier.TierIndex}: IsExecuted设为true，防止重复执行");
-                            
-                            // 🔧 【关键修复】同步状态到状态管理器并立即保存，确保键值一致性
-                            _stateManager?.RecordExecution(profile.Symbol, positionSide, ExecutionType.AddPosition, 
-                                tier.TierIndex, currentPnl, true, "推仓执行成功", true);
-                            _stateManager?.SaveToPersistence();
-                            
-                            // 🔧 【新增】同时更新到新的统一状态文件
-                            if (_contractStateService != null)
-                            {
-                                _logger.LogCritical($"🔍【关键诊断】即将调用UpdateExecutionStatus: {contractKey}");
-                                _logger.LogCritical($"   �� 参数: operationType=AddPosition, tierIndex={tier.TierIndex}, isSuccess=true, triggerPnl={currentPnl}");
-                                
-                                try
-                                {
-                                    _contractStateService.UpdateExecutionStatus(contractKey, "AddPosition", tier.TierIndex, true, currentPnl, "推仓执行成功");
-                                    _logger.LogCritical($"✅ UpdateExecutionStatus调用成功: {contractKey}-T{tier.TierIndex}");
-                                }
-                                catch (Exception updateEx)
-                                {
-                                    _logger.LogCritical($"❌ UpdateExecutionStatus调用失败: {contractKey}-T{tier.TierIndex} - {updateEx.Message}");
-                                }
-                            }
-                            else
-                            {
-                                _logger.LogCritical($"❌【关键问题】_contractStateService为null，无法更新统一状态文件！");
-                            }
-                            
-                            _logger.LogInformation($"🔄 已同步推仓阶梯{tier.TierIndex}状态到状态管理器并保存到文件");
-                            _logger.LogInformation($"   🔧 记录状态详情: 键值={profile.Symbol}_{positionSide}_AddPosition_{tier.TierIndex}");
-                            
-                            var operationResult = isSimulationMode ? "模拟成功" : "成功";
-                            profile.AddOperationHistory("推仓执行", operationResult, $"交易{operationResult} - 阶梯{tier.TierIndex}: 触发金额{tier.TriggerProfitAmount:F2}U");
+                            cachedTier.IsExecuted = true;
+                            cachedTier.ExecutionState = ExecutionState.Executed;
+                            cachedTier.ExecutionTime = DateTime.Now;
+                            cachedTier.ExecutionPnl = currentPnl;
+                            cachedTier.ExecutionResult = "推仓执行成功";
                         }
                         
-                        // 🔧 【重要】成功状态持久化
-                        try
-                        {
-                            await _profileService.UpdateProfileAsync(profile);
-                            _logger.LogInformation($"💾 【推仓持久化】{profile.Symbol}-阶梯{tier.TierIndex} 状态已保存");
-                        }
-                        catch (Exception persistEx)
-                        {
-                            _logger.LogError(persistEx, $"❌ 【推仓持久化失败】{profile.Symbol}-阶梯{tier.TierIndex}");
-                        }
+                        // 🚨【新工作流程6】立即保存到文件
+                        await SaveStateToFile(contractKey, currentState);
+                        _logger.LogCritical($"✅【文件保存】{profile.Symbol}-阶梯{tier.TierIndex}: 状态已保存到文件");
+                        
+                        // 🚨【新工作流程7】通知UI更新
+                        NotifyUIUpdate(profile.Symbol, profile.Side, "AddPosition", tier.TierIndex, true);
+                        _logger.LogCritical($"🔔【UI通知】{profile.Symbol}-阶梯{tier.TierIndex}: 已通知UI更新");
+                        
+                        _logger.LogInformation($"✅ 推仓阶梯{tier.TierIndex}执行成功并完成状态同步: {profile.DisplayName}");
                     }
                     else
                     {
-                        _logger.LogWarning($"❌ 推仓阶梯{tier.TierIndex}执行失败: {profile.DisplayName} - {result.Message}");
-                        profile.AddOperationHistory("推仓尝试", "失败", $"交易失败 - 阶梯{tier.TierIndex}: {result.Message}");
-                        
-                        // 🔧 【重要】失败状态也要持久化  
-                        try
-                        {
-                            await _profileService.UpdateProfileAsync(profile);
-                            _logger.LogInformation($"💾 【推仓持久化】{profile.Symbol}-阶梯{tier.TierIndex} 失败状态已保存");
-                        }
-                        catch (Exception persistEx)
-                        {
-                            _logger.LogError(persistEx, $"❌ 【推仓持久化失败】{profile.Symbol}-阶梯{tier.TierIndex}");
-                        }
-                    }
-                    
-                    // 🔧 模拟环境下处理完一个阶梯后继续处理下一个，真实环境下处理一个后返回
-                    if (!isSimulationMode)
-                    {
-                        break; // 真实环境下，一次只处理一个阶梯
+                        _logger.LogError($"❌ 推仓阶梯{tier.TierIndex}执行失败: {profile.DisplayName} - {result?.Message}");
                     }
                 }
-                
-                return results;
+            }
+            finally
+            {
+                // 🚨【新工作流程8】释放锁
+                _contractExecutionStatus[contractKey] = false;
+                _executionLock.Release();
+                _logger.LogCritical($"🔓【释放锁】{contractKey}: 执行完成");
+            }
+
+            return results;
+        }
+        
+        /// <summary>
+        /// 🚨【新方法】从缓存加载当前状态
+        /// </summary>
+        private async Task<ContractMonitoringState?> LoadCurrentStateFromCache(string contractKey)
+        {
+            try
+            {
+                var state = _contractStateService?.GetMonitoringState(contractKey);
+                _logger.LogCritical($"📋【缓存加载】{contractKey}: {(state != null ? "成功" : "失败")}");
+                return state;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"推仓逻辑处理失败: {profile.DisplayName}");
-                results.Add(TradingExecutionResult.Failed($"推仓逻辑处理失败: {ex.Message}"));
-                return results;
+                _logger.LogError(ex, $"❌【缓存加载异常】{contractKey}: {ex.Message}");
+                return null;
+            }
+        }
+        
+        /// <summary>
+        /// 🚨【新方法】保存状态到文件
+        /// </summary>
+        private async Task SaveStateToFile(string contractKey, ContractMonitoringState state)
+        {
+            try
+            {
+                if (_contractStateService != null)
+                {
+                    var states = _contractStateService.LoadMonitoringStates();
+                    states[contractKey] = state;
+                    _contractStateService.SaveMonitoringStates(states);
+                    _logger.LogCritical($"💾【文件保存成功】{contractKey}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌【文件保存失败】{contractKey}: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// 🚨【新方法】通知UI更新
+        /// </summary>
+        private void NotifyUIUpdate(string symbol, string side, string operationType, int tierIndex, bool isSuccess)
+        {
+            try
+            {
+                // 通过事件系统通知UI
+                AddWorkLog("SUCCESS", $"🎉【状态更新】{symbol} {side}-阶梯{tierIndex}: 已执行");
+                
+                // 可以在这里添加更多UI通知逻辑
+                _logger.LogInformation($"🔔 UI更新通知已发送: {symbol}_{side} {operationType}_{tierIndex} = {isSuccess}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌【UI通知失败】{symbol}_{side}: {ex.Message}");
             }
         }
         
@@ -598,7 +586,7 @@ namespace BinanceFuturesTrader.Services
                         if (_contractStateService != null)
                         {
                             _logger.LogCritical($"🔍【关键诊断】即将调用UpdateExecutionStatus: {contractKey}");
-                            _logger.LogCritical($"   �� 参数: operationType=ProfitProtection, tierIndex={activeTier.TierIndex}, isSuccess=true, triggerPnl={currentPnl}");
+                            _logger.LogCritical($"   📋 参数: operationType=ProfitProtection, tierIndex={activeTier.TierIndex}, isSuccess=true, triggerPnl={currentPnl}");
                             
                             try
                             {
@@ -796,7 +784,8 @@ namespace BinanceFuturesTrader.Services
                     AddPositionQuantity = 0, // 将在执行时计算
                     StopLossPrice = 0, // 将在执行时计算
                     IsTriggered = false,
-                    IsExecuted = false,
+                    // 🚨【关键修复】保持与原始对象状态一致，而不是总是false
+                    IsExecuted = t.IsExecuted,
                     ExecutionMessage = ""
                 }).ToList()
             };
@@ -841,57 +830,13 @@ namespace BinanceFuturesTrader.Services
         {
             try
             {
-                // 🔧 【关键修复】首先检查BinanceService的IP限制状态
-                if (BinanceService.IsIpRestricted)
-                {
-                    _logger.LogDebug($"🔍 AutoMonitorExecutionEngine模拟环境检查: IP受限模式，判断结果=true");
-                    return true;
-                }
+                // 🔧 【重构】直接使用全局模式管理器
+                var globalMode = GlobalModeManager.Instance;
+                bool isGlobalSimulation = globalMode.IsSimulationMode;
                 
-                // 🔧 通过检查TradingService的实现来判断是否为模拟环境
-                // 简单的判断逻辑：如果没有有效的API配置，则认为是模拟环境
-                var binanceServiceType = _tradingService.GetType();
-                var binanceServiceProperty = binanceServiceType.GetProperty("BinanceService");
+                _logger.LogDebug($"🎯 AutoMonitorExecutionEngine模拟环境检查: 全局模式={globalMode.ModeDisplayText}");
                 
-                if (binanceServiceProperty != null)
-                {
-                    var binanceService = binanceServiceProperty.GetValue(_tradingService);
-                    if (binanceService != null)
-                    {
-                        // 检查是否有有效的API配置
-                        var accountProperty = binanceService.GetType().GetProperty("CurrentAccount");
-                        if (accountProperty != null)
-                        {
-                            var currentAccount = accountProperty.GetValue(binanceService);
-                            if (currentAccount != null)
-                            {
-                                // 检查API Key是否为空或无效
-                                var apiKeyProperty = currentAccount.GetType().GetProperty("ApiKey");
-                                var secretKeyProperty = currentAccount.GetType().GetProperty("SecretKey");
-                                
-                                if (apiKeyProperty != null && secretKeyProperty != null)
-                                {
-                                    var apiKey = apiKeyProperty.GetValue(currentAccount) as string;
-                                    var secretKey = secretKeyProperty.GetValue(currentAccount) as string;
-                                    
-                                    // 如果API Key或Secret Key为空，或者包含"test"/"demo"等关键词，认为是模拟环境
-                                    bool isSimulation = string.IsNullOrEmpty(apiKey) || 
-                                                       string.IsNullOrEmpty(secretKey) ||
-                                                       apiKey.ToLower().Contains("test") ||
-                                                       apiKey.ToLower().Contains("demo") ||
-                                                       apiKey.Length < 10; // API Key通常比较长
-                                    
-                                    _logger.LogDebug($"🔍 AutoMonitorExecutionEngine模拟环境检查: API Key长度={apiKey?.Length ?? 0}, Secret Key长度={secretKey?.Length ?? 0}, IP受限={BinanceService.IsIpRestricted}, 判断结果={isSimulation}");
-                                    return isSimulation;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // 默认返回模拟模式
-                _logger.LogDebug($"🔍 AutoMonitorExecutionEngine模拟环境检查: 无法获取API配置，默认返回true");
-                return true;
+                return isGlobalSimulation;
             }
             catch (Exception ex)
             {

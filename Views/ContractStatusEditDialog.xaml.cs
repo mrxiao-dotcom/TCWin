@@ -12,6 +12,7 @@ using BinanceFuturesTrader.Services;
 using Microsoft.Extensions.Logging;
 using System.Reflection;
 using System.Collections.Generic; // Added for Dictionary
+using System.Threading.Tasks; // Added for async/await
 
 namespace BinanceFuturesTrader.Views
 {
@@ -24,6 +25,10 @@ namespace BinanceFuturesTrader.Views
         private readonly ILogger _logger;
         private readonly object _autoMonitorService;
         private bool _hasChanges = false;
+
+        // 🔧 新增：增强版数据管理器支持
+        private AutoMonitorDataManager? _dataManager = null;
+        private bool _useEnhancedManager = false;
 
         // UI控件
         private TextBlock _titleText;
@@ -57,6 +62,29 @@ namespace BinanceFuturesTrader.Views
             InitializeUI();
             InitializeDialog();
         }
+
+        /// <summary>
+        /// 启用增强版数据管理器支持
+        /// </summary>
+        public void EnableEnhancedDataManager(AutoMonitorDataManager dataManager)
+        {
+            try
+            {
+                _dataManager = dataManager ?? throw new ArgumentNullException(nameof(dataManager));
+                _useEnhancedManager = true;
+                _logger.LogInformation("✅ ContractStatusEditDialog已启用增强版数据管理器");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 启用增强版数据管理器失败");
+                _useEnhancedManager = false;
+            }
+        }
+
+        /// <summary>
+        /// 检查是否使用增强版数据管理器
+        /// </summary>
+        private bool IsUsingEnhancedManager => _useEnhancedManager && _dataManager != null;
 
         private void InitializeUI()
         {
@@ -527,6 +555,10 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                _logger.LogCritical($"🔥【保存诊断】ContractStatusEditDialog保存按钮被点击");
+                _logger.LogCritical($"🔥【保存诊断】合约: {_contract.Symbol}_{_contract.PositionSide}");
+                _logger.LogCritical($"🔥【保存诊断】是否使用增强版管理器: {IsUsingEnhancedManager}");
+                
                 if (!IsEditAllowed()) return;
 
                 if (!_hasChanges)
@@ -615,8 +647,204 @@ namespace BinanceFuturesTrader.Views
             // 🔧 关键修复：强制触发所有状态显示属性的更新
             TriggerAllStatusPropertyChanges();
             
-            // 🔧 新增：将状态变更同步到后台服务（如果服务可用）
-            SyncChangesToBackendService();
+            // 🔧 新增：优先使用增强版数据管理器保存状态
+            if (IsUsingEnhancedManager)
+            {
+                _logger.LogInformation("🎯 使用增强版数据管理器保存状态变更");
+                SaveToEnhancedDataManager();
+            }
+            else
+            {
+                _logger.LogInformation("🔧 回退到旧版同步逻辑");
+                // 🔧 新增：将状态变更同步到后台服务（如果服务可用）
+                SyncChangesToBackendService();
+            }
+        }
+
+        /// <summary>
+        /// 使用增强版数据管理器保存状态变更
+        /// </summary>
+        private async void SaveToEnhancedDataManager()
+        {
+            try
+            {
+                var contractKey = $"{_contract.Symbol}_{_contract.PositionSide}";
+                _logger.LogCritical($"🔧【增强版保存】开始保存状态变更: {contractKey}");
+
+                // 获取现有的合约状态
+                var contractState = _dataManager!.GetContractState(contractKey);
+                if (contractState == null)
+                {
+                    _logger.LogWarning($"⚠️ 合约状态不存在，无法保存: {contractKey}");
+                    MessageBox.Show($"无法找到合约状态: {contractKey}\n请确保合约在监控列表中", "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                // 🔧 逐个应用状态变更，实现精确一对一修改
+                foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
+                {
+                    var condition = item.OriginalCondition;
+                    var newState = ConvertStatusToExecutionState(condition.Status);
+                    
+                    _logger.LogCritical($"🔍【增强版保存】处理 {item.TypeText} {item.TierText}: 状态={condition.Status}");
+                    _logger.LogCritical($"🔍【增强版保存】转换后的状态: {newState}");
+                    _logger.LogCritical($"🔍【增强版保存】触发价格: {condition.TriggerPrice}");
+
+                    if (condition.Type == TriggerConditionType.BreakEven)
+                    {
+                        // 保本状态更新
+                        var originalState = contractState.ExecutionStates.Breakeven.State;
+                        if (originalState != newState)
+                        {
+                            _logger.LogCritical($"🔧【增强版保存】保本状态变化: {originalState} -> {newState}");
+                            contractState.ExecutionStates.Breakeven.State = newState;
+                            contractState.ExecutionStates.Breakeven.TriggerAmount = condition.TriggerPrice;
+                            contractState.ExecutionStates.Breakeven.ExecutedAt = newState == ExecutionStateTypes.Executed ? DateTime.UtcNow : null;
+                        }
+                    }
+                    else if (condition.Type == TriggerConditionType.AddPosition)
+                    {
+                        // 推仓状态更新
+                        var tier = contractState.ExecutionStates.AddPositionTiers.FirstOrDefault(t => t.TierIndex == condition.TierIndex);
+                        if (tier != null)
+                        {
+                            var originalState = tier.State;
+                            if (originalState != newState)
+                            {
+                                _logger.LogCritical($"🔧【增强版保存】推仓阶梯{condition.TierIndex}状态变化: {originalState} -> {newState}");
+                                tier.State = newState;
+                                tier.TriggerAmount = condition.TriggerPrice;
+                                tier.ExecutedAt = newState == ExecutionStateTypes.Executed ? DateTime.UtcNow : null;
+                            }
+                        }
+                    }
+                    else if (condition.Type == TriggerConditionType.ProfitProtection)
+                    {
+                        // 保盈状态更新
+                        var tier = contractState.ExecutionStates.ProfitProtectionTiers.FirstOrDefault(t => t.TierIndex == condition.TierIndex);
+                        if (tier != null)
+                        {
+                            var originalState = tier.State;
+                            if (originalState != newState)
+                            {
+                                _logger.LogCritical($"🔧【增强版保存】保盈阶梯{condition.TierIndex}状态变化: {originalState} -> {newState}");
+                                tier.State = newState;
+                                tier.TriggerAmount = condition.TriggerPrice;
+                                tier.ProtectionAmount = condition.KeepValue;
+                                tier.ExecutedAt = newState == ExecutionStateTypes.Executed ? DateTime.UtcNow : null;
+                            }
+                        }
+                    }
+                }
+
+                // 更新合约状态的元信息
+                contractState.Meta.UpdatedAt = DateTime.UtcNow;
+
+                // 保存到数据管理器
+                await _dataManager.SaveContractStateAsync(contractState);
+
+                // 🔧 验证保存结果
+                await VerifyContractStateSaved(contractKey);
+
+                _logger.LogCritical($"✅【增强版保存】状态变更已成功保存到缓存和文件: {contractKey}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌【增强版保存】保存状态变更失败");
+                MessageBox.Show($"保存状态失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 将触发状态转换为执行状态
+        /// </summary>
+        private string ConvertStatusToExecutionState(TriggerExecutionStatus status)
+        {
+            return status switch
+            {
+                TriggerExecutionStatus.NotTriggered => ExecutionStateTypes.NotTriggered,
+                TriggerExecutionStatus.Executing => ExecutionStateTypes.Executing,
+                TriggerExecutionStatus.Executed => ExecutionStateTypes.Executed,
+                _ => ExecutionStateTypes.NotTriggered
+            };
+        }
+
+        /// <summary>
+        /// 验证合约状态是否正确保存
+        /// </summary>
+        private async Task VerifyContractStateSaved(string contractKey)
+        {
+            try
+            {
+                _logger.LogCritical($"🔍【保存验证】开始验证合约状态: {contractKey}");
+                
+                // 重新获取已保存的状态
+                var savedState = _dataManager!.GetContractState(contractKey);
+                if (savedState == null)
+                {
+                    _logger.LogError($"❌【保存验证】无法获取已保存的合约状态: {contractKey}");
+                    return;
+                }
+                
+                // 验证每个修改的状态
+                foreach (var item in AllStatusItems.Where(i => i.CanToggle && i.OriginalCondition != null))
+                {
+                    var condition = item.OriginalCondition;
+                    var expectedState = ConvertStatusToExecutionState(condition.Status);
+                    
+                    if (condition.Type == TriggerConditionType.BreakEven)
+                    {
+                        var actualState = savedState.ExecutionStates.Breakeven.State;
+                        if (actualState != expectedState)
+                        {
+                            _logger.LogError($"❌【保存验证】保本状态验证失败: 期望={expectedState}, 实际={actualState}");
+                        }
+                        else
+                        {
+                            _logger.LogCritical($"✅【保存验证】保本状态验证通过: {expectedState}");
+                        }
+                    }
+                    else if (condition.Type == TriggerConditionType.AddPosition)
+                    {
+                        var tier = savedState.ExecutionStates.AddPositionTiers.FirstOrDefault(t => t.TierIndex == condition.TierIndex);
+                        if (tier != null)
+                        {
+                            if (tier.State != expectedState)
+                            {
+                                _logger.LogError($"❌【保存验证】推仓阶梯{condition.TierIndex}状态验证失败: 期望={expectedState}, 实际={tier.State}");
+                            }
+                            else
+                            {
+                                _logger.LogCritical($"✅【保存验证】推仓阶梯{condition.TierIndex}状态验证通过: {expectedState}");
+                            }
+                        }
+                    }
+                    else if (condition.Type == TriggerConditionType.ProfitProtection)
+                    {
+                        var tier = savedState.ExecutionStates.ProfitProtectionTiers.FirstOrDefault(t => t.TierIndex == condition.TierIndex);
+                        if (tier != null)
+                        {
+                            if (tier.State != expectedState)
+                            {
+                                _logger.LogError($"❌【保存验证】保盈阶梯{condition.TierIndex}状态验证失败: 期望={expectedState}, 实际={tier.State}");
+                            }
+                            else
+                            {
+                                _logger.LogCritical($"✅【保存验证】保盈阶梯{condition.TierIndex}状态验证通过: {expectedState}");
+                            }
+                        }
+                    }
+                }
+                
+                _logger.LogCritical($"🎉【保存验证】合约状态验证完成: {contractKey}");
+                
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌【保存验证】验证过程发生异常: {contractKey}");
+            }
         }
 
         /// <summary>
@@ -850,19 +1078,20 @@ namespace BinanceFuturesTrader.Views
                 {
                     var condition = item.OriginalCondition;
                     
-                    if (condition.Status == TriggerExecutionStatus.Executed)
+                    var operationType = condition.Type switch
                     {
-                        var operationType = condition.Type switch
-                        {
-                            TriggerConditionType.BreakEven => "BreakEven",
-                            TriggerConditionType.AddPosition => "AddPosition", 
-                            TriggerConditionType.ProfitProtection => "ProfitProtection",
-                            _ => "BreakEven"
-                        };
-                        
-                        var tierIndex = condition.TierIndex > 0 ? (int?)condition.TierIndex : null;
-                        
-                        try
+                        TriggerConditionType.BreakEven => "BreakEven",
+                        TriggerConditionType.AddPosition => "AddPosition", 
+                        TriggerConditionType.ProfitProtection => "ProfitProtection",
+                        _ => "BreakEven"
+                    };
+                    
+                    var tierIndex = condition.TierIndex > 0 ? (int?)condition.TierIndex : null;
+                    
+                    try
+                    {
+                        // 🔧 【关键修复】保存所有状态变更，不仅仅是已执行状态
+                        if (condition.Status == TriggerExecutionStatus.Executed)
                         {
                             stateService.UpdateExecutionStatus(
                                 contractKey,
@@ -873,12 +1102,40 @@ namespace BinanceFuturesTrader.Views
                                 "手动设置为executed"
                             );
                             
-                            _logger.LogInformation($"✅ 直接文件保存成功: {contractKey} {item.TypeText}{item.TierText}");
+                            _logger.LogInformation($"✅ 状态更新为已执行: {contractKey} {item.TypeText}{item.TierText}");
                         }
-                        catch (Exception saveEx)
+                        else if (condition.Status == TriggerExecutionStatus.NotTriggered)
                         {
-                            _logger.LogError(saveEx, $"❌ 直接文件保存失败: {contractKey} {item.TypeText}{item.TierText}");
+                            // 🔧 【关键修复】重置状态到未触发（使用isSuccess=false）
+                            stateService.UpdateExecutionStatus(
+                                contractKey,
+                                operationType,
+                                tierIndex,
+                                false, // isSuccess=false 表示重置为未触发状态
+                                0m, // 重置时浮盈设为0
+                                "手动重置为未触发"
+                            );
+                            
+                            _logger.LogInformation($"✅ 状态重置为未触发: {contractKey} {item.TypeText}{item.TierText}");
                         }
+                        // 🔧 如果有执行中状态，也可以处理
+                        else if (condition.Status == TriggerExecutionStatus.Executing)
+                        {
+                            stateService.UpdateExecutionStatus(
+                                contractKey,
+                                operationType,
+                                tierIndex,
+                                false, // 执行中，还未成功
+                                condition.TriggerPrice,
+                                "手动设置为执行中"
+                            );
+                            
+                            _logger.LogInformation($"✅ 状态更新为执行中: {contractKey} {item.TypeText}{item.TierText}");
+                        }
+                    }
+                    catch (Exception saveEx)
+                    {
+                        _logger.LogError(saveEx, $"❌ 状态保存失败: {contractKey} {item.TypeText}{item.TierText} - 状态: {condition.Status}");
                     }
                 }
             }

@@ -8,9 +8,14 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="200"/>
+            <RowDefinition Height="2*"/>
+            <RowDefinition Height="*" MinHeight="150"/>
         </Grid.RowDefinitions>
+        
+        <!-- 添加可调整大小的分隔条 -->
+        <GridSplitter Grid.Row="1" Grid.Column="0" Height="5" HorizontalAlignment="Stretch" 
+                      VerticalAlignment="Bottom" Background="#CCCCCC" 
+                      ResizeBehavior="PreviousAndNext" Cursor="SizeNS"/>
 
         <!-- 第一区域：综合信息与控制按钮区 -->
         <Border Grid.Row="0" Background="#F5F5F5" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="15">

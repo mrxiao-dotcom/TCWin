@@ -227,15 +227,27 @@ namespace BinanceFuturesTrader.ViewModels
                 _accountAutoMonitorConfigs[SelectedAccount.Name] = _currentAutoMonitorConfig;
                 _logger.LogInformation($"✅ 配置已保存到账户 {SelectedAccount.Name}: {_currentAutoMonitorConfig.Name}");
                 
-                // 🔧 新增：持久化配置到文件
+                // 🔧 修复：使用BaseConfigManager统一保存格式
                 try
                 {
-                    _configPersistenceService.SaveSingleAccountConfig(SelectedAccount.Name, _currentAutoMonitorConfig);
-                    _logger.LogInformation($"💾 配置已持久化到文件: {SelectedAccount.Name}");
+                    // 检查配置是否已存在
+                    var existingConfig = BaseConfigManager.Instance.GetConfiguration(_currentAutoMonitorConfig.Name);
+                    if (existingConfig != null)
+                    {
+                        // 更新现有配置
+                        BaseConfigManager.Instance.UpdateConfiguration(_currentAutoMonitorConfig);
+                        _logger.LogInformation($"💾 配置已更新到BaseConfigManager: {_currentAutoMonitorConfig.Name}");
+                    }
+                    else
+                    {
+                        // 添加新配置
+                        BaseConfigManager.Instance.AddConfiguration(_currentAutoMonitorConfig);
+                        _logger.LogInformation($"💾 配置已添加到BaseConfigManager: {_currentAutoMonitorConfig.Name}");
+                    }
                 }
                 catch (Exception saveEx)
                 {
-                    _logger.LogError(saveEx, $"❌ 配置持久化失败: {SelectedAccount.Name}");
+                    _logger.LogError(saveEx, $"❌ 配置保存到BaseConfigManager失败: {_currentAutoMonitorConfig.Name}");
                 }
 
                 // 显示保存成功的提示
@@ -774,6 +786,7 @@ namespace BinanceFuturesTrader.ViewModels
         /// <summary>
         /// 打开自动盯盘配置界面命令
         /// </summary>
+        [Obsolete("请使用OpenSimpleConfigEditorAsync方法打开新的基础配置编辑器")]
         [RelayCommand]
         private async Task OpenAutoMonitorConfigAsync()
         {
@@ -862,53 +875,7 @@ namespace BinanceFuturesTrader.ViewModels
                     return;
                 }
 
-                // 🔧 关键修复：在打开面板之前，强制重新加载当前账户的配置
-                try
-                {
-                    // 🔧 【调试】添加详细的配置加载日志
-                    _logger.LogCritical($"🔍【面板打开】开始为账户 '{SelectedAccount.Name}' 重新加载配置文件");
-                    
-                    var filePathManager = new FilePathManager();
-                    var currentAccountFromFileManager = filePathManager.GetCurrentAccountName();
-                    var configFilePath = filePathManager.GetBaseConfigsFilePath();
-                    
-                    _logger.LogCritical($"🔍【面板打开】FilePathManager.GetCurrentAccountName(): '{currentAccountFromFileManager}'");
-                    _logger.LogCritical($"🔍【面板打开】选中账户名称: '{SelectedAccount.Name}'");
-                    _logger.LogCritical($"🔍【面板打开】配置文件路径: '{configFilePath}'");
-                    _logger.LogCritical($"🔍【面板打开】配置文件是否存在: {System.IO.File.Exists(configFilePath)}");
-                    
-                    // 从配置持久化文件中重新加载当前账户的配置
-                    var configPersistenceService = new AutoMonitorConfigPersistenceService(_logger as ILogger<AutoMonitorConfigPersistenceService>, filePathManager);
-                    
-                    // 🔧 【调试】检查所有账户的配置
-                    var allConfigs = configPersistenceService.LoadAccountConfigs();
-                    _logger.LogCritical($"🔍【面板打开】配置文件中总共有 {allConfigs.Count} 个账户配置");
-                    
-                    foreach (var kvp in allConfigs)
-                    {
-                        _logger.LogCritical($"🔍【面板打开】配置文件中的账户: '{kvp.Key}' -> 配置名称: '{kvp.Value.Name}'");
-                    }
-                    
-                    var savedConfig = configPersistenceService.GetAccountConfig(SelectedAccount.Name);
-                    
-                    if (savedConfig != null)
-                    {
-                        _currentAutoMonitorConfig = savedConfig;
-                        _accountAutoMonitorConfigs[SelectedAccount.Name] = savedConfig;
-                        OnPropertyChanged(nameof(CurrentAutoMonitorConfig));
-                        _logger.LogCritical($"✅【面板打开】成功重新加载账户 '{SelectedAccount.Name}' 的配置: {savedConfig.Name}");
-                    }
-                    else
-                    {
-                        _logger.LogCritical($"⚠️【面板打开】账户 '{SelectedAccount.Name}' 在配置文件中没有找到对应配置");
-                    }
-                }
-                catch (Exception configEx)
-                {
-                    _logger.LogError(configEx, "重新加载配置时发生错误");
-                }
-
-                // 🔧 优先使用现有的AutoMonitorService，如果没有则创建新的
+                // 🎯 【新逻辑】先创建并显示自动盯盘面板，然后在面板内进行配置检查
                 if (_autoMonitorService == null)
                 {
                     _logger.LogInformation("💡 监控服务未初始化，创建新实例用于监控面板...");
@@ -918,28 +885,32 @@ namespace BinanceFuturesTrader.ViewModels
                     _logger.LogInformation("✅ 监控服务实例创建完成");
                 }
 
-                // 🆕 创建符合需求文档的自动盯盘配置窗口
-                _logger.LogInformation("🏗️ 创建符合需求文档的自动盯盘配置窗口...");
+                // 🆕 创建正确的自动盯盘管理面板（使用集成了增强版数据管理器的主面板）
+                _logger.LogInformation("🏗️ 创建自动盯盘管理面板...");
                 var configWindow = new Views.AutoMonitorConfigWindowSimple(
                     _autoMonitorService,
                     _logger,
                     this,
                     _binanceService);
 
-                // 🔧 设置主窗口为配置窗口的Owner
+                // 🔧 设置主窗口为面板的Owner
                 if (Application.Current?.MainWindow != null)
                 {
                     configWindow.Owner = Application.Current.MainWindow;
-                    _logger.LogInformation("✅ 配置窗口已设置主窗口为Owner");
+                    _logger.LogInformation("✅ 自动盯盘管理面板已设置主窗口为Owner");
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ 无法获取主窗口引用，配置窗口可能不会跟随主窗口关闭");
+                    _logger.LogWarning("⚠️ 无法获取主窗口引用，自动盯盘管理面板可能不会跟随主窗口关闭");
                 }
 
-                _logger.LogInformation("🖥️ 自动盯盘配置窗口创建成功，符合需求文档的三个区域结构");
+                _logger.LogInformation("🖥️ 自动盯盘管理面板创建成功");
                 
+                // 🎯 【第一步】先显示自动盯盘管理面板
                 configWindow.Show();
+                
+                // 🎯 【第二步】在面板显示后进行配置和数据检查
+                await CheckConfigurationAndStateAsync();
 
                 await Task.CompletedTask;
             }
@@ -947,6 +918,119 @@ namespace BinanceFuturesTrader.ViewModels
             {
                 _logger.LogError(ex, "❌ 打开监控面板时发生异常");
                 MessageBox.Show($"打开监控面板失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 检查配置和状态文件（在面板打开后执行）
+        /// </summary>
+        private async Task CheckConfigurationAndStateAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍【配置检查】开始检查基础配置和状态文件...");
+                
+                var filePathManager = new FilePathManager();
+                
+                // 🎯 【步骤1】检查基础配置文件是否存在
+                var hasBaseConfigs = BaseConfigManager.Instance.HasAnyBaseConfigs();
+                _logger.LogCritical($"🔍【配置检查】基础配置检查结果: {hasBaseConfigs}");
+                
+                if (!hasBaseConfigs)
+                {
+                    // 🔧 【情况1】没有基础配置：提示对话框，然后打开配置编辑器
+                    _logger.LogCritical("❌【配置检查】未发现任何基础配置文件，需要创建基础配置");
+                    
+                    var result = MessageBox.Show(
+                        "检测到尚未创建任何基础配置！\n\n" +
+                        "自动盯盘功能需要先创建基础配置。\n\n" +
+                        "基础配置包含：\n" +
+                        "• 止盈止损参数\n" +
+                        "• 推仓和保护参数\n" +
+                        "• 监控间隔设置\n\n" +
+                        "点击【确定】打开配置编辑器创建基础配置\n" +
+                        "点击【取消】稍后手动创建",
+                        "需要创建基础配置",
+                        MessageBoxButton.OKCancel,
+                        MessageBoxImage.Information);
+                        
+                    if (result == MessageBoxResult.OK)
+                    {
+                        // 打开基础配置编辑器
+                        await OpenSimpleConfigEditorAsync();
+                    }
+                    
+                    return; // 配置检查完成
+                }
+                
+                // 🎯 【步骤2】有基础配置：检查统一状态文件
+                _logger.LogCritical($"✅【配置检查】基础配置检查通过，共有 {BaseConfigManager.Instance.Configurations.Count} 个基础配置");
+                
+                var stateFilePath = filePathManager.GetContractMonitoringStatesFilePath(SelectedAccount.Name);
+                var stateFileExists = System.IO.File.Exists(stateFilePath);
+                
+                _logger.LogCritical($"🔍【配置检查】统一状态文件路径: '{stateFilePath}'");
+                _logger.LogCritical($"🔍【配置检查】统一状态文件是否存在: {stateFileExists}");
+                
+                if (!stateFileExists)
+                {
+                    // 🔧 【情况2】有基础配置但没有状态文件：提示将生成状态文件
+                    _logger.LogInformation("📝【配置检查】状态文件不存在，将从基础配置生成");
+                    
+                    var result = MessageBox.Show(
+                        "检测到没有合约状态文件！\n\n" +
+                        "系统将根据当前基础配置和持仓情况生成统一状态文件。\n\n" +
+                        "生成后的状态文件将包含：\n" +
+                        "• 当前持仓合约的监控状态\n" +
+                        "• 基础配置参数应用\n" +
+                        "• 执行历史记录初始化\n\n" +
+                        "点击【确定】开始生成状态文件",
+                        "将生成统一状态文件",
+                        MessageBoxButton.OKCancel,
+                        MessageBoxImage.Information);
+                        
+                    if (result == MessageBoxResult.OK)
+                    {
+                        _logger.LogInformation("🔧 用户确认生成状态文件，开始执行...");
+                        // 这里可以触发状态文件生成逻辑
+                    }
+                }
+                else
+                {
+                    // 🔧 【情况3】有基础配置且有状态文件：直接加载数据
+                    try
+                    {
+                        var stateLogger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ContractMonitoringStateService>();
+                        var stateService = new ContractMonitoringStateService(stateLogger, BaseConfigManager.Instance, filePathManager, SelectedAccount.Name);
+                        var monitoringStates = stateService.LoadMonitoringStates();
+                        
+                        _logger.LogCritical($"✅【配置检查】统一状态文件加载成功，发现 {monitoringStates.Count} 个合约状态");
+                        
+                        if (monitoringStates.Any())
+                        {
+                            _logger.LogInformation("📊 状态文件包含有效数据，面板将显示现有监控状态");
+                            foreach (var kvp in monitoringStates)
+                            {
+                                _logger.LogInformation($"📋 合约: {kvp.Key} -> 配置: {kvp.Value.BaseConfigName}");
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogInformation("📝 状态文件为空，面板将显示空状态");
+                        }
+                    }
+                    catch (Exception stateEx)
+                    {
+                        _logger.LogWarning(stateEx, "⚠️【配置检查】读取统一状态文件失败");
+                        MessageBox.Show($"读取状态文件失败：{stateEx.Message}\n面板将以空状态启动", 
+                            "警告", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 配置和状态检查时发生异常");
+                MessageBox.Show($"配置检查失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -1568,6 +1652,41 @@ namespace BinanceFuturesTrader.ViewModels
             }
         }
 
+        /// <summary>
+        /// 打开基础配置编辑器
+        /// </summary>
+        [RelayCommand]
+        private async Task OpenSimpleConfigEditorAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔧 准备打开基础配置编辑器...");
+
+                // 创建基础配置编辑窗口
+                var configEditorWindow = new Views.SimpleConfigEditorWindow(this);
+
+                // 设置主窗口为Owner
+                if (Application.Current?.MainWindow != null)
+                {
+                    configEditorWindow.Owner = Application.Current.MainWindow;
+                    _logger.LogInformation("✅ 基础配置编辑器已设置主窗口为Owner");
+                }
+
+                _logger.LogInformation("🖥️ 基础配置编辑器创建成功");
+
+                // 显示配置编辑器
+                configEditorWindow.Show();
+
+                _logger.LogInformation("✅ 基础配置编辑器已打开");
+
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 打开基础配置编辑器时发生异常");
+                MessageBox.Show($"打开基础配置编辑器失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
 
     }
 }

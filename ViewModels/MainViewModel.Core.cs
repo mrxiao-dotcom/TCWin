@@ -173,6 +173,13 @@ namespace BinanceFuturesTrader.ViewModels
 
         [ObservableProperty]
         private string _autoCloseOrderInfo = "";
+        
+        // 🔧 新增：全局模式管理相关属性
+        [ObservableProperty]
+        private bool _isGlobalSimulationMode = false;
+        
+        [ObservableProperty]
+        private string _globalModeDescription = "当前为实盘模式，所有交易操作将使用真实资金";
         #endregion
 
         #region 监控界面刷新事件
@@ -305,9 +312,12 @@ namespace BinanceFuturesTrader.ViewModels
             _accountTimer.Interval = TimeSpan.FromSeconds(5); // 调整到5秒
             _accountTimer.Tick += AccountTimer_Tick;
 
+                        // 🔧 【关键修复】初始化全局模式管理
+            InitializeGlobalMode();
+            
             // 加载初始数据
             InitializeAsync();
-        }
+}
 
         /// <summary>
         /// 异步初始化

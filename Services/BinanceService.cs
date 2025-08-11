@@ -201,12 +201,22 @@ namespace BinanceFuturesTrader.Services
                         LogService.LogWarning($"💡 {solution}");
                     }
                     
-                    // 其他API错误
-                    _consecutiveErrors++;
-                    if (_consecutiveErrors >= 3)
+                    // 🔧 【时间戳错误专项处理】
+                    if (errorCode == -1021) // Timestamp错误
                     {
-                        _isInErrorRecoveryMode = true;
-                        LogService.LogWarning($"⚠️ 连续错误 {_consecutiveErrors} 次，进入错误恢复模式");
+                        LogService.LogWarning($"🕐 检测到时间戳错误，建议重新同步服务器时间");
+                        LogService.LogWarning($"💡 时间戳错误解决方案：1) 检查系统时间 2) 重启应用程序 3) 检查网络连接");
+                        // 注意：静态方法无法直接重置实例字段，需要在实例方法中处理
+                    }
+                    else
+                    {
+                        // 其他API错误
+                        _consecutiveErrors++;
+                        if (_consecutiveErrors >= 5) // 提高阈值，减少误判
+                        {
+                            _isInErrorRecoveryMode = true;
+                            LogService.LogWarning($"⚠️ 连续错误 {_consecutiveErrors} 次，进入错误恢复模式");
+                        }
                     }
                 }
             }

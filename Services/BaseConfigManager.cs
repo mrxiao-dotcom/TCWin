@@ -76,7 +76,8 @@ namespace BinanceFuturesTrader.Services
             
             _logger.LogDebug($"📁 基础配置文件路径: {_configFilePath}");
             
-            _ = LoadConfigurationsAsync();
+            // 🔧 【关键修复】使用同步加载，确保构造完成时配置已完全加载
+            LoadConfigurationsSync();
         }
         
         /// <summary>
@@ -91,19 +92,87 @@ namespace BinanceFuturesTrader.Services
         }
         
         /// <summary>
-        /// 🔧 强制重新加载配置（供外部调用）
+        /// 🔧 强制重新加载配置（供外部调用） - 使用同步加载避免死锁
         /// </summary>
         public void RefreshConfigurations()
         {
             try
             {
-                _logger.LogInformation("🔄 强制重新加载配置...");
-                LoadConfigurationsAsync().Wait(); // 同步等待完成
-                _logger.LogInformation($"✅ 已重新加载 {Configurations.Count} 个配置");
+                LoadConfigurationsSync();
+                _logger.LogInformation($"🔄 配置重新加载完成，当前配置数量: {Configurations.Count}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ 强制重新加载配置失败");
+                _logger.LogError(ex, "❌ 重新加载配置失败");
+            }
+        }
+        
+        /// <summary>
+        /// 检查是否有任何基础配置
+        /// </summary>
+        public bool HasAnyBaseConfigs()
+        {
+            try
+            {
+                // 首先检查内存中的配置
+                if (Configurations.Count > 0)
+                {
+                    return true;
+                }
+                
+                // 如果内存中没有，检查文件是否存在并且不为空
+                if (File.Exists(_configFilePath))
+                {
+                    var fileInfo = new FileInfo(_configFilePath);
+                    if (fileInfo.Length > 0)
+                    {
+                        // 尝试读取文件内容来确认是否有有效配置
+                        try
+                        {
+                            var json = File.ReadAllText(_configFilePath);
+                            if (!string.IsNullOrWhiteSpace(json))
+                            {
+                                // 尝试解析JSON来确认有效性
+                                var configs = JsonSerializer.Deserialize<List<AutoMonitorConfig>>(json, new JsonSerializerOptions
+                                {
+                                    PropertyNameCaseInsensitive = true
+                                });
+                                
+                                return configs != null && configs.Count > 0;
+                            }
+                        }
+                        catch (JsonException)
+                        {
+                            // 如果新格式解析失败，尝试旧格式
+                            try
+                            {
+                                var json = File.ReadAllText(_configFilePath);
+                                using var document = JsonDocument.Parse(json);
+                                var root = document.RootElement;
+                                
+                                if (root.TryGetProperty("accountConfigs", out var accountConfigsElement))
+                                {
+                                    return accountConfigsElement.EnumerateObject().Any();
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "检查配置文件格式时出错");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "读取配置文件时出错");
+                        }
+                    }
+                }
+                
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "检查基础配置时发生错误");
+                return false;
             }
         }
         
@@ -412,36 +481,58 @@ namespace BinanceFuturesTrader.Services
         #region 持久化
         
         /// <summary>
-        /// 加载配置列表
+        /// 🔧 【重要修复】同步加载配置列表 - 确保构造完成时配置已加载
         /// </summary>
-        private Task LoadConfigurationsAsync()
+        private void LoadConfigurationsSync()
         {
             try
             {
+                _logger.LogInformation($"🔍 开始加载配置文件: {_configFilePath}");
+                
                 if (!File.Exists(_configFilePath))
                 {
+                    _logger.LogWarning($"📁 配置文件不存在: {_configFilePath}");
                     // 不创建默认配置，等待用户手动创建
                     _logger.LogInformation("配置文件不存在，等待用户创建配置");
-                    return Task.CompletedTask;
+                    return;
                 }
+                
+                // 🔧【调试】显示文件信息
+                var fileInfo = new FileInfo(_configFilePath);
+                _logger.LogInformation($"📄 配置文件存在: 大小={fileInfo.Length} 字节, 修改时间={fileInfo.LastWriteTime}");
                 
                 lock (_fileLock)
                 {
                     var json = File.ReadAllText(_configFilePath);
+                    _logger.LogInformation($"📖 读取文件内容长度: {json.Length} 字符");
+                    
+                    // 🔧【调试】显示文件内容的前200个字符（用于诊断）
+                    var preview = json.Length > 200 ? json.Substring(0, 200) + "..." : json;
+                    _logger.LogInformation($"📝 文件内容预览: {preview}");
+                    
+                    if (string.IsNullOrWhiteSpace(json))
+                    {
+                        _logger.LogWarning("⚠️ 配置文件为空");
+                        return;
+                    }
+                    
                     List<AutoMonitorConfig>? configs = null;
                     
                     // 🎯 首先尝试新格式（数组格式）
                     try
                     {
+                        _logger.LogInformation("🔄 尝试使用新格式（数组）解析配置...");
                         configs = JsonSerializer.Deserialize<List<AutoMonitorConfig>>(json, new JsonSerializerOptions
                         {
                             PropertyNameCaseInsensitive = true,
                             WriteIndented = true
                         });
-                        _logger.LogInformation("✅ 使用新格式加载配置");
+                        _logger.LogInformation($"✅ 使用新格式加载配置成功，解析到 {configs?.Count ?? 0} 个配置");
                     }
-                    catch (JsonException)
+                    catch (JsonException newFormatEx)
                     {
+                        _logger.LogWarning($"❌ 新格式解析失败: {newFormatEx.Message}");
+                        
                         // 🔄 如果新格式失败，尝试旧格式（对象格式）
                         _logger.LogInformation("🔄 新格式失败，尝试旧格式迁移...");
                         try
@@ -449,11 +540,15 @@ namespace BinanceFuturesTrader.Services
                             using var document = JsonDocument.Parse(json);
                             var root = document.RootElement;
                             
+                            _logger.LogInformation($"🔍 JSON根元素类型: {root.ValueKind}");
+                            
                             configs = new List<AutoMonitorConfig>();
                             
                             // 检查是否是旧格式（包含accountConfigs）
                             if (root.TryGetProperty("accountConfigs", out var accountConfigsElement))
                             {
+                                _logger.LogInformation($"🔍 发现accountConfigs属性，包含 {accountConfigsElement.GetArrayLength()} 个账户配置");
+                                
                                 foreach (var accountProperty in accountConfigsElement.EnumerateObject())
                                 {
                                     var configElement = accountProperty.Value;
@@ -465,6 +560,7 @@ namespace BinanceFuturesTrader.Services
                                     if (config != null)
                                     {
                                         configs.Add(config);
+                                        _logger.LogInformation($"🔄 迁移配置: {config.Name}");
                                     }
                                 }
                                 
@@ -472,6 +568,20 @@ namespace BinanceFuturesTrader.Services
                                 
                                 // 🔧 迁移完成后，同步保存为新格式
                                 SaveConfigurationsSync();
+                            }
+                            else
+                            {
+                                _logger.LogWarning("⚠️ 未找到accountConfigs属性，可能是未知格式");
+                                
+                                // 🔧【调试】显示JSON结构
+                                if (root.ValueKind == JsonValueKind.Object)
+                                {
+                                    _logger.LogInformation("🔍 JSON对象属性:");
+                                    foreach (var property in root.EnumerateObject())
+                                    {
+                                        _logger.LogInformation($"   - {property.Name}: {property.Value.ValueKind}");
+                                    }
+                                }
                             }
                         }
                         catch (Exception migrationEx)
@@ -481,26 +591,37 @@ namespace BinanceFuturesTrader.Services
                         }
                     }
                     
-                    if (configs != null)
+                    if (configs != null && configs.Count > 0)
                     {
                         Configurations.Clear();
                         foreach (var config in configs)
                         {
                             Configurations.Add(config);
+                            _logger.LogInformation($"📋 加载配置: {config.Name} (创建时间: {config.CreateTime})");
                         }
                         
-                        _logger.LogInformation($"📂 最终加载了 {configs.Count} 个配置");
+                        _logger.LogInformation($"📂 【同步加载】最终加载了 {configs.Count} 个配置");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ 解析结果为空或没有有效配置");
                     }
                 }
-                
-                return Task.CompletedTask;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "加载配置文件失败");
+                _logger.LogError(ex, "同步加载配置文件失败");
                 // 不创建默认配置，让用户手动处理
-                return Task.CompletedTask;
             }
+        }
+
+        /// <summary>
+        /// 加载配置列表（异步版本，保持向后兼容）
+        /// </summary>
+        private Task LoadConfigurationsAsync()
+        {
+            LoadConfigurationsSync();
+            return Task.CompletedTask;
         }
         
         /// <summary>

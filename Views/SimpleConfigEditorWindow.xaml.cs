@@ -26,8 +26,44 @@ namespace BinanceFuturesTrader.Views
         private decimal _currentRiskCapital = 0m;
         private readonly RiskCapitalService _riskCapitalService;
         
+        // 日志记录器
+        private readonly ILogger<SimpleConfigEditorWindow> _logger;
+        
         // 🔧 移除手动获取方法，改用RiskCapitalService
         
+        // 🔧 新增：增强版数据管理器支持
+        private bool _useEnhancedManager = false;
+        private EnhancedBaseConfigManager? _enhancedConfigManager = null;
+
+        /// <summary>
+        /// 启用新的增强版数据管理器
+        /// </summary>
+        public void EnableEnhancedDataManager()
+        {
+            try
+            {
+                _logger?.LogInformation("🚀 切换到增强版数据管理器");
+                
+                _useEnhancedManager = true;
+                _enhancedConfigManager = EnhancedBaseConfigManager.Instance;
+                
+                // 重新加载配置
+                LoadConfigs();
+                
+                _logger?.LogInformation("✅ 增强版数据管理器已启用");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "❌ 启用增强版数据管理器失败");
+                MessageBox.Show($"启用增强版数据管理器失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 检查是否使用增强版管理器
+        /// </summary>
+        private bool IsUsingEnhancedManager => _useEnhancedManager && _enhancedConfigManager != null;
+
         public SimpleConfigEditorWindow(MainViewModel? mainViewModel = null, BaseConfigManager? configManager = null)
         {
             InitializeComponent();
@@ -35,6 +71,9 @@ namespace BinanceFuturesTrader.Views
             // 🔧 修复：使用BaseConfigManager单例实例，确保全局配置统一
             _configManager = BaseConfigManager.Instance;
             _configs = new ObservableCollection<AutoMonitorConfig>();
+            
+            // 初始化日志记录器
+            _logger = NullLogger<SimpleConfigEditorWindow>.Instance;
             
             // 🔧 初始化RiskCapitalService
             try
@@ -132,6 +171,22 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                // 🔧【自动诊断】窗口激活时检查配置文件状态
+                if (_configManager.Configurations.Count == 0)
+                {
+                    _logger?.LogWarning("⚠️ 检测到内存中没有配置，自动运行诊断...");
+                    
+                    // 延时运行诊断，确保窗口完全加载
+                    this.Dispatcher.BeginInvoke(
+                        System.Windows.Threading.DispatcherPriority.Background,
+                        new Action(() =>
+                        {
+                            // 只记录日志，不弹出对话框（避免干扰用户）
+                            LogConfigFileStatus();
+                        })
+                    );
+                }
+                
                 // 强制重新加载配置，确保从基础配置文档导入最新数据
                 System.Diagnostics.Debug.WriteLine("🔄 窗口激活，重新加载配置...");
                 LoadConfigs();
@@ -160,27 +215,45 @@ namespace BinanceFuturesTrader.Views
             
             try
             {
-                // 🔧 强制重新加载最新配置，确保从基础配置文档导入之前保存的数据
-                _configManager.RefreshConfigurations();
-                
-                // 🎯 完全从BaseConfigManager加载配置，之前保存的数据直接载入
-                foreach (var config in _configManager.Configurations)
+                if (IsUsingEnhancedManager)
                 {
-                    _configs.Add(config);
+                    // 使用新的增强版管理器
+                    _enhancedConfigManager.RefreshConfigurations();
+                    
+                    foreach (var config in _enhancedConfigManager.Configurations)
+                    {
+                        _configs.Add(config);
+                    }
+                    
+                    _logger?.LogInformation($"✅ 从增强版管理器加载了 {_configs.Count} 个配置");
+                }
+                else
+                {
+                    // 使用原有的管理器（保持兼容性）
+                    _configManager.RefreshConfigurations();
+                    
+                    foreach (var config in _configManager.Configurations)
+                    {
+                        _configs.Add(config);
+                    }
+                    
+                    _logger?.LogInformation($"✅ 从原管理器加载了 {_configs.Count} 个配置");
                 }
                 
-                // 🔧 显示配置文件路径和加载状态 - 使用统一路径管理
-                var configPath = _configManager.GetConfigFilePath();
+                // 🔧 显示配置文件路径和加载状态
+                var configPath = IsUsingEnhancedManager 
+                    ? _enhancedConfigManager.GetConfigFilePath() 
+                    : _configManager.GetConfigFilePath();
+                    
                 System.Diagnostics.Debug.WriteLine($"📁 基础配置文档路径: {configPath}");
                 
-                // 🎯 修复：直接从基础配置文档导入，不进行旧文件迁移
                 if (_configs.Count == 0)
                 {
                     System.Diagnostics.Debug.WriteLine("📝 当前没有基础配置，请创建新配置");
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"✅ 已从基础配置文档加载 {_configs.Count} 个配置:");
+                    System.Diagnostics.Debug.WriteLine($"✅ 已加载 {_configs.Count} 个配置:");
                     foreach (var config in _configs)
                     {
                         System.Diagnostics.Debug.WriteLine($"   📋 配置: {config.Name}");
@@ -189,6 +262,7 @@ namespace BinanceFuturesTrader.Views
             }
             catch (Exception ex)
             {
+                _logger?.LogError(ex, "❌ 加载配置失败");
                 MessageBox.Show($"加载配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             
@@ -379,6 +453,30 @@ namespace BinanceFuturesTrader.Views
                 // 更新编辑中的配置信息
                 var configName = ConfigNameTextBox.Text?.Trim() ?? "";
                 
+                // 🔧【调试信息】显示配置文件路径和保存过程
+                var configFilePath = _configManager.GetType()
+                    .GetField("_configFilePath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(_configManager)?.ToString() ?? "未知路径";
+                
+                _logger?.LogInformation($"🔍 准备保存配置: {configName}");
+                _logger?.LogInformation($"🔍 配置文件路径: {configFilePath}");
+                _logger?.LogInformation($"🔍 当前配置数量: {_configManager.Configurations.Count}");
+                
+                // 检查目录是否存在
+                var configDir = System.IO.Path.GetDirectoryName(configFilePath);
+                if (!string.IsNullOrEmpty(configDir))
+                {
+                    if (!System.IO.Directory.Exists(configDir))
+                    {
+                        System.IO.Directory.CreateDirectory(configDir);
+                        _logger?.LogInformation($"🔧 创建配置目录: {configDir}");
+                    }
+                    else
+                    {
+                        _logger?.LogInformation($"✅ 配置目录已存在: {configDir}");
+                    }
+                }
+                
                 // 检查配置名称是否重复（排除当前正在编辑的配置）
                 if (_selectedConfig == null) // 新增模式
                 {
@@ -411,8 +509,49 @@ namespace BinanceFuturesTrader.Views
                 _editingConfig.AddPositionConfig.IsEnabled = AddPositionEnabledCheckBox.IsChecked ?? false;
                 _editingConfig.ProfitProtectionConfig.IsEnabled = ProfitProtectionEnabledCheckBox.IsChecked ?? false;
                 
-                // 🎯 使用BaseConfigManager保存配置（统一处理新增和修改）
-                    try
+                // 🔧【关键修复】分别处理新增和修改模式
+                try
+                {
+                    if (_selectedConfig == null) // 新增模式
+                    {
+                        // 🔧【新增模式】检查配置是否已存在于BaseConfigManager中
+                        var existingConfig = _configManager.GetConfiguration(_editingConfig.Name);
+                        if (existingConfig == null)
+                        {
+                            // 配置不存在，需要添加 - 统一使用BaseConfigManager
+                            _configManager.AddConfiguration(_editingConfig);
+                            _logger?.LogInformation($"💾 新配置已保存: {_editingConfig.Name}");
+                                
+                            // 🔧【调试】保存后立即检查文件是否存在
+                            if (System.IO.File.Exists(configFilePath))
+                            {
+                                var fileContent = System.IO.File.ReadAllText(configFilePath);
+                                _logger?.LogInformation($"✅ 配置文件已创建，大小: {fileContent.Length} 字符");
+                                
+                                // 显示文件位置给用户
+                                MessageBox.Show($"✅ 配置保存成功！\n\n配置文件位置：\n{configFilePath}\n\n文件大小：{fileContent.Length} 字符", 
+                                    "保存成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                            }
+                            else
+                            {
+                                _logger?.LogWarning($"⚠️ 配置文件未找到: {configFilePath}");
+                                MessageBox.Show($"⚠️ 配置可能未正确保存\n\n预期文件位置：\n{configFilePath}\n\n请检查该位置是否存在文件", 
+                                    "保存警告", MessageBoxButton.OK, MessageBoxImage.Warning);
+                            }
+                            
+                            // 将新配置添加到本地列表
+                            _configs.Add(_editingConfig);
+                        }
+                        else
+                        {
+                            // 配置已存在，更新它 - 统一使用BaseConfigManager
+                            _configManager.UpdateConfiguration(_editingConfig);
+                            _logger?.LogInformation($"💾 配置已更新: {_editingConfig.Name}");
+                        }
+                        
+                        _selectedConfig = _editingConfig;
+                    }
+                    else // 修改模式
                     {
                         // 将修改后的配置复制到选中的配置
                         _selectedConfig.Name = _editingConfig.Name;
@@ -421,9 +560,11 @@ namespace BinanceFuturesTrader.Views
                         _selectedConfig.AddPositionConfig = _editingConfig.AddPositionConfig;
                         _selectedConfig.ProfitProtectionConfig = _editingConfig.ProfitProtectionConfig;
                         
-                        // 使用BaseConfigManager更新配置（会自动保存到文件）
+                        // 🔧 统一使用BaseConfigManager保存配置
                         _configManager.UpdateConfiguration(_selectedConfig);
-                        
+                        _logger?.LogInformation($"💾 配置已保存: {_selectedConfig.Name}");
+                    }
+                    
                     // 重新加载配置列表，确保数据同步
                     LoadConfigs();
                     
@@ -434,25 +575,20 @@ namespace BinanceFuturesTrader.Views
                         ConfigListBox.SelectedItem = updatedConfig;
                         _selectedConfig = updatedConfig;
                     }
-                        
-                    MessageBox.Show($"配置 '{configName}' 保存成功！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
                     
-                    // 🔧 重置新建标志
-                    _isNewConfig = false;
-                    }
-                    catch (Exception ex)
-                    {
-                    MessageBox.Show($"保存配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                        return;
+                    _logger?.LogInformation($"✅ 配置保存操作完成: {configName}");
                 }
-                
-                SetReadOnlyMode();
-                LoadConfigDetails(_selectedConfig);
-                
+                catch (Exception saveEx)
+                {
+                    _logger?.LogError(saveEx, $"❌ 保存配置失败: {configName}");
+                    MessageBox.Show($"保存配置失败：{saveEx.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    throw;
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"保存配置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                _logger?.LogError(ex, "SaveCurrentConfig失败");
+                MessageBox.Show($"保存配置时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
         
@@ -509,50 +645,26 @@ namespace BinanceFuturesTrader.Views
                 
             _editingConfig = newConfig;
             
-                // 🔧 关键修复：先将配置保存到BaseConfigManager，确保持久化
-                try
-                {
-                    // 使用BaseConfigManager创建临时配置
-                    var tempConfig = _configManager.CreateConfiguration(configName, accountEquity, riskTimes);
-                    
-                    // 更新配置内容
-                    tempConfig.BreakEvenConfig = newConfig.BreakEvenConfig;
-                    tempConfig.AddPositionConfig = newConfig.AddPositionConfig;
-                    tempConfig.ProfitProtectionConfig = newConfig.ProfitProtectionConfig;
-                    tempConfig.LastModifiedTime = DateTime.Now;
-                    
-                    // 保存到BaseConfigManager
-                    _configManager.UpdateConfiguration(tempConfig);
-                    
-                    // 使用持久化后的配置
-                    _editingConfig = tempConfig;
-                    
-                    // 重新加载配置列表，确保包含新配置
-                    LoadConfigs();
-                    
-                    // 选中新创建的配置
-                    var createdConfig = _configs.FirstOrDefault(c => c.Name == configName);
-                    if (createdConfig != null)
-                    {
-                        // 🔧 先设置编辑模式标志，防止选择变化事件干扰
-                        _selectedConfig = createdConfig;
-                        _isNewConfig = false; // 已经持久化，不再是临时新建状态
-                        
-                        // 🔧 进入编辑模式
-            SetEditMode();
-                        
-                        // 🔧 设置选中项（此时_isEditMode已经为true，不会被选择变化事件干扰）
-                        ConfigListBox.SelectedItem = createdConfig;
-                        
-                        // 手动加载配置详情，确保显示正确
-                        LoadConfigDetails(tempConfig);
-                    }
-                }
-                catch (Exception createEx)
-                {
-                    MessageBox.Show($"创建配置失败：{createEx.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return;
-                }
+            // 🔧【修复】新建配置时不立即保存，让用户编辑后再保存
+            try
+            {
+                // 🔧【关键修复】设置为新增模式，配置将在用户点击保存时才真正保存
+                _selectedConfig = null; // 明确设置为新增模式
+                _isNewConfig = true; // 标记为新建状态
+                
+                _logger?.LogInformation($"🆕 准备创建新配置: {configName}");
+                
+                // 🔧 进入编辑模式
+                SetEditMode();
+                
+                // 手动加载新配置的详情到界面
+                LoadConfigDetails(_editingConfig);
+            }
+            catch (Exception createEx)
+            {
+                MessageBox.Show($"创建配置失败：{createEx.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
             
             // 🔧 自动填充账户权益到风险金计算区域
             AccountEquityTextBox.Text = accountEquity.ToString("F2");
@@ -562,17 +674,18 @@ namespace BinanceFuturesTrader.Views
             _currentRiskCapital = accountEquity / riskTimes;
             SingleRiskCapitalTextBox.Text = _currentRiskCapital.ToString("F2");
             
-                // 🔧 自动聚焦到配置名称输入框，方便用户修改
-                ConfigNameTextBox.Focus();
-                ConfigNameTextBox.SelectAll();
-                
-                MessageBox.Show($"✅ 新配置已创建并保存：{configName}\n\n" +
-                              $"已自动读取账户信息：\n" +
-                              $"• 账户权益：{accountEquity:F2} USDT\n" +
-                              $"• 风险次数：{riskTimes}\n" +
-                              $"• 单倍风险金：{_currentRiskCapital:F2} USDT\n\n" +
-                              $"配置已保存到文件，您可以继续编辑参数。",
-                              "新建配置成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            // 🔧 自动聚焦到配置名称输入框，方便用户修改
+            ConfigNameTextBox.Focus();
+            ConfigNameTextBox.SelectAll();
+            
+            // 🔧【修复】提示用户新配置已准备好，需要保存
+            MessageBox.Show($"✅ 新配置已准备就绪：{configName}\n\n" +
+                          $"已自动读取账户信息：\n" +
+                          $"• 账户权益：{accountEquity:F2} USDT\n" +
+                          $"• 风险次数：{riskTimes}\n" +
+                          $"• 单倍风险金：{_currentRiskCapital:F2} USDT\n\n" +
+                          $"请编辑配置参数，然后点击【保存配置】按钮保存到文件。",
+                          "新建配置", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -999,6 +1112,174 @@ namespace BinanceFuturesTrader.Views
         #endregion
 
         /// <summary>
+        /// 🔧 调试配置文件状态
+        /// </summary>
+        private void DebugConfigFileStatus()
+        {
+            try
+            {
+                var configFilePath = _configManager.GetType()
+                    .GetField("_configFilePath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(_configManager)?.ToString() ?? "未知路径";
+                
+                var debugInfo = new System.Text.StringBuilder();
+                debugInfo.AppendLine("🔍 基础配置文件诊断报告");
+                debugInfo.AppendLine($"📁 配置文件路径: {configFilePath}");
+                
+                // 检查文件是否存在
+                if (System.IO.File.Exists(configFilePath))
+                {
+                    var fileInfo = new System.IO.FileInfo(configFilePath);
+                    debugInfo.AppendLine($"✅ 文件存在");
+                    debugInfo.AppendLine($"📊 文件大小: {fileInfo.Length} 字节");
+                    debugInfo.AppendLine($"🕒 最后修改: {fileInfo.LastWriteTime}");
+                    
+                    try
+                    {
+                        var content = System.IO.File.ReadAllText(configFilePath);
+                        debugInfo.AppendLine($"📖 文件内容长度: {content.Length} 字符");
+                        
+                        if (string.IsNullOrWhiteSpace(content))
+                        {
+                            debugInfo.AppendLine("⚠️ 文件内容为空");
+                        }
+                        else
+                        {
+                            // 显示前500个字符的内容
+                            var preview = content.Length > 500 ? content.Substring(0, 500) + "\n..." : content;
+                            debugInfo.AppendLine($"📝 文件内容预览:\n{preview}");
+                            
+                            // 尝试解析JSON结构
+                            try
+                            {
+                                using var document = System.Text.Json.JsonDocument.Parse(content);
+                                var root = document.RootElement;
+                                debugInfo.AppendLine($"🔍 JSON根元素类型: {root.ValueKind}");
+                                
+                                if (root.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                {
+                                    debugInfo.AppendLine($"📋 数组格式，包含 {root.GetArrayLength()} 个元素");
+                                }
+                                else if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                                {
+                                    debugInfo.AppendLine("📋 对象格式，属性列表:");
+                                    foreach (var property in root.EnumerateObject())
+                                    {
+                                        debugInfo.AppendLine($"   - {property.Name}: {property.Value.ValueKind}");
+                                    }
+                                }
+                            }
+                            catch (System.Text.Json.JsonException jsonEx)
+                            {
+                                debugInfo.AppendLine($"❌ JSON解析失败: {jsonEx.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception readEx)
+                    {
+                        debugInfo.AppendLine($"❌ 读取文件失败: {readEx.Message}");
+                    }
+                }
+                else
+                {
+                    debugInfo.AppendLine("❌ 文件不存在");
+                    
+                    // 检查目录是否存在
+                    var directory = System.IO.Path.GetDirectoryName(configFilePath);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        if (System.IO.Directory.Exists(directory))
+                        {
+                            debugInfo.AppendLine($"✅ 目录存在: {directory}");
+                            var files = System.IO.Directory.GetFiles(directory, "*.json");
+                            debugInfo.AppendLine($"📁 目录中的JSON文件: {files.Length} 个");
+                            foreach (var file in files)
+                            {
+                                debugInfo.AppendLine($"   - {System.IO.Path.GetFileName(file)}");
+                            }
+                        }
+                        else
+                        {
+                            debugInfo.AppendLine($"❌ 目录不存在: {directory}");
+                        }
+                    }
+                }
+                
+                // 检查内存中的配置
+                debugInfo.AppendLine($"💾 内存中的配置数量: {_configManager.Configurations.Count}");
+                foreach (var config in _configManager.Configurations)
+                {
+                    debugInfo.AppendLine($"   - {config.Name} (创建时间: {config.CreateTime})");
+                }
+                
+                // 显示诊断报告
+                MessageBox.Show(debugInfo.ToString(), "配置文件诊断报告", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"调试配置文件状态时发生错误：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 调试按钮点击事件
+        /// </summary>
+        private void DebugConfigButton_Click(object sender, RoutedEventArgs e)
+        {
+            DebugConfigFileStatus();
+        }
+        
+        /// <summary>
+        /// 只记录日志的配置文件状态检查（不弹出对话框）
+        /// </summary>
+        private void LogConfigFileStatus()
+        {
+            try
+            {
+                var configFilePath = _configManager.GetType()
+                    .GetField("_configFilePath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(_configManager)?.ToString() ?? "未知路径";
+                
+                _logger?.LogInformation($"🔍 自动诊断配置文件: {configFilePath}");
+                
+                if (System.IO.File.Exists(configFilePath))
+                {
+                    var fileInfo = new System.IO.FileInfo(configFilePath);
+                    _logger?.LogInformation($"📄 文件存在，大小: {fileInfo.Length} 字节");
+                    
+                    var content = System.IO.File.ReadAllText(configFilePath);
+                    if (string.IsNullOrWhiteSpace(content))
+                    {
+                        _logger?.LogWarning("⚠️ 配置文件为空");
+                    }
+                    else
+                    {
+                        _logger?.LogInformation($"📖 文件内容长度: {content.Length} 字符");
+                        
+                        // 尝试手动重新加载配置
+                        _logger?.LogInformation("🔄 尝试手动重新加载配置...");
+                        _configManager.RefreshConfigurations();
+                        
+                        // 重新加载UI
+                        LoadConfigs();
+                        
+                        _logger?.LogInformation($"✅ 重新加载后配置数量: {_configManager.Configurations.Count}");
+                    }
+                }
+                else
+                {
+                    _logger?.LogWarning($"❌ 配置文件不存在: {configFilePath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "自动诊断配置文件失败");
+            }
+        }
+
+        /// <summary>
         /// 窗口关闭事件处理
         /// </summary>
         protected override void OnClosed(EventArgs e)
@@ -1014,12 +1295,18 @@ namespace BinanceFuturesTrader.Views
                     _configManager.SetCurrentConfiguration(_selectedConfig.Name);
                 }
                 
-                base.OnClosed(e);
+                // 取消事件订阅
+                this.Activated -= SimpleConfigEditorWindow_Activated;
             }
             catch (Exception ex)
             {
                 // 记录错误但不阻止窗口关闭
-                System.Diagnostics.Debug.WriteLine($"窗口关闭处理异常：{ex.Message}");
+                _logger?.LogError(ex, "处理窗口关闭事件时发生错误");
+            }
+            finally
+            {
+                // 调用基类方法
+                base.OnClosed(e);
             }
         }
     }

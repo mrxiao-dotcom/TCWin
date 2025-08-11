@@ -4795,6 +4795,10 @@ namespace BinanceFuturesTrader.Views
             }
         }
 
+        // 防抖字段：避免频繁重建UI
+        private DateTime _lastUIRebuildTime = DateTime.MinValue;
+        private const int UI_REBUILD_DEBOUNCE_MS = 2000; // 2秒防抖
+        
         /// <summary>
         /// 从状态文件加载合约配置
         /// </summary>
@@ -4802,6 +4806,15 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
+                // 🚨【防抖检查】避免频繁重建UI导致状态重置
+                var now = DateTime.Now;
+                if ((now - _lastUIRebuildTime).TotalMilliseconds < UI_REBUILD_DEBOUNCE_MS)
+                {
+                    AddLog($"🔧 防抖跳过UI重建，距离上次重建仅 {(now - _lastUIRebuildTime).TotalMilliseconds:F0}ms");
+                    return;
+                }
+                _lastUIRebuildTime = now;
+                
                 AddLog("📊 开始从状态文件加载合约配置...");
                 
                 // 创建状态服务
@@ -4854,12 +4867,65 @@ namespace BinanceFuturesTrader.Views
                     AddLog($"🔄 已转换合约配置: {contractKey}");
                 }
                 
-                // 更新UI
+                // 更新UI - 🚨【关键修复】保留现有已执行状态，避免状态重置
                 await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
+                    // 🔧 【状态保护】记录当前UI中的已执行状态
+                    var existingExecutedStates = new Dictionary<string, Dictionary<string, string>>();
+                    foreach (var existingConfig in ContractConfigs)
+                    {
+                        var key = $"{existingConfig.Symbol}_{existingConfig.Side}";
+                        existingExecutedStates[key] = new Dictionary<string, string>
+                        {
+                            ["BreakEven"] = existingConfig.BreakEvenStatus,
+                            ["PushTier1"] = existingConfig.PushTier1Status,
+                            ["PushTier2"] = existingConfig.PushTier2Status,
+                            ["PushTier3"] = existingConfig.PushTier3Status,
+                            ["PushTier4"] = existingConfig.PushTier4Status,
+                        };
+                    }
+                    
                     ContractConfigs.Clear();
                     foreach (var config in newConfigs)
                     {
+                        // 🔧 【状态恢复】如果UI中有已执行状态，优先保留
+                        var key = $"{config.Symbol}_{config.Side}";
+                        if (existingExecutedStates.TryGetValue(key, out var states))
+                        {
+                            // 🚨【诊断】记录状态变化
+                            var changes = new List<string>();
+                            if (states["BreakEven"] == "√" && config.BreakEvenStatus != "√") 
+                            {
+                                config.BreakEvenStatus = "√";
+                                changes.Add("保本:保留√");
+                            }
+                            if (states["PushTier1"] == "√" && config.PushTier1Status != "√") 
+                            {
+                                config.PushTier1Status = "√";
+                                changes.Add("推仓1:保留√");
+                            }
+                            if (states["PushTier2"] == "√" && config.PushTier2Status != "√") 
+                            {
+                                config.PushTier2Status = "√";
+                                changes.Add("推仓2:保留√");
+                            }
+                            if (states["PushTier3"] == "√" && config.PushTier3Status != "√") 
+                            {
+                                config.PushTier3Status = "√";
+                                changes.Add("推仓3:保留√");
+                            }
+                            if (states["PushTier4"] == "√" && config.PushTier4Status != "√") 
+                            {
+                                config.PushTier4Status = "√";
+                                changes.Add("推仓4:保留√");
+                            }
+                            
+                            if (changes.Any())
+                            {
+                                AddLog($"🔧【状态保护】{key}: {string.Join(", ", changes)}");
+                            }
+                        }
+                        
                         ContractConfigs.Add(config);
                     }
                 });
@@ -4880,37 +4946,55 @@ namespace BinanceFuturesTrader.Views
         {
             try
             {
-                // 保本状态
+                // 保本状态 - 🚨【关键修复】防止覆盖已执行状态
                 if (state.BreakEvenConfig != null)
                 {
-                    config.BreakEvenStatus = state.BreakEvenConfig.IsExecuted ? "√" : "-";
+                    var fileStatus = state.BreakEvenConfig.IsExecuted ? "√" : "-";
+                    // 🚨【状态保护】只有当前状态不是"已执行"时才从文件覆盖
+                    if (config.BreakEvenStatus != "√")
+                    {
+                        config.BreakEvenStatus = fileStatus;
+                    }
                     config.BreakEvenTarget = state.BreakEvenConfig.TriggerProfitAmount;
                 }
                 
-                // 推仓状态
+                // 推仓状态 - 🚨【关键修复】防止覆盖已执行状态
                 if (state.AddPositionConfig?.Tiers != null)
                 {
                     for (int i = 0; i < state.AddPositionConfig.Tiers.Count && i < 4; i++)
                     {
                         var tier = state.AddPositionConfig.Tiers[i];
-                        var status = tier.IsExecuted ? "√" : "-";
+                        var fileStatus = tier.IsExecuted ? "√" : "-";
                         
                         switch (i)
                         {
                             case 0:
-                                config.PushTier1Status = status;
+                                // 🚨【状态保护】只有当前状态不是"已执行"时才从文件覆盖
+                                if (config.PushTier1Status != "√")
+                                {
+                                    config.PushTier1Status = fileStatus;
+                                }
                                 config.PushTier1Amount = tier.TriggerProfitAmount;
                                 break;
                             case 1:
-                                config.PushTier2Status = status;
+                                if (config.PushTier2Status != "√")
+                                {
+                                    config.PushTier2Status = fileStatus;
+                                }
                                 config.PushTier2Amount = tier.TriggerProfitAmount;
                                 break;
                             case 2:
-                                config.PushTier3Status = status;
+                                if (config.PushTier3Status != "√")
+                                {
+                                    config.PushTier3Status = fileStatus;
+                                }
                                 config.PushTier3Amount = tier.TriggerProfitAmount;
                                 break;
                             case 3:
-                                config.PushTier4Status = status;
+                                if (config.PushTier4Status != "√")
+                                {
+                                    config.PushTier4Status = fileStatus;
+                                }
                                 config.PushTier4Amount = tier.TriggerProfitAmount;
                                 break;
                         }

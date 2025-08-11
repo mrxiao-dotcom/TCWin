@@ -53,6 +53,88 @@ namespace BinanceFuturesTrader.Services
         }
 
         /// <summary>
+        /// 确保合约状态的唯一性，去除重复记录
+        /// </summary>
+        private Dictionary<string, ContractMonitoringState> EnsureUniqueContractStates(Dictionary<string, ContractMonitoringState> states)
+        {
+            var uniqueStates = new Dictionary<string, ContractMonitoringState>();
+            var duplicateKeys = new List<string>();
+            
+            foreach (var kvp in states)
+            {
+                var contractKey = kvp.Key;
+                var state = kvp.Value;
+                
+                // 🔧 【关键修复】完全重构标准化逻辑
+                var symbol = state.Symbol.ToUpperInvariant();
+                
+                // 🔧 强制统一方向标准化：不依赖state.PositionSide，而是重新判断
+                string side;
+                if (state.CurrentQuantity != 0)
+                {
+                    // 根据持仓数量重新判断方向
+                    side = state.CurrentQuantity > 0 ? "LONG" : "SHORT";
+                }
+                else
+                {
+                    // 如果没有持仓数量，尝试从PositionSide推断，但强制标准化
+                    var originalSide = state.PositionSide?.ToUpperInvariant();
+                    if (originalSide == "BOTH")
+                    {
+                        // BOTH类型需要额外信息判断，暂时使用LONG
+                        side = "LONG";
+                        _logger.LogWarning($"⚠️ 遇到BOTH类型持仓，自动设置为LONG: {symbol}");
+                    }
+                    else if (originalSide == "SHORT")
+                    {
+                        side = "SHORT";
+                    }
+                    else
+                    {
+                        side = "LONG"; // 默认LONG
+                    }
+                }
+                
+                var normalizedKey = $"{symbol}_{side}";
+                
+                if (uniqueStates.ContainsKey(normalizedKey))
+                {
+                    duplicateKeys.Add(contractKey);
+                    _logger.LogCritical($"   ⚠️ 发现重复合约状态: {contractKey} → 标准化为 {normalizedKey}");
+                    
+                    // 保留更新时间较晚的状态
+                    var existingState = uniqueStates[normalizedKey];
+                    if (state.LastUpdateTime > existingState.LastUpdateTime)
+                    {
+                        // 🔧 【重要】更新保留状态的键名格式
+                        state.Symbol = symbol;
+                        state.PositionSide = side;
+                        uniqueStates[normalizedKey] = state;
+                        _logger.LogCritical($"   🔄 保留较新的状态: {state.LastUpdateTime:yyyy-MM-dd HH:mm:ss}");
+                    }
+                }
+                else
+                {
+                    // 🔧 【重要】标准化保存状态的字段
+                    state.Symbol = symbol;
+                    state.PositionSide = side;
+                    uniqueStates[normalizedKey] = state;
+                }
+            }
+            
+            if (duplicateKeys.Count > 0)
+            {
+                _logger.LogCritical($"   🔄 去重完成: 移除了 {duplicateKeys.Count} 个重复记录");
+                foreach (var key in duplicateKeys)
+                {
+                    _logger.LogCritical($"     - 移除重复: {key}");
+                }
+            }
+            
+            return uniqueStates;
+        }
+
+        /// <summary>
         /// 保存统一监控状态（主要方法）
         /// </summary>
         public void SaveMonitoringStates(Dictionary<string, ContractMonitoringState> states)
@@ -72,19 +154,59 @@ namespace BinanceFuturesTrader.Services
                     return;
                 }
                 
+                // 🔧 【重要修复】去重处理：确保同一个合约不会有多条记录
+                var originalCount = states.Count;
+                states = EnsureUniqueContractStates(states);
+                
+                if (states.Count != originalCount)
+                {
+                    _logger.LogCritical($"   🔄 去重处理: 原始{originalCount}条 → 去重后{states.Count}条");
+                }
+                
                 // 检查文件存在性和修改时间（保存前）
                 var existsBefore = File.Exists(stateFilePath);
                 var lastWriteBefore = existsBefore ? File.GetLastWriteTime(stateFilePath) : DateTime.MinValue;
                 _logger.LogCritical($"   📋 保存前文件状态: 存在={existsBefore}, 最后修改={lastWriteBefore:yyyy-MM-dd HH:mm:ss}");
                 
-                // 只保存活跃的监控状态
-                var activeStates = states
-                    .Where(kvp => kvp.Value.IsActive)
-                    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+                // 🔧 【关键修复】保存所有状态，不只是活跃状态
+                // 用户手动编辑的状态应该被保存，即使合约当前不活跃
+                _logger.LogCritical($"   🎯 保存去重后状态数量: {states.Count}");
                 
-                _logger.LogCritical($"   🎯 活跃状态数量: {activeStates.Count}");
+                // 🔍 详细检查每个状态的ExecutionState
+                foreach (var kvp in states)
+                {
+                    var state = kvp.Value;
+                    _logger.LogCritical($"   📋 合约 {kvp.Key}: 保本ExecutionState={(int)state.BreakEvenConfig.ExecutionState}({state.BreakEvenConfig.ExecutionState}), IsExecuted={state.BreakEvenConfig.IsExecuted}");
+                    if (state.BreakEvenConfig.ExecutionState != ExecutionState.NotTriggered)
+                    {
+                        _logger.LogCritical($"   ⚡ 发现非默认状态: {kvp.Key} - {state.BreakEvenConfig.ExecutionState}");
+                    }
+                }
                 
-                var json = JsonSerializer.Serialize(activeStates, _jsonOptions);
+                // 检查是否有ExecutionState更新的状态
+                var hasExecutedStates = states.Values.Any(s => 
+                    s.BreakEvenConfig.ExecutionState != ExecutionState.NotTriggered ||
+                    s.AddPositionConfig.Tiers.Any(t => t.ExecutionState != ExecutionState.NotTriggered) ||
+                    s.ProfitProtectionConfig.Tiers.Any(t => t.ExecutionState != ExecutionState.NotTriggered));
+                
+                if (hasExecutedStates)
+                {
+                    _logger.LogCritical($"   ⚡ 检测到已执行状态，强制保存所有状态");
+                }
+                
+                var json = JsonSerializer.Serialize(states, _jsonOptions);
+                
+                // 🔍 检查序列化后的JSON内容
+                if (json.Contains("\"executionState\""))
+                {
+                    _logger.LogCritical($"   🔍 JSON中包含executionState字段");
+                    // 搜索executionState的值
+                    var executionStateMatches = System.Text.RegularExpressions.Regex.Matches(json, @"""executionState"":\s*(\d+)");
+                    foreach (System.Text.RegularExpressions.Match match in executionStateMatches)
+                    {
+                        _logger.LogCritical($"   📊 JSON中发现executionState值: {match.Groups[1].Value}");
+                    }
+                }
                 _logger.LogCritical($"   📝 JSON长度: {json.Length} 字符");
                 _logger.LogCritical($"   📝 JSON前100字符: {(json.Length > 100 ? json.Substring(0, 100) + "..." : json)}");
                 
@@ -96,7 +218,7 @@ namespace BinanceFuturesTrader.Services
                 var fileSizeAfter = existsAfter ? new FileInfo(stateFilePath).Length : 0;
                 
                 _logger.LogCritical($"   ✅ 保存后文件状态: 存在={existsAfter}, 最后修改={lastWriteAfter:yyyy-MM-dd HH:mm:ss}, 大小={fileSizeAfter}字节");
-                _logger.LogInformation($"💾 已保存统一监控状态: {activeStates.Count} 个");
+                _logger.LogInformation($"💾 已保存统一监控状态: {states.Count} 个");
             }
             catch (Exception ex)
             {
@@ -114,26 +236,48 @@ namespace BinanceFuturesTrader.Services
             try
             {
                 var stateFilePath = GetStateFilePath();
+                _logger.LogCritical($"🔍【文件加载诊断】文件路径: {stateFilePath}");
+                _logger.LogCritical($"🔍【文件加载诊断】当前账号: {_currentAccountName}");
+                
                 if (!File.Exists(stateFilePath))
                 {
-                    _logger.LogDebug($"💡 统一监控状态文件不存在: {stateFilePath} (账号: {_currentAccountName})");
+                    _logger.LogCritical($"🔍【文件加载诊断】❌ 文件不存在: {stateFilePath}");
                     return new Dictionary<string, ContractMonitoringState>();
                 }
+                
+                _logger.LogCritical($"🔍【文件加载诊断】✅ 文件存在");
+                var fileInfo = new FileInfo(stateFilePath);
+                _logger.LogCritical($"🔍【文件加载诊断】文件大小: {fileInfo.Length} 字节");
+                _logger.LogCritical($"🔍【文件加载诊断】最后修改: {fileInfo.LastWriteTime}");
                 
                 var json = File.ReadAllText(stateFilePath);
+                _logger.LogCritical($"🔍【文件加载诊断】JSON长度: {json?.Length.ToString() ?? "null"}");
+                _logger.LogCritical($"🔍【文件加载诊断】JSON前100字符: {(string.IsNullOrEmpty(json) ? "null" : json.Substring(0, Math.Min(100, json.Length)))}");
+                
                 if (string.IsNullOrWhiteSpace(json))
                 {
+                    _logger.LogCritical($"🔍【文件加载诊断】❌ JSON为空");
                     return new Dictionary<string, ContractMonitoringState>();
                 }
                 
+                _logger.LogCritical($"🔍【文件加载诊断】开始反序列化...");
                 var states = JsonSerializer.Deserialize<Dictionary<string, ContractMonitoringState>>(json, _jsonOptions) 
                     ?? new Dictionary<string, ContractMonitoringState>();
+                
+                _logger.LogCritical($"🔍【文件加载诊断】✅ 反序列化成功，状态数量: {states.Count}");
+                foreach (var kvp in states)
+                {
+                    _logger.LogCritical($"🔍【文件加载诊断】找到状态键: {kvp.Key}");
+                }
                 
                 _logger.LogInformation($"📂 已加载统一监控状态: {states.Count} 个");
                 return states;
             }
             catch (Exception ex)
             {
+                _logger.LogCritical($"🔍【文件加载诊断】❌ 加载异常: {ex.Message}");
+                _logger.LogCritical($"🔍【文件加载诊断】异常类型: {ex.GetType().Name}");
+                _logger.LogCritical($"🔍【文件加载诊断】异常堆栈: {ex.StackTrace}");
                 _logger.LogError(ex, "❌ 加载统一监控状态失败");
                 return new Dictionary<string, ContractMonitoringState>();
             }
@@ -147,7 +291,10 @@ namespace BinanceFuturesTrader.Services
             string baseConfigName,
             Dictionary<string, ContractMonitoringState> existingStates)
         {
-            var key = $"{position.Symbol}_{(position.PositionAmt > 0 ? "LONG" : "SHORT")}";
+            // 🔧 【统一修复】使用标准化键名生成
+            var symbol = position.Symbol.ToUpperInvariant();
+            var side = position.PositionAmt > 0 ? "LONG" : "SHORT";
+            var key = $"{symbol}_{side}";
             
             // 获取基础配置
             var baseConfig = _configManager.GetConfiguration(baseConfigName);
@@ -163,6 +310,10 @@ namespace BinanceFuturesTrader.Services
             
             // 生成监控状态
             var state = _stateGenerator.GenerateMonitoringState(baseConfig, position, existingState);
+            
+            // 🔧 【关键】确保状态字段标准化
+            state.Symbol = symbol;
+            state.PositionSide = side;
             
             _logger.LogDebug($"🔄 已生成/更新监控状态: {key}");
             return state;
@@ -180,9 +331,44 @@ namespace BinanceFuturesTrader.Services
             
             foreach (var position in positions.Where(p => Math.Abs(p.PositionAmt) > 0))
             {
-                var key = $"{position.Symbol}_{(position.PositionAmt > 0 ? "LONG" : "SHORT")}";
+                // 🔧 【强化修复】完全标准化键名生成
+                var symbol = position.Symbol.ToUpperInvariant();
+                
+                // 🔧 【关键】不依赖API的PositionSide，完全基于PositionAmt重新判断
+                string side;
+                if (Math.Abs(position.PositionAmt) > 0)
+                {
+                    side = position.PositionAmt > 0 ? "LONG" : "SHORT";
+                }
+                else
+                {
+                    // 如果PositionAmt为0，不应该处理，跳过
+                    _logger.LogWarning($"⚠️ 跳过零持仓: {symbol}");
+                    continue;
+                }
+                
+                var key = $"{symbol}_{side}";
+                
+                // 🔧 【加强检查】如果已存在相同键名，进行详细日志记录
+                if (newStates.ContainsKey(key))
+                {
+                    _logger.LogWarning($"   ⚠️ 检测到重复合约生成: {key}");
+                    _logger.LogWarning($"     - 原始Symbol: {position.Symbol}");
+                    _logger.LogWarning($"     - 标准化Symbol: {symbol}");
+                    _logger.LogWarning($"     - PositionAmt: {position.PositionAmt}");
+                    _logger.LogWarning($"     - 推断Side: {side}");
+                    continue;
+                }
+                
                 var state = GenerateOrUpdateState(position, defaultConfigName, existingStates);
+                
+                // 🔧 【重要】确保生成的状态使用标准化字段
+                state.Symbol = symbol;
+                state.PositionSide = side;
+                
                 newStates[key] = state;
+                
+                _logger.LogDebug($"   ✅ 生成/更新状态: {key}");
             }
             
             // 标记不再存在的持仓为非活跃

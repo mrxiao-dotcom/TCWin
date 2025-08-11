@@ -32,6 +32,8 @@ namespace BinanceFuturesTrader.Views.AutoMonitor
         private readonly AutoMonitorController _controller;
         private readonly UIComponentManager _uiManager;
         
+        private readonly AsyncAutoMonitorController _asyncController;
+        
         #endregion
         
         #region 构造函数
@@ -58,6 +60,14 @@ namespace BinanceFuturesTrader.Views.AutoMonitor
                 
                 // 创建UI管理器
                 _uiManager = new UIComponentManager(_dataModel, _uiStateModel, _logger);
+                
+                // 🔧 【多线程修复】使用异步控制器替代同步控制器
+                _asyncController = new AsyncAutoMonitorController(
+                    _logger,
+                    _mainViewModel,
+                    _autoMonitorService);
+                
+                _logger.LogInformation("🔧 自动监控面板已切换到多线程异步架构");
                 
                 // 初始化窗口
                 InitializeWindow();
@@ -275,15 +285,64 @@ namespace BinanceFuturesTrader.Views.AutoMonitor
             }
         }
         
+        /// <summary>
+        /// 🔧 【多线程修复】异步启动监控，避免UI线程阻塞
+        /// </summary>
         private async void OnToggleMonitoringRequested(object sender, EventArgs e)
         {
             try
             {
-                await _controller.ToggleMonitoringAsync();
+                // 简化状态检查 - 直接通过控制器获取状态
+                var isCurrentlyMonitoring = _asyncController != null && _controller.UIStateModel != null;
+                
+                if (isCurrentlyMonitoring)
+                {
+                    // 异步停止监控
+                    var stopped = await _asyncController.StopMonitoringAsync();
+                    if (stopped)
+                    {
+                        _logger.LogInformation("⏹ 监控已停止");
+                    }
+                }
+                else
+                {
+                    // 异步启动监控
+                    _logger.LogInformation("🚀 正在启动监控...");
+                    
+                    var started = await _asyncController.StartMonitoringAsync();
+                    if (started)
+                    {
+                        _logger.LogInformation("🚀 监控已启动");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("❌ 监控启动失败");
+                    }
+                }
+                
+                // 订阅异步控制器的事件来更新UI
+                if (_asyncController != null)
+                {
+                    _asyncController.OnLogMessage += (message) =>
+                    {
+                        Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            _logger.LogInformation(message);
+                        });
+                    };
+                    
+                    _asyncController.OnMonitoringStateChanged += (isMonitoring) =>
+                    {
+                        Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            _logger.LogInformation($"监控状态变更: {(isMonitoring ? "运行中" : "已停止")}");
+                        });
+                    };
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "切换监控状态时发生异常");
+                _logger.LogError(ex, "切换监控状态失败");
             }
         }
         
