@@ -647,6 +647,7 @@ namespace BinanceFuturesTrader.Views
         /// </summary>
         private void ApplySavedStateFromUnifiedFile(ContractMonitoringState state)
         {
+<<<<<<< HEAD
             // 🔧 【状态统一修复】应用保本状态和触发金额，使用统一符号
             _editedConfig.BreakEvenStatus = state.BreakEvenConfig.IsExecuted ? "√" : "-";
             _editedConfig.BreakEvenTarget = state.BreakEvenConfig.TriggerProfitAmount;
@@ -658,9 +659,28 @@ namespace BinanceFuturesTrader.Views
             
             // 🔧 【关键】清空动态状态字典，重新加载
             _extendedPushTierStatuses.Clear();
+=======
+            // 应用保本状态
+            switch (state.BreakEvenConfig.ExecutionState)
+            {
+                case ExecutionState.NotTriggered:
+                    _editedConfig.BreakEvenStatus = "-";
+                    break;
+                case ExecutionState.Executing:
+                    _editedConfig.BreakEvenStatus = "⚡";
+                    break;
+                case ExecutionState.Executed:
+                    _editedConfig.BreakEvenStatus = "√";
+                    break;
+                default:
+                    _editedConfig.BreakEvenStatus = "-";
+                    break;
+            }
+>>>>>>> df3e9d4bd657da2e1fc523952fc0a2a313f8ef6b
             
             for (int i = 0; i < pushTiers.Length; i++)
             {
+<<<<<<< HEAD
                 var tier = pushTiers[i];
                 var tierIndex = tier.TierIndex;
                 var status = tier.IsExecuted ? "√" : "-";
@@ -670,15 +690,59 @@ namespace BinanceFuturesTrader.Views
                 SetPushTierStatus(tierIndex, status);
                 
                 _logger?.LogCritical($"🔧【动态加载】推仓T{tierIndex}: 状态={status}, 金额={tierAmount}");
+=======
+                string status;
+                switch (pushTiers[i].ExecutionState)
+                {
+                    case ExecutionState.NotTriggered:
+                        status = "-";
+                        break;
+                    case ExecutionState.Executing:
+                        status = "⚡";
+                        break;
+                    case ExecutionState.Executed:
+                        status = "√";
+                        break;
+                    default:
+                        status = "-";
+                        break;
+                }
+                switch (i)
+                {
+                    case 0: _editedConfig.PushTier1Status = status; break;
+                    case 1: _editedConfig.PushTier2Status = status; break;
+                    case 2: _editedConfig.PushTier3Status = status; break;
+                    case 3: _editedConfig.PushTier4Status = status; break;
+                }
+>>>>>>> df3e9d4bd657da2e1fc523952fc0a2a313f8ef6b
             }
 
             // 🔧 【状态统一修复】应用保盈状态和触发金额，使用统一符号
             var profitTiers = state.ProfitProtectionConfig.Tiers.OrderBy(t => t.TierIndex).Take(3).ToArray();
             for (int i = 0; i < profitTiers.Length; i++)
             {
+<<<<<<< HEAD
                 var status = profitTiers[i].IsExecuted ? "√" : "-";
                 var triggerAmount = profitTiers[i].TriggerProfitAmount;
                 var protectionAmount = profitTiers[i].ProtectionAmount;
+=======
+                string status;
+                switch (profitTiers[i].ExecutionState)
+                {
+                    case ExecutionState.NotTriggered:
+                        status = "-";
+                        break;
+                    case ExecutionState.Executing:
+                        status = "⚡";
+                        break;
+                    case ExecutionState.Executed:
+                        status = "√";
+                        break;
+                    default:
+                        status = "-";
+                        break;
+                }
+>>>>>>> df3e9d4bd657da2e1fc523952fc0a2a313f8ef6b
                 switch (i)
                 {
                     case 0: 
@@ -720,7 +784,12 @@ namespace BinanceFuturesTrader.Views
                 
                 var contractKey = _editedConfig.ContractName.Replace(" ", "_");
                 
+<<<<<<< HEAD
                 if (IsUsingEnhancedManager)
+=======
+                // 更新保本状态（处理三种状态：waiting, executing, executed）
+                if (_editedConfig.BreakEvenStatus == "√" || _editedConfig.BreakEvenStatus == "✓")
+>>>>>>> df3e9d4bd657da2e1fc523952fc0a2a313f8ef6b
                 {
                     // 🔧 使用增强版数据管理器保存配置
                     _logger?.LogInformation($"🔄 使用增强版数据管理器保存合约配置: {contractKey}");
@@ -743,6 +812,58 @@ namespace BinanceFuturesTrader.Views
                     _logger?.LogCritical($"🔥【保存路径】使用传统状态服务，账户: {currentAccount}");
                     SaveToLegacyStateService(stateService, contractKey);
                 }
+<<<<<<< HEAD
+=======
+                else if (_editedConfig.BreakEvenStatus == "-")
+                {
+                    stateService.UpdateExecutionStatus(contractKey, "BreakEven", null, false, 0, "手动重置为waiting");
+                    _logger?.LogInformation($"   🔄 保本状态重置为waiting");
+                }
+                
+                // 更新推仓状态（处理三种状态：waiting, executing, executed）
+                var pushStatuses = new[] { _editedConfig.PushTier1Status, _editedConfig.PushTier2Status, _editedConfig.PushTier3Status, _editedConfig.PushTier4Status };
+                for (int i = 0; i < pushStatuses.Length; i++)
+                {
+                    if (pushStatuses[i] == "√" || pushStatuses[i] == "✓")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "AddPosition", i + 1, true, 0, "手动设置为executed");
+                        _logger?.LogInformation($"   ✅ 推仓阶梯{i + 1}状态更新为executed");
+                    }
+                    else if (pushStatuses[i] == "⚡")
+                    {
+                        stateService.UpdateExecutionStatusToExecuting(contractKey, "AddPosition", i + 1, 0, "手动设置为executing");
+                        _logger?.LogInformation($"   ⚡ 推仓阶梯{i + 1}状态更新为executing");
+                    }
+                    else if (pushStatuses[i] == "-")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "AddPosition", i + 1, false, 0, "手动重置为waiting");
+                        _logger?.LogInformation($"   🔄 推仓阶梯{i + 1}状态重置为waiting");
+                    }
+                }
+                
+                // 更新保盈状态（处理三种状态：waiting, executing, executed）
+                var profitStatuses = new[] { _editedConfig.ProfitTier1Status, _editedConfig.ProfitTier2Status, _editedConfig.ProfitTier3Status };
+                for (int i = 0; i < profitStatuses.Length; i++)
+                {
+                    if (profitStatuses[i] == "√" || profitStatuses[i] == "✓")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "ProfitProtection", i + 1, true, 0, "手动设置为executed");
+                        _logger?.LogInformation($"   ✅ 保盈阶梯{i + 1}状态更新为executed");
+                    }
+                    else if (profitStatuses[i] == "⚡")
+                    {
+                        stateService.UpdateExecutionStatusToExecuting(contractKey, "ProfitProtection", i + 1, 0, "手动设置为executing");
+                        _logger?.LogInformation($"   ⚡ 保盈阶梯{i + 1}状态更新为executing");
+                    }
+                    else if (profitStatuses[i] == "-")
+                    {
+                        stateService.UpdateExecutionStatus(contractKey, "ProfitProtection", i + 1, false, 0, "手动重置为waiting");
+                        _logger?.LogInformation($"   🔄 保盈阶梯{i + 1}状态重置为waiting");
+                    }
+                }
+
+                _logger?.LogInformation($"✅ 合约状态更新完成: {contractKey}");
+>>>>>>> df3e9d4bd657da2e1fc523952fc0a2a313f8ef6b
             }
             catch (Exception ex)
             {

@@ -5205,10 +5205,25 @@ namespace BinanceFuturesTrader.Views
                         TriggerPrice = state.BreakEvenConfig.TriggerProfitAmount,
                         KeepValue = 0,
                         Description = $"保本条件 - 浮盈{state.BreakEvenConfig.TriggerProfitAmount:F0}U",
-                        Status = state.BreakEvenConfig.IsExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered
+                        // 🔧 修复：根据ExecutionState设置正确的状态
+                        Status = state.BreakEvenConfig.ExecutionState switch
+                        {
+                            ExecutionState.NotTriggered => TriggerExecutionStatus.NotTriggered,
+                            ExecutionState.Executing => TriggerExecutionStatus.Executing,
+                            ExecutionState.Executed => TriggerExecutionStatus.Executed,
+                            _ => TriggerExecutionStatus.NotTriggered
+                        }
                     };
                     contractMonitor.TriggerConditions.Add(breakEvenCondition);
-                    _logger.LogCritical($"✅【启动盯盘】添加保本条件: {state.BreakEvenConfig.TriggerProfitAmount:F0}U, 状态: {(state.BreakEvenConfig.IsExecuted ? "已执行" : "未触发")}");
+                    // 🔧 修复：根据ExecutionState显示正确的状态描述
+                    var statusText = state.BreakEvenConfig.ExecutionState switch
+                    {
+                        ExecutionState.NotTriggered => "未触发",
+                        ExecutionState.Executing => "执行中",
+                        ExecutionState.Executed => "已执行",
+                        _ => "未知"
+                    };
+                    _logger.LogCritical($"✅【启动盯盘】添加保本条件: {state.BreakEvenConfig.TriggerProfitAmount:F0}U, 状态: {statusText}");
                 }
             
                 // 推仓条件
@@ -5226,10 +5241,25 @@ namespace BinanceFuturesTrader.Views
                             TriggerPrice = tier.TriggerProfitAmount,
                             KeepValue = tier.ProfitProtectionAmount,
                             Description = $"推仓{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U, 倍数{tier.RiskMultiplier:F1}x",
-                            Status = tier.IsExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered
+                            // 🔧 修复：根据ExecutionState设置正确的状态
+                            Status = tier.ExecutionState switch
+                            {
+                                ExecutionState.NotTriggered => TriggerExecutionStatus.NotTriggered,
+                                ExecutionState.Executing => TriggerExecutionStatus.Executing,
+                                ExecutionState.Executed => TriggerExecutionStatus.Executed,
+                                _ => TriggerExecutionStatus.NotTriggered
+                            }
                         };
                         contractMonitor.TriggerConditions.Add(addPositionCondition);
-                        _logger.LogCritical($"✅【启动盯盘】添加推仓条件: 阶梯{tier.TierIndex}, {tier.TriggerProfitAmount:F0}U, 状态: {(tier.IsExecuted ? "已执行" : "未触发")}");
+                        // 🔧 修复：根据ExecutionState显示正确的状态描述
+                        var tierStatusText = tier.ExecutionState switch
+                        {
+                            ExecutionState.NotTriggered => "未触发",
+                            ExecutionState.Executing => "执行中",
+                            ExecutionState.Executed => "已执行",
+                            _ => "未知"
+                        };
+                        _logger.LogCritical($"✅【启动盯盘】添加推仓条件: 阶梯{tier.TierIndex}, {tier.TriggerProfitAmount:F0}U, 状态: {tierStatusText}");
                     }
                 }
             
@@ -5248,10 +5278,25 @@ namespace BinanceFuturesTrader.Views
                             TriggerPrice = tier.TriggerProfitAmount,
                             KeepValue = tier.StopLossPrice,
                             Description = $"保盈{tier.TierIndex} - 浮盈{tier.TriggerProfitAmount:F0}U",
-                            Status = tier.IsExecuted ? TriggerExecutionStatus.Executed : TriggerExecutionStatus.NotTriggered
+                            // 🔧 修复：根据ExecutionState设置正确的状态
+                            Status = tier.ExecutionState switch
+                            {
+                                ExecutionState.NotTriggered => TriggerExecutionStatus.NotTriggered,
+                                ExecutionState.Executing => TriggerExecutionStatus.Executing,
+                                ExecutionState.Executed => TriggerExecutionStatus.Executed,
+                                _ => TriggerExecutionStatus.NotTriggered
+                            }
                         };
                         contractMonitor.TriggerConditions.Add(profitProtectionCondition);
-                        _logger.LogCritical($"✅【启动盯盘】添加保盈条件: 阶梯{tier.TierIndex}, {tier.TriggerProfitAmount:F0}U, 状态: {(tier.IsExecuted ? "已执行" : "未触发")}");
+                        // 🔧 修复：根据ExecutionState显示正确的状态描述
+                        var profitStatusText = tier.ExecutionState switch
+                        {
+                            ExecutionState.NotTriggered => "未触发",
+                            ExecutionState.Executing => "执行中",
+                            ExecutionState.Executed => "已执行",
+                            _ => "未知"
+                        };
+                        _logger.LogCritical($"✅【启动盯盘】添加保盈条件: 阶梯{tier.TierIndex}, {tier.TriggerProfitAmount:F0}U, 状态: {profitStatusText}");
                     }
                 }
                 
